@@ -1,98 +1,136 @@
 # Auraliscope
 
-Auraliscope 是一款原生 macOS 音频电平与分析工具，用于实时监听输入和输出音频。
+**Auraliscope是一款为 macOS 打造的实时音频分析与可视化工具。**
 
-它将频谱、频谱图、波形、响度、声道电平、声场显示以及相关性分析整合在一个可自由调整大小的窗口中。
+Auraliscope 将响度、电平、频谱、频谱图、波形、声场和立体声相关性整合在一个窗口中，帮助你在聆听的同时观察声音的动态、频率分布与空间关系。
 
-界面支持 **英语、简体中文和韩语**。
+适用于音乐制作、混音、音频后期，以及日常播放与监听中的音频观察。
 
-**当前公开候选版本：** 1.0.0rc（build 8）。。
+[下载应用](https://github.com/jinboz12/Auraliscope/releases) 
+[查看更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.0.1rc) 
+[反馈问题](https://github.com/jinboz12/Auraliscope/issues)
 
-## 功能
+## 主要功能
 
-- 监听 Core Audio 输入设备；在 macOS 14.2 或更高版本中，也可通过 Core Audio Process Tap 监听系统输出。
-- 支持最高 **9.1.6** 的多声道布局，并可将最多 **64 个物理声道**映射至不同扬声器角色。
-- 提供以下实时音频分析功能：
-  - 8192 点 L/R 频谱
-  - 滚动频谱图（Spectrogram）
-  - 每声道波形显示
-  - 每声道 Peak / RMS 电平
-  - LUFS
-  - Loudness Range
-  - True Peak
-  - VU
-  - 立体声相关性（Stereo Correlation）
-- 支持跟随系统、浅色和深色三种外观模式。Dashboard 会保持其面板布局，并在系统支持时使用 macOS 原生 Liquid Glass 控件。
-- 音频仅在内存中进行分析。应用不会保存或上传任何音频。
+### 响度与动态
 
-## 系统要求与权限
+集中查看 LUFS、响度范围（LRA）、真峰值（True Peak）与 VU 等读数，观察音频的整体响度和动态变化。
 
-打包版本面向 **Apple Silicon**，理应要求 **macOS 13 或更高版本**。
-**目前只在macOS 27.0 26A428 进行过测试**
+真峰值超过 0 dBTP 时，界面会显示超限情况及具体数值，方便定位需要关注的峰值。
 
-输入监听需要获得 **麦克风（Microphone）** 权限。
-输出监听需要 **macOS 14.2 或更高版本**，并需要 **系统音频录制（System Audio Recording）** 权限。
-当所选输出的 Process Tap 开始捕获音频时，macOS 会自动请求该权限。
+### 声道电平
 
-欢迎界面分别提供输入和输出音频源的权限操作入口。
+独立显示各声道的 Peak 与 RMS 电平，并提供峰值保持与真峰值超限提示，便于比较声道之间的电平关系。
 
-应用不会请求以下权限：
+### 频谱、频谱图与波形
 
-- 屏幕画面录制
-- 辅助功能（Accessibility）
-- 自动化（Automation）
-- 网络访问
+- **实时频谱**：观察声音的频率分布。
+- **滚动频谱图**：查看频率能量随时间的变化。
+- **声道波形**：观察各声道的振幅与瞬态变化。
 
-## 本地构建
+### 声场与相关性
 
-首先安装 Apple Command Line Tools，然后运行：
+支持立体声与多声道显示模式，以动态可视化呈现声道能量的空间分布。
 
-```sh
-./scripts/test.sh
-./scripts/package-app.sh
-open "dist/1.0.0rc/Auraliscope.app"
-```
+立体声模式下提供相关性显示，辅助观察左右声道的关系，以及合并为单声道时可能出现的抵消问题。切换至多声道模式后，相关性区域会自动隐藏。
 
-打包脚本会生成：
+Mono 模式默认隐藏，可在设置中启用。
 
-```text
-dist/1.0.0rc/Auraliscope.app
-dist/1.0.0rc/Auraliscope-1.0.0rc-macOS.zip
-```
+> Atmos 是应用中的多声道显示模式名称，不代表应用具备 Dolby Atmos 编码、解码或认证功能。
 
-当前脚本使用本地 **ad hoc 签名**。
+### 输入与输出音频分析
 
-这个 Release Candidate 版本采用 ad hoc 签名，仅用于测试，目前尚未经过 Apple notarization（公证）。因此，在其他 Mac 上运行时，macOS 可能会阻止应用启动。
+支持 Core Audio 输入设备；在 macOS 14.2 或更高版本中，可通过 Core Audio Process Tap 捕获输出音频进行分析。
 
-如遇到阻止，可前往：
+应用启动时会自动选择当前 macOS 默认输出设备，也可手动切换音频源。
+
+支持最高 9.1.6 的声道布局，并可将最多 64 个物理声道自定义映射至不同的扬声器角色。
+
+### 外观与语言
+
+- 支持跟随系统、浅色和深色外观。
+- 支持普通窗口与全屏使用。
+- 在系统支持时使用原生 Liquid Glass 控件。
+- 支持简体中文、英语和韩语。
+- 更改界面语言后，可通过提示旁的重启按钮应用更改。
+
+## 系统要求
+
+| 项目 | 要求 |
+| --- | --- |
+| 处理器 | Apple Silicon Mac |
+| 系统 | macOS 13 或更高版本 |
+| 输出音频捕获 | macOS 14.2 或更高版本 |
+| 已测试系统 | macOS 27.0（26A428）, M1 Max Macbook Pro |
+
+系统部署目标不等于所有版本均已完成兼容性验证。目前其他 macOS 版本的实际运行情况仍待测试。
+
+## 下载与安装
+
+1. 前往 [Releases 页面](https://github.com/jinboz12/Auraliscope/releases)下载 DMG 文件。
+2. 打开 DMG，将 Auraliscope 拖入 Applications 文件夹。
+3. 从 Applications 文件夹启动应用。
+4. 根据需要授予音频捕获权限，并选择要分析的音频源。
+
+当前 1.0.1rc 为候选测试版本，使用 ad hoc 签名，尚未经过 Apple 公证。
+
+如果 macOS 阻止启动，请在确认安装包来自本项目官方 Releases 后，前往：
 
 **系统设置 → 隐私与安全性**
 
-并查看系统是否提供 **“仍要打开（Open Anyway）”** 选项。
+查看系统是否提供“仍要打开”选项。
 
-如有需要，可以运行：
+## 权限与隐私
 
-```sh
-./scripts/brand-assets.sh
-```
+Auraliscope 根据所选音频源使用以下权限：
 
-该脚本会使用以下文件重新生成应用图标：
+| 音频源 | 所需权限 |
+| --- | --- |
+| 输入设备 | 麦克风权限 |
+| 输出音频 | 系统音频录制权限 |
 
-```text
-SoundmeterIcon/soundmeter Exports/soundmeter-macOS-Default-1024@1x.png
-```
+系统权限的具体名称和显示方式可能随 macOS 版本而变化。
+
+**音频仅在本机内存中进行实时分析，应用不会将捕获的音频保存为文件或上传。**
+
+## 使用提示
+
+- 开始分析前，请确认所选设备、声道布局与实际音频路由一致。
+- 分析多声道音频时，请检查物理声道与扬声器角色的映射。
+- 相关性读数可辅助判断立体声兼容性，建议结合实际单声道试听理解。
+- 声场可视化反映输入信号的声道能量关系，不等同于对房间声学或实际扬声器声场的测量。
+
+## 问题反馈
+
+欢迎通过 [GitHub Issues](https://github.com/jinboz12/Auraliscope/issues)提交问题或建议。
+
+为便于复现，请尽量提供：
+
+- Auraliscope 版本号与 build 编号；
+- macOS 版本及 Mac 型号；
+- 使用的音频设备和输入／输出模式；
+- 声道布局及相关路由设置；
+- 问题的复现步骤、预期行为与实际表现；
+- 必要的截图或录屏。
+
+提交材料前，请检查其中是否包含不宜公开的信息。
+
+## 许可与使用范围
+
+Copyright © 2026 JINBOZ.
+
+任何人均可免费下载、安装并运行 Auraliscope 应用，用于自己的工作或私人用途。
+依据 CC BY-NC-ND 4.0，你可以在遵守许可证条款的前提下，出于非商业目的分享本项目的未修改副本。
+
+### 免责声明
+
+本软件按“现状”提供，不作任何明示或默示担保。在适用法律允许的范围内，作者不对因使用本软件而产生的损失承担责任。
+Auraliscope 所包含的第三方组件及材料适用各自的许可证。
 
 
-## 项目文件
+Auraliscope 的频谱图展示参考了
+[AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram)
+中的 dB 图例及时间、频率标记设计思路。
 
-- `Sources/Auraliscope/`：SwiftUI 界面、音频捕获、DSP 以及 Metal 渲染器。
-- `Sources/AudioRing/`：C 语言音频回调及无锁缓冲区。
-- `Resources/`：应用元数据、Entitlements、图标及三种本地化语言资源。
-- `Tests/AuraliscopeTests/`：Core Audio 与 DSP 相关测试。
-- `scripts/`：打包、资源生成、本地化检查以及测试脚本。
-- `docs/THIRD_PARTY_NOTICES.md`：第三方组件署名及随项目提供的第三方许可证文本。
-
-## License
-
-2026 JINBOZ.
-任何人均可免费下载、安装并运行Auraliscope 应用，用于自己的工作或私人用途。未明确授予的权利均予保留。第三方材料适用其各自的许可，详见第三方声明。本项目采用MIT库
+Auraliscope 的实时分析与渲染采用独立的 Swift、Accelerate 和 Metal
+实现，未链接该项目的 Rust 库。
