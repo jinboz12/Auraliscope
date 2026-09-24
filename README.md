@@ -94,4 +94,5 @@ SoundmeterIcon/soundmeter Exports/soundmeter-macOS-Default-1024@1x.png
 
 ## License
 
-本项目代码采用 **MIT License**。
+2026 JINBOZ.
+任何人均可免费下载、安装并运行Auraliscope 应用，用于自己的工作或私人用途。未明确授予的权利均予保留。第三方材料适用其各自的许可，详见第三方声明。本项目采用MIT库
