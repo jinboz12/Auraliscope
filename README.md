@@ -1,24 +1,51 @@
 # Auraliscope
 
-Auraliscope is a native macOS audio meter for live input and output monitoring. It brings spectrum, spectrogram, waveform, loudness, channel levels, soundstage, and correlation into one resizable window. The interface supports English, Simplified Chinese, and Korean.
+Auraliscope 是一款原生 macOS 音频电平与分析工具，用于实时监听输入和输出音频。
 
-**Current public candidate:** 1.0.0rc (build 8). Earlier 1.0/1.1 beta labels were internal development versions.
+它将频谱、频谱图、波形、响度、声道电平、声场显示以及相关性分析整合在一个可自由调整大小的窗口中。
 
-## Features
+界面支持 **英语、简体中文和韩语**。
 
-- Monitor a Core Audio input, or an output through a Core Audio process tap on macOS 14.2 or later.
-- Choose Mono, Stereo, or a multichannel layout through 9.1.6; route up to 64 physical channels to speaker roles.
-- View 8192-point L/R spectrum and scrolling spectrogram, per-channel waveforms and peak/RMS levels, LUFS, loudness range, True Peak, VU, and stereo correlation.
-- Switch between system-following, light, and dark appearances. The dashboard keeps its panel layout and native Liquid Glass controls where macOS supports them.
-- Analyze audio in memory. The app does not save or upload audio.
+**当前公开候选版本：** 1.0.0rc（build 8）。。
 
-## Requirements and permissions
+## 功能
 
-The packaged build targets Apple Silicon and macOS 13 or later. Input monitoring needs **Microphone** permission. Output monitoring needs macOS 14.2 or later and **System Audio Recording** permission; macOS requests it when the selected output tap begins capture. The welcome screen offers a separate action for each source type. The app does not request screen image capture, Accessibility, Automation, or network permissions.
+- 监听 Core Audio 输入设备；在 macOS 14.2 或更高版本中，也可通过 Core Audio Process Tap 监听系统输出。
+- 支持最高 **9.1.6** 的多声道布局，并可将最多 **64 个物理声道**映射至不同扬声器角色。
+- 提供以下实时音频分析功能：
+  - 8192 点 L/R 频谱
+  - 滚动频谱图（Spectrogram）
+  - 每声道波形显示
+  - 每声道 Peak / RMS 电平
+  - LUFS
+  - Loudness Range
+  - True Peak
+  - VU
+  - 立体声相关性（Stereo Correlation）
+- 支持跟随系统、浅色和深色三种外观模式。Dashboard 会保持其面板布局，并在系统支持时使用 macOS 原生 Liquid Glass 控件。
+- 音频仅在内存中进行分析。应用不会保存或上传任何音频。
 
-## Build locally
+## 系统要求与权限
 
-Install Apple Command Line Tools, then run:
+打包版本面向 **Apple Silicon**，理应要求 **macOS 13 或更高版本**。
+**目前只在macOS 27.0 26A428 进行过测试**
+
+输入监听需要获得 **麦克风（Microphone）** 权限。
+输出监听需要 **macOS 14.2 或更高版本**，并需要 **系统音频录制（System Audio Recording）** 权限。
+当所选输出的 Process Tap 开始捕获音频时，macOS 会自动请求该权限。
+
+欢迎界面分别提供输入和输出音频源的权限操作入口。
+
+应用不会请求以下权限：
+
+- 屏幕画面录制
+- 辅助功能（Accessibility）
+- 自动化（Automation）
+- 网络访问
+
+## 本地构建
+
+首先安装 Apple Command Line Tools，然后运行：
 
 ```sh
 ./scripts/test.sh
@@ -26,17 +53,45 @@ Install Apple Command Line Tools, then run:
 open "dist/1.0.0rc/Auraliscope.app"
 ```
 
-The packaging script creates `dist/1.0.0rc/Auraliscope.app` and `dist/1.0.0rc/Auraliscope-1.0.0rc-macOS.zip`. It uses a local ad hoc signature. This private release candidate is ad hoc signed and is intended for testing. It is not notarized, so macOS may block it on another Mac; check System Settings → Privacy & Security for the system-provided Open Anyway option. A future general-distribution build needs Developer ID signing and Apple notarization.
+打包脚本会生成：
 
-`./scripts/brand-assets.sh` rebuilds the app icon from `SoundmeterIcon/soundmeter Exports/soundmeter-macOS-Default-1024@1x.png` when needed. The vector brand mark used in the interface is defined in Swift.
+```text
+dist/1.0.0rc/Auraliscope.app
+dist/1.0.0rc/Auraliscope-1.0.0rc-macOS.zip
+```
 
-## Project files
+当前脚本使用本地 **ad hoc 签名**。
 
-- `Sources/Auraliscope/`: SwiftUI interface, audio capture, DSP, and Metal renderers.
-- `Sources/AudioRing/`: C audio callback and lock-free buffers.
-- `Resources/`: app metadata, entitlements, icon, and three localizations.
-- `Tests/AuraliscopeTests/`: core audio and DSP checks.
-- `scripts/`: packaging, asset generation, localization checks, and tests.
-- `docs/THIRD_PARTY_NOTICES.md`: attribution and bundled third-party license text.
+这个 Release Candidate 版本采用 ad hoc 签名，仅用于测试，目前尚未经过 Apple notarization（公证）。因此，在其他 Mac 上运行时，macOS 可能会阻止应用启动。
 
-Copyright © 2026 JINBOZ. All rights reserved. No project-level license is granted. The bundled third-party notice applies only to the listed third-party work.
+如遇到阻止，可前往：
+
+**系统设置 → 隐私与安全性**
+
+并查看系统是否提供 **“仍要打开（Open Anyway）”** 选项。
+
+如有需要，可以运行：
+
+```sh
+./scripts/brand-assets.sh
+```
+
+该脚本会使用以下文件重新生成应用图标：
+
+```text
+SoundmeterIcon/soundmeter Exports/soundmeter-macOS-Default-1024@1x.png
+```
+
+
+## 项目文件
+
+- `Sources/Auraliscope/`：SwiftUI 界面、音频捕获、DSP 以及 Metal 渲染器。
+- `Sources/AudioRing/`：C 语言音频回调及无锁缓冲区。
+- `Resources/`：应用元数据、Entitlements、图标及三种本地化语言资源。
+- `Tests/AuraliscopeTests/`：Core Audio 与 DSP 相关测试。
+- `scripts/`：打包、资源生成、本地化检查以及测试脚本。
+- `docs/THIRD_PARTY_NOTICES.md`：第三方组件署名及随项目提供的第三方许可证文本。
+
+## License
+
+本项目代码采用 **MIT License**。
