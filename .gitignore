@@ -1,0 +1,19 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+*.xcuserstate
+*.xcuserdata/
+SoundmeterIcon/*.psd
+SoundmeterIcon/*.icon/
+docs/cpu-samples.txt
+# Internal build history and obsolete screenshots; keep the public repository focused on the current release.
+docs/DEVELOPMENT_HISTORY.md
+docs/GITHUB_READINESS.md
+docs/VALIDATION.md
+docs/RELEASE_PREPARATION.md
+docs/*.png
+SoundmeterIcon/*
+!SoundmeterIcon/soundmeter Exports/
+SoundmeterIcon/soundmeter Exports/*
+!SoundmeterIcon/soundmeter Exports/soundmeter-macOS-Default-1024@1x.png

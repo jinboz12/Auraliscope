@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Auraliscope";
+"NSMicrophoneUsageDescription" = "Auraliscope는 선택한 오디오 입력의 스펙트럼, 채널 레벨, 라우드니스를 모노부터 9.1.6까지 측정합니다. 오디오는 녹음되거나 업로드되지 않습니다.";
+"NSAudioCaptureUsageDescription" = "Auraliscope는 소스로 선택한 출력으로 앱이 재생하는 소리를 측정합니다. 오디오는 녹음되거나 업로드되지 않습니다.";

@@ -1,0 +1,199 @@
+/* English source. Each key is its own value: the English text is the key the code passes to L(). */
+/* The policy and the glossary live in scripts/check-localization.py, which ./scripts/test.sh runs. */
+
+/* Menu bar and window titles */
+"About Auraliscope" = "About Auraliscope";
+"Settings…" = "Settings…";
+"Settings" = "Settings";
+"Toggle Full Screen" = "Toggle Full Screen";
+"Meter" = "Meter";
+"Pause Capture" = "Pause Capture";
+"Start Capture" = "Start Capture";
+"Reset Measurements" = "Reset Measurements";
+"Monitoring Mode" = "Monitoring Mode";
+"Multi Channel Format" = "Multi Channel Format";
+"Channel Routing…" = "Channel Routing…";
+"Auto" = "Auto";
+"Mono" = "Mono";
+"Stereo" = "Stereo";
+"Multi Channel" = "Multi Channel";
+
+/* Toolbar and meter tooltips (the labels on the meter itself stay in English) */
+"Reset: clear peak holds and clip latches, and restart Integrated LUFS" = "Reset: clear peak holds and clip latches, and restart Integrated LUFS";
+"Monitor in Mono: one channel, read from the input routed to L" = "Monitor in Mono: one channel, read from the input routed to L";
+"Monitor in Stereo: L and R lead; other channels recede" = "Monitor in Stereo: L and R lead; other channels recede";
+"Monitor in Multi Channel: every channel of %@. Change the format in Settings ▸ Channels." = "Monitor in Multi Channel: every channel of %@. Change the format in Settings ▸ Channels.";
+"Auto: Mono when a single input is routed. Otherwise Multi Channel after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@." = "Auto: Mono when a single input is routed. Otherwise Multi Channel after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@.";
+"Auto mode" = "Auto mode";
+"Off" = "Off";
+"TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Multi Channel each keep their own and follow the mode." = "TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Multi Channel each keep their own and follow the mode.";
+"CEILING: the True Peak limit of the current mode. TRUE PEAK turns amber above it." = "CEILING: the True Peak limit of the current mode. TRUE PEAK turns amber above it.";
+"VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS)." = "VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS).";
+"Drag to resize · double-click to reset" = "Drag to resize · double-click to reset";
+"Dropped %d" = "Dropped %d";
+
+/* Loudness standard menus */
+"Loudness target" = "Loudness target";
+"True Peak ceiling" = "True Peak ceiling";
+"%@ · in use" = "%@ · in use";
+"Loud master · club, EDM" = "Loud master · club, EDM";
+"Streaming · Spotify, YouTube, Tidal" = "Streaming · Spotify, YouTube, Tidal";
+"Apple Music · podcasts" = "Apple Music · podcasts";
+"Netflix · film and series" = "Netflix · film and series";
+"Stereo & Mono" = "Stereo & Mono";
+
+/* Accessibility */
+"Spectrum, 20 Hz to 20 kHz" = "Spectrum, 20 Hz to 20 kHz";
+"Spectrogram, last 8 seconds" = "Spectrogram, last 8 seconds";
+"Waveform of each channel, last 4 seconds" = "Waveform of each channel, last 4 seconds";
+"Soundstage: channel map and per-channel Peak and RMS meters" = "Soundstage: channel map and per-channel Peak and RMS meters";
+"VU meter, all channels" = "VU meter, all channels";
+"Resize panels" = "Resize panels";
+
+/* Status line */
+"Choose an input device" = "Choose an input device";
+"Waiting for microphone access…" = "Waiting for microphone access…";
+"Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone." = "Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone.";
+"Paused" = "Paused";
+"Demo signal · no audio device open" = "Demo signal · no audio device open";
+"No audio device available" = "No audio device available";
+"%@ (output)" = "%@ (output)";
+
+/* Errors */
+"Could not allocate the audio ring buffer" = "Could not allocate the audio ring buffer";
+"Could not create the vDSP analyzer" = "Could not create the vDSP analyzer";
+"Metal failed to start: %@" = "Metal failed to start: %@";
+"Metal GPU unavailable" = "Metal GPU unavailable";
+"Could not create Metal buffers or textures" = "Could not create Metal buffers or textures";
+"The selected device has no input channels" = "The selected device has no input channels";
+"Capturing a device's output needs macOS 14.2 or later" = "Capturing a device's output needs macOS 14.2 or later";
+"%@ failed (OSStatus %d)" = "%@ failed (OSStatus %d)";
+"Channel routing needs 16 roles" = "Channel routing needs 16 roles";
+"Find HAL AudioUnit" = "Find HAL AudioUnit";
+"Create HAL AudioUnit" = "Create HAL AudioUnit";
+"Enable input" = "Enable input";
+"Disable output" = "Disable output";
+"Select input device" = "Select input device";
+"Read sample rate" = "Read sample rate";
+"Set Float32 PCM format" = "Set Float32 PCM format";
+"Set input callback" = "Set input callback";
+"Initialize audio unit" = "Initialize audio unit";
+"Start audio unit" = "Start audio unit";
+"Create output tap" = "Create output tap";
+"Input device %d" = "Input device %d";
+
+/* Settings: sidebar and General */
+"General" = "General";
+"Audio" = "Audio";
+"Channels" = "Channels";
+"Metering" = "Metering";
+"Appearance" = "Appearance";
+"LANGUAGE" = "LANGUAGE";
+"Language" = "Language";
+"System" = "System";
+"Switches instantly; metering carries on. Menu items supplied by macOS follow at the next launch. The meter itself keeps its English labels (units, channel names, modes, panel titles), as on consoles and DAWs." = "Switches instantly; metering carries on. Menu items supplied by macOS follow at the next launch. The meter itself keeps its English labels (units, channel names, modes, panel titles), as on consoles and DAWs.";
+"WINDOW" = "WINDOW";
+"Always on top" = "Always on top";
+"Full screen" = "Full screen";
+"Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen." = "Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen.";
+"STARTUP" = "STARTUP";
+"Show welcome at launch" = "Show welcome at launch";
+"Live" = "Live";
+
+/* Settings: Audio */
+"DEVICE" = "DEVICE";
+"Source" = "Source";
+"No audio device" = "No audio device";
+"No input device" = "No input device";
+"No output device" = "No output device";
+"No audio device selected" = "No audio device selected";
+"Inputs" = "Inputs";
+"Outputs · what apps play to them" = "Outputs · what apps play to them";
+"Refresh devices" = "Refresh devices";
+"Status" = "Status";
+"Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal." = "Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal.";
+"PRIVACY" = "PRIVACY";
+"Microphone access" = "Microphone access";
+"Needed to meter any input. After changing it in System Settings, click the arrow to check again." = "Needed to meter any input. After changing it in System Settings, click the arrow to check again.";
+"System audio recording" = "System audio recording";
+"Open System Settings" = "Open System Settings";
+"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
+"Allowed" = "Allowed";
+"Not requested" = "Not requested";
+"Denied" = "Denied";
+"Restricted" = "Restricted";
+"Unavailable" = "Unavailable";
+"Check again" = "Check again";
+"Enabled" = "Enabled";
+"Disabled" = "Disabled";
+
+/* Settings: Channels */
+"FORMAT" = "FORMAT";
+"Multi Channel format" = "Multi Channel format";
+"%@ · %d channels" = "%@ · %d channels";
+"Monitoring mode" = "Monitoring mode";
+"Multi Channel shows every channel of this format in Soundstage and Waveform; Stereo shows L and R; Mono reads only the input routed to L. Auto picks Mono when a single input is routed, and otherwise follows the programme between Stereo and Multi Channel." = "Multi Channel shows every channel of this format in Soundstage and Waveform; Stereo shows L and R; Mono reads only the input routed to L. Auto picks Mono when a single input is routed, and otherwise follows the programme between Stereo and Multi Channel.";
+"ROUTING" = "ROUTING";
+"Default Order" = "Default Order";
+"Input 1 to the first channel, input 2 to the second, and so on" = "Input 1 to the first channel, input 2 to the second, and so on";
+"Input %d" = "Input %d";
+"Output %d" = "Output %d";
+"Routing is saved per device and format. A change restarts capture and resets Integrated LUFS. LFE shows Peak and RMS but is excluded from LUFS, per BS.1770." = "Routing is saved per device and format. A change restarts capture and resets Integrated LUFS. LFE shows Peak and RMS but is excluded from LUFS, per BS.1770.";
+"Front" = "Front";
+"Surround" = "Surround";
+"Height" = "Height";
+
+/* Settings: Metering and Appearance */
+"MEASUREMENT" = "MEASUREMENT";
+"Reset measurements" = "Reset measurements";
+"Reset" = "Reset";
+"Momentary, Short-term and Integrated LUFS follow ITU-R BS.1770-5, including its gating. Range follows EBU Tech 3342. True Peak is measured with 4× oversampling below 96 kHz." = "Momentary, Short-term and Integrated LUFS follow ITU-R BS.1770-5, including its gating. Range follows EBU Tech 3342. True Peak is measured with 4× oversampling below 96 kHz.";
+"Set the loudness target and True Peak ceiling from the TARGET and CEILING menus on the loudness summary. Stereo and Multi Channel each keep their own." = "Set the loudness target and True Peak ceiling from the TARGET and CEILING menus on the loudness summary. Stereo and Multi Channel each keep their own.";
+"COLOR" = "COLOR";
+"Color theme" = "Color theme";
+"INTERFACE" = "INTERFACE";
+"Light" = "Light";
+"Dark" = "Dark";
+"Switch to Light Appearance" = "Switch to Light Appearance";
+"Switch to Dark Appearance" = "Switch to Dark Appearance";
+"Auto follows macOS. The sun and moon button in the toolbar, or View ▸ Appearance, switches between Light and Dark at any time." = "Auto follows macOS. The sun and moon button in the toolbar, or View ▸ Appearance, switches between Light and Dark at any time.";
+"The accent colors controls, traces and level meters in both appearances. In Light it is deepened just enough to stay legible on white." = "The accent colors controls, traces and level meters in both appearances. In Light it is deepened just enough to stay legible on white.";
+
+/* Welcome */
+"See your sound in real time" = "See your sound in real time";
+"Live analysis of any input or output, from Mono to 9.1.6." = "Live analysis of any input or output, from Mono to 9.1.6.";
+"Frequency content and pitch, live and over the last 8 seconds." = "Frequency content and pitch, live and over the last 8 seconds.";
+"LUFS, Range and True Peak against a delivery target." = "LUFS, Range and True Peak against a delivery target.";
+"Every channel over the last four seconds." = "Every channel over the last four seconds.";
+"Formats up to 9.1.6, with up to 64 inputs to route." = "Formats up to 9.1.6, with up to 64 inputs to route.";
+"Needed to read the input you select. Audio stays on this Mac and is never recorded." = "Needed to read the input you select. Audio stays on this Mac and is never recorded.";
+"Allow Microphone Access" = "Allow Microphone Access";
+"Open Microphone Settings" = "Open Microphone Settings";
+"Output device" = "Output device";
+"Request System Audio Access" = "Request System Audio Access";
+"Connect an output device to request access." = "Connect an output device to request access.";
+"Output monitoring requires macOS 14.2 or later." = "Output monitoring requires macOS 14.2 or later.";
+"Only needed to monitor what apps play to an output. macOS requests access when that output starts; permission can later be changed in System Settings." = "Only needed to monitor what apps play to an output. macOS requests access when that output starts; permission can later be changed in System Settings.";
+"Don't show this again" = "Don't show this again";
+"Start Metering" = "Start Metering";
+"Spectrum & Spectrogram" = "Spectrum & Spectrogram";
+"Waveform" = "Waveform";
+"Soundstage" = "Soundstage";
+
+/* About */
+"Native audio metering for macOS" = "Native audio metering for macOS";
+"Version %@" = "Version %@";
+"Build %@" = "Build %@";
+"What it measures" = "What it measures";
+"Loudness" = "Loudness";
+"Privacy" = "Privacy";
+"Acknowledgements" = "Acknowledgements";
+"Third-party notices" = "Third-party notices";
+"Third-party notices are included in the packaged app." = "Third-party notices are included in the packaged app.";
+"Copy Version Info" = "Copy Version Info";
+"Live frequency analysis, pitch detection and spectral history." = "Live frequency analysis, pitch detection and spectral history.";
+"LUFS, loudness range and True Peak against your target." = "LUFS, loudness range and True Peak against your target.";
+"Real-time waveforms for each monitored channel." = "Real-time waveforms for each monitored channel.";
+"Channel levels, clipping and correlation, from Mono to 9.1.6." = "Channel levels, clipping and correlation, from Mono to 9.1.6.";
+"Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded.";
+"Spectrogram inspired by AudioSpectrogram. MIT license included." = "Spectrogram inspired by AudioSpectrogram. MIT license included.";
