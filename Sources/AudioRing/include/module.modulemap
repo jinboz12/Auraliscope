@@ -1,0 +1,5 @@
+module AudioRing {
+    header "AudioRing.h"
+    header "CaptureCallback.h"
+    export *
+}
