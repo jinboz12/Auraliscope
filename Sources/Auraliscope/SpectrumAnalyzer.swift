@@ -434,14 +434,17 @@ final class SpectrumAnalyzer {
         return dominantPeak()
     }
 
-    /// Most notes the keyboard lights at once.
+    /// Note slots in each published snapshot (`MeterSnapshot.notes`).
     static let maxNotes = 6
+    /// Most notes the keyboard lights at once: the few that clearly lead, not every partial of a dense mix.
+    static let litNotes = 4
     /// The newest transform's notes (`tonalPeaks`), loudest first.
     private(set) var notes: [(frequency: Float, level: Float)] = []
 
     /// The notes most likely sounding together, from the newest transform: tonal peaks between A0 and C8 (a
-    /// local maximum at least 10 dB above the spectrum 3 to 8 bins either side, so noise and the window's own
-    /// skirt do not count), within 30 dB of the loudest and above −70 dBFS, one per semitone. A peak lying on
+    /// local maximum at least 12 dB above the spectrum 3 to 8 bins either side, so noise and the window's own
+    /// skirt do not count), within 18 dB of the loudest and above −70 dBFS, one per semitone, at most `litNotes`
+    /// of them. A peak lying on
     /// the 2nd to 8th harmonic of a lower note already kept (within 40 cents) and not clearly louder than it is
     /// that note's overtone, not a note of its own. Each frequency is refined like `dominantPeak`.
     private func tonalPeaks() -> [(frequency: Float, level: Float)] {
@@ -465,12 +468,12 @@ final class SpectrumAnalyzer {
                 if bin - offset >= 1 { around += power[bin - offset]; neighbors += 1 }
                 around += power[bin + offset]; neighbors += 1
             }
-            guard level - decibels(around / neighbors) >= 10 else { continue }
+            guard level - decibels(around / neighbors) >= 12 else { continue }
             candidates.append((bin, level))
         }
         guard let loudest = candidates.map(\.level).max() else { return [] }
         var peaks: [(frequency: Float, level: Float)] = candidates
-            .filter { $0.level >= loudest - 30 }
+            .filter { $0.level >= loudest - 18 }
             .sorted { $0.level > $1.level }
             .prefix(16)
             .map { candidate in
@@ -496,7 +499,7 @@ final class SpectrumAnalyzer {
             }
             if !overtone { kept.append(peak) }
         }
-        return Array(kept.sorted { $0.level > $1.level }.prefix(Self.maxNotes))
+        return Array(kept.sorted { $0.level > $1.level }.prefix(Self.litNotes))
     }
 
     /// `notes` packed as `MeterSnapshot.notes`.

@@ -126,13 +126,14 @@ struct SpectrumPanel: View {
                                      onReset: { setStrip(0, size: proxy.size, left: left) })
                             .frame(width: SpectrogramLayout.spectrumGap, height: layout.plot.height)
                             .offset(x: layout.dividerX, y: layout.plot.minY)
+                        // In the waterfall's top corner, clear of the spectrum's frequency labels (the top one
+                        // names the full range) and of the keyboard, in either orientation.
+                        PeakBadge(readouts: model.readouts)
+                            .padding(.top, 6)
+                            .padding(.trailing, 6)
+                            .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
+                            .offset(x: layout.plot.minX, y: layout.plot.minY)
                     }
-                }
-                .overlay(alignment: .topTrailing) {
-                    // Over the spectrum's corner, or the waterfall's when mirrored (clear of the keyboard).
-                    PeakBadge(readouts: model.readouts)
-                        .padding(.top, 8)
-                        .padding(.trailing, left ? 14 + SpectrogramLayout.noteLabels + SpectrogramLayout.keyboardWidth : 14)
                 }
                 .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
@@ -248,7 +249,9 @@ private struct SpectrogramLabels: View {
                     let decade = [100.0, 1_000, 10_000].contains(tick.0)
                     Text(verbatim: tick.1).font(.axis)
                         .foregroundStyle(decade ? Theme.secondary : Theme.tertiary).fixedSize()
-                        .position(x: layout.fullScaleX + (left ? 12 : -12), y: layout.y(frequency: tick.0, sampleRate: sampleRate) - 6)
+                        .position(x: layout.fullScaleX + (left ? 12 : -12),
+                                  y: layout.y(frequency: tick.0, sampleRate: sampleRate)
+                                      + (SpectrogramLayout.isTopEdge(tick.0, sampleRate: sampleRate) ? 7 : -6))
                 }
             }
         }
@@ -283,11 +286,11 @@ private struct PeakKey: View {
             }
             let peak = readouts.values.peak
             let dominant = peak.visible ? Pitch(frequency: Double(peak.frequency))?.midi : nil
-            // The other notes: 30 dB below the loudest is the faintest shown.
-            let notes = readouts.values.notes.notes
-            let loudest = notes.map(\.level).max() ?? -120
+            // The loudest few held notes (`SpectrumAnalyzer.litNotes`), fainter the further below the loudest.
+            let notes = readouts.values.notes.notes.sorted { $0.level > $1.level }.prefix(SpectrumAnalyzer.litNotes)
+            let loudest = notes.first?.level ?? -120
             for note in notes where note.midi != dominant {
-                let strength = Double(max(0, min(1, 1 - (loudest - note.level) / 30)))
+                let strength = Double(max(0, min(1, 1 - (loudest - note.level) / 18)))
                 guard light(note.midi, opacity: 0.35 + 0.4 * strength) else { continue }
                 let y = layout.y(midi: Double(note.midi), sampleRate: sampleRate)
                 let inner = layout.keysInnerX
@@ -1018,10 +1021,13 @@ private struct WaveformLabels: View, Animatable {
                 Text(speaker.displayName(mono: mix.mono))
                     .font(.system(size: lane.height < 18 ? 8 : 10, weight: .semibold).width(.expanded))
                     .foregroundStyle(active ? Theme.laneRGB(speaker).color : Theme.tertiary)
-                    .fixedSize()
-                    .scaleEffect(0.8 + 0.2 * weight)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    // Right-aligned against the lanes, so names of every width end at the same edge.
+                    .frame(width: WaveformLayout.gutter - 8, alignment: .trailing)
+                    .scaleEffect(0.8 + 0.2 * weight, anchor: .trailing)
                     .opacity(dissolve(weight) * (lane.height >= 7 ? 1 : 0))
-                    .position(x: scope.minX - WaveformLayout.gutter / 2 + 1, y: lane.midY)
+                    .position(x: scope.minX - 4 - (WaveformLayout.gutter - 8) / 2, y: lane.midY)
                 if lane.height >= WaveformLayout.labelledLane {
                     ForEach([CGFloat(0.5), -0.5], id: \.self) { amplitude in
                         Text("−6")

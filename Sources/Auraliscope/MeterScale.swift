@@ -340,15 +340,26 @@ struct SpectrogramLayout {
 
     static func frequencyTicks(_ layout: SpectrogramLayout, sampleRate: Double) -> [(Double, String)] {
         let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-        var kept: [(Double, String)] = []
-        // Decades first so 100, 1k and 10k always survive, then the rest where they fit.
+        // The top of the axis is always named (20k at 44.1 kHz and above), so the full range reads at a glance;
+        // its label sits just under the edge (`isTopEdge`).
+        let top = (upper, upper >= 1_000 ? "\(Int((upper / 1_000).rounded()))k" : "\(Int(upper))")
+        var kept: [(Double, String)] = [top]
+        // Decades first so 100, 1k and 10k survive wherever there is room, then the rest where they fit.
         let order = frequencyMarks.filter { [100, 1_000, 10_000].contains($0.0) } + frequencyMarks.filter { ![100, 1_000, 10_000].contains($0.0) }
-        for mark in order where mark.0 <= upper {
+        for mark in order where mark.0 < upper {
             let y = layout.y(frequency: mark.0, sampleRate: sampleRate)
             guard y - 12 > layout.spectrum.minY, y < layout.spectrum.maxY + 1 else { continue }
-            if kept.allSatisfy({ abs(layout.y(frequency: $0.0, sampleRate: sampleRate) - y) >= 13 }) { kept.append(mark) }
+            // The top label hangs below its line, toward the marks under it, so it needs twice the room.
+            if kept.allSatisfy({ abs(layout.y(frequency: $0.0, sampleRate: sampleRate) - y) >= ($0.0 >= upper ? 26 : 13) }) {
+                kept.append(mark)
+            }
         }
         return kept.sorted { $0.0 < $1.0 }
+    }
+
+    /// Whether a tick from `frequencyTicks` is the top of the axis, labelled under its line instead of above it.
+    static func isTopEdge(_ frequency: Double, sampleRate: Double) -> Bool {
+        frequency >= MeterScale.upperFrequency(sampleRate: sampleRate)
     }
 
     /// Spectrum width for a drag that makes the waterfall `waterfall` points wide (before clamping).

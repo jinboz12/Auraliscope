@@ -1,3 +1,25 @@
+# Auraliscope 1.1
+
+The 1.1 release (build 51). It follows the release candidates 1.1rc (build 49) and 1.1 rc 2 (build 50); everything in them below is part of this release.
+
+## Changes since 1.1 rc 2
+
+- **Spectrogram · Spectrum:** the top of the frequency axis is always labelled (20k at 44.1 kHz and above), so the full 20 Hz – 20 kHz range reads at a glance. The peak badge moved to the spectrogram's top corner, clear of the spectrum's labels, in both orientations.
+- **Keyboard:** fewer, clearer notes. It lights at most 4 notes, only peaks within 18 dB of the loudest that stand at least 12 dB above their surroundings.
+- **Waveform:** lane names are right-aligned against the lanes, so names of every width end at the same edge.
+
+## Requirements
+
+Apple Silicon, macOS 13 or later. Output capture requires macOS 14.2 or later and System Audio Recording permission; input capture requires Microphone permission.
+
+## Validation
+
+31 core checks and 301 localization keys in each of three languages pass. The packaged app's code signature, archive and disk image are checked. The changes were checked by snapshots with the demo signal in Stereo and 7.1.4, in both spectrum orientations.
+
+## Distribution notice
+
+`Auraliscope.dmg` (with "Read Me First") and `Auraliscope.zip`, both containing `Auraliscope.app`. Ad hoc signed and not notarized: approve the first launch in System Settings ▸ Privacy & Security (Open Anyway).
+
 # Auraliscope 1.1 rc 2
 
 The second 1.1 release candidate (build 50), a polish pass on 1.1rc (build 49). Everything in 1.1rc below is part of it.
