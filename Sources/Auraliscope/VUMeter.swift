@@ -30,7 +30,7 @@ struct VUMeterPanel: View {
                     .padding(.trailing, 10).padding(.bottom, 7)
             }
             .overlay(alignment: .topLeading) {
-                Eyebrow("VU · ALL CHANNELS", color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
+                Eyebrow("VU · " + L("ALL CHANNELS"), color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
             }
             .overlay(alignment: .bottomLeading) {
                 Text(verbatim: "0 VU = \(MeterScale.signedInteger(reference)) dBFS")
@@ -242,6 +242,8 @@ final class VUNeedleView: NSView {
         guard ticker == nil else { return }
         if #available(macOS 14, *) {
             let link = displayLink(target: self, selector: #selector(tick))
+            // 60 Hz like the canvases, also on a 120 Hz display.
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
             link.add(to: .main, forMode: .common)
             ticker = link
         } else {

@@ -26,7 +26,7 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
 
 /// Owns the two appearance choices, the accent palette and light or dark, and resolves them into `Theme`.
 /// A change resolves the palette once and republishes; the views that drew with the old one are rebuilt by
-/// `.id(signature)`. Nothing in the audio path listens, so metering carries on.
+/// `.id(signature)`, under a cross-fade (`ThemeFade`). Nothing in the audio path listens, so metering carries on.
 @MainActor
 final class ThemeSettings: ObservableObject {
     static let shared = ThemeSettings()
@@ -37,6 +37,8 @@ final class ThemeSettings: ObservableObject {
         didSet {
             guard palette != oldValue else { return }
             UserDefaults.standard.set(palette.rawValue, forKey: Self.paletteKey)
+            DiagnosticLog.event("Color theme: \(palette.rawValue)")
+            ThemeFade.begin()
             resolve()
         }
     }
@@ -44,6 +46,9 @@ final class ThemeSettings: ObservableObject {
         didSet {
             guard mode != oldValue else { return }
             UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey)
+            DiagnosticLog.event("Appearance: \(mode.rawValue)")
+            // Auto may resolve to what is already on screen; only a visible change fades.
+            if effectiveDark(mode, predicting: true) != dark { ThemeFade.begin() }
             applyToAppKit()
             resolve()
         }
@@ -69,6 +74,13 @@ final class ThemeSettings: ObservableObject {
     func attach() {
         applyToAppKit()
         observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            // macOS changed appearance under Auto: start the fade now, before AppKit redraws its controls in the
+            // new appearance, so the old picture it holds is the whole window as it was.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    if let self, self.mode == .system, self.effectiveDark(.system) != self.dark { ThemeFade.begin() }
+                }
+            }
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.resolve() } }
         }
         resolve()
@@ -83,21 +95,49 @@ final class ThemeSettings: ObservableObject {
         }
     }
 
-    private func resolve() {
-        let effective: Bool
+    /// Whether `mode` shows dark: fixed for Light and Dark; for Auto, the app's effective appearance. `predicting`
+    /// answers for a switch to Auto that is not applied yet, while Light or Dark still overrides the app.
+    private func effectiveDark(_ mode: AppearanceMode, predicting: Bool = false) -> Bool {
         switch mode {
-        case .dark: effective = true
-        case .light: effective = false
+        case .dark: return true
+        case .light: return false
         case .system:
-            if let app = NSApp {
-                effective = app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            } else {
-                effective = Theme.systemIsDark
-            }
+            guard let app = NSApp, !(predicting && app.appearance != nil) else { return Theme.systemIsDark }
+            return app.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         }
+    }
+
+    private func resolve() {
+        let effective = effectiveDark(mode)
         guard effective != Theme.style.dark || palette != Theme.style.palette else { return }
         Theme.resolve(palette: palette, dark: effective)
         if dark != effective { dark = effective } else { objectWillChange.send() }
+    }
+}
+
+/// Cross-fades every visible window from the old palette or appearance to the new one.
+///
+/// A Core Animation transition on each window's frame view: the render server keeps the picture as it was and
+/// dissolves it into the live, restyled window, so SwiftUI surfaces, AppKit controls, the toolbar and the Metal
+/// canvases all change together. The transition is committed with the views `.id(signature)` rebuilds, and
+/// starts then (a zero `beginTime` is the commit time), so however long the rebuild takes, the old picture
+/// stays whole until it is done and the fade always runs its full course. Nothing is captured by the app itself,
+/// so no screen-recording permission is involved.
+@MainActor
+enum ThemeFade {
+    static let duration: CFTimeInterval = 0.45
+    private static let key = "auraliscope.themeFade"
+
+    static func begin() {
+        guard let app = NSApp else { return }
+        for window in app.windows where window.isVisible && window.occlusionState.contains(.visible) {
+            guard let layer = (window.contentView?.superview ?? window.contentView)?.layer else { continue }
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = duration
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            layer.add(fade, forKey: key)
+        }
     }
 }
 
@@ -163,17 +203,17 @@ enum Theme {
         var id: String { rawValue }
         var title: String {
             switch self {
-            case .starlight: return "Starlight"
-            case .blossomPink: return "Blossom Pink"
-            case .sage: return "Sage"
-            case .vintageAmber: return "Vintage Amber"
-            case .phosphorGreen: return "Phosphor Green"
-            case .iceBlue: return "Ice Blue"
-            case .electricViolet: return "Electric Violet"
-            case .safetyOrange: return "Safety Orange"
-            case .ocean: return "Ocean & Mist"
-            case .plum: return "Plum & Pearl"
-            case .copper: return "Copper & Linen"
+            case .starlight: return L("Starlight")
+            case .blossomPink: return L("Blossom Pink")
+            case .sage: return L("Sage")
+            case .vintageAmber: return L("Vintage Amber")
+            case .phosphorGreen: return L("Phosphor Green")
+            case .iceBlue: return L("Ice Blue")
+            case .electricViolet: return L("Electric Violet")
+            case .safetyOrange: return L("Safety Orange")
+            case .ocean: return L("Ocean & Mist")
+            case .plum: return L("Plum & Pearl")
+            case .copper: return L("Copper & Linen")
             }
         }
         var hex: UInt32 {
@@ -221,6 +261,7 @@ enum Theme {
         let sand: RGB, heather: RGB, clay: RGB, ochre: RGB, ember: RGB, slate: RGB
         let secondaryOpacity: Double, tertiaryOpacity: Double
         let levelStops: [(db: Float, rgb: RGB)]
+        let correlationStops: [(value: Float, rgb: RGB)]
         let rampStops: [RGB]
 
         init(palette: Palette, dark: Bool) {
@@ -280,6 +321,10 @@ enum Theme {
                 (-4, ochre),
                 (0, ember)
             ]
+            // Correlation colour along its scale, matching `CorrelationZone`: ember out of phase, ochre around 0
+            // (very wide), the accent from moderate correlation to mono. Each zone edge is a short blend, so the
+            // bar's colour moves with the reading instead of switching.
+            correlationStops = [(-1, ember), (-0.15, ember), (-0.05, ochre), (0.2, ochre), (0.4, accent), (1, accent)]
             // Waterfall ramp, compiled into the Metal `rampMap`. Energy always moves away from the well's own
             // lightness (obsidian → accent → cream on dark, paper → accent → ink on light), so loudness reads
             // the same in every hue and both appearances.
@@ -337,6 +382,11 @@ enum Theme {
     static var slate: Color { style.slate.color }
     /// Prominent fills and the tint of native controls.
     static var action: Color { style.action.color }
+    /// Text and symbols on a solid accent fill: white, or the well's ink when the accent is light.
+    static var onAction: Color {
+        let c = style.action
+        return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b > 0.62 ? Color(red: 0.08, green: 0.09, blue: 0.08) : .white
+    }
 
     static var ink: Color { style.ink.color }
     static var secondary: Color { ink.opacity(style.secondaryOpacity) }
@@ -374,6 +424,28 @@ enum Theme {
         return style.ember.simd()
     }
 
+    static var correlationStops: [(value: Float, rgb: RGB)] { style.correlationStops }
+
+    /// Colour of an L/R correlation reading (−1…+1) on the correlation meter's scale.
+    static func correlation(_ value: Float) -> SIMD4<Float> {
+        let stops = style.correlationStops
+        guard value > stops[0].value else { return stops[0].rgb.simd() }
+        for (lower, upper) in zip(stops, stops.dropFirst()) where value <= upper.value {
+            let t = (value - lower.value) / (upper.value - lower.value)
+            return lower.rgb.simd() + (upper.rgb.simd() - lower.rgb.simd()) * t
+        }
+        return stops[stops.count - 1].rgb.simd()
+    }
+
+    /// Type for a correlation zone: its name in the zone's colour, the number in ink unless it warns.
+    static func correlationColor(_ zone: CorrelationZone) -> Color {
+        switch zone {
+        case .outOfPhase: return ember
+        case .wide: return ochre
+        case .stereo, .mono: return sage
+        }
+    }
+
     /// Blend toward the colour's own luma; 0 is grey, 1 leaves it untouched. Alpha is kept.
     static func desaturate(_ color: SIMD4<Float>, _ saturation: Float) -> SIMD4<Float> {
         guard saturation < 1 else { return color }
@@ -392,6 +464,31 @@ enum Theme {
 
     static func groupColor(_ group: SpeakerGroup) -> Color { groupRGB(group).color }
 
+    /// Hue of each `StereoBands` band, warm at the bottom of the spectrum to cool at the top, shared by the
+    /// stereometer's cloud, its legend and the correlation lanes.
+    /// Red, amber, green, blue and violet: five fixed hues, independent of the palette's accent, so they stay apart
+    /// as small dots in every palette. On the light well they are deepened to hold contrast.
+    static func bandRGB(_ band: Int) -> RGB {
+        let hues = [RGB(r: 0.93, g: 0.37, b: 0.33), RGB(r: 0.95, g: 0.69, b: 0.26), RGB(r: 0.42, g: 0.79, b: 0.46),
+                    RGB(r: 0.37, g: 0.63, b: 0.96), RGB(r: 0.73, g: 0.51, b: 0.96)]
+        let hue = hues[max(0, min(hues.count - 1, band))]
+        return dark ? hue : hue.legible(on: displayRGB, ratio: 4)
+    }
+
+    static func bandColor(_ band: Int) -> Color { bandRGB(band).color }
+
+    /// A band group's hue at a resolution: the five band hues; red, green and blue for three bands; the accent
+    /// for the single overall reading.
+    static func bandRGB(_ resolution: StereoBands.Resolution, _ group: Int) -> RGB {
+        switch resolution {
+        case .five: return bandRGB(group)
+        case .three: return bandRGB([0, 2, 3][max(0, min(2, group))])
+        case .overall: return dark ? sageRGB : sageRGB.legible(on: displayRGB, ratio: 4)
+        }
+    }
+
+    static func bandColor(_ resolution: StereoBands.Resolution, _ group: Int) -> Color { bandRGB(resolution, group).color }
+
     /// Waveform lane ink: left-side channels in the accent, right-side in sand, centre between them,
     /// LFE in clay and the upper layer in heather (warmer on the right), so lanes read apart by hue.
     static func laneRGB(_ speaker: Speaker) -> RGB {
@@ -407,6 +504,18 @@ enum Theme {
     }
 
     static var rampStops: [RGB] { style.rampStops }
+
+    /// The waterfall shader's colour for a level (its `rampMap` after the −90…−12 dB curve), so the live spectrum
+    /// can wear the same colours as the waterfall's newest column.
+    static func ramp(decibels db: Float) -> RGB {
+        var x = pow(max(0, min(1, (db + 90) / 78)), 1.6)
+        x += (x * x * (3 - 2 * x) - x) * 0.6
+        let stops = rampStops
+        let scaled = x * Float(stops.count - 1)
+        let index = min(Int(scaled), stops.count - 2)
+        let t = scaled - Float(index)
+        return stops[index].mixed(with: stops[index + 1], amount: t * t * (3 - 2 * t))
+    }
 
     // Soft dashboard card and recessed plot radii.
     static let cardRadius: CGFloat = 18
@@ -440,7 +549,7 @@ struct Eyebrow: View {
         self.color = color
     }
     var body: some View {
-        Text(text).font(.eyebrow).tracking(Tracking.eyebrow).foregroundStyle(color).lineLimit(1)
+        Text(text).font(.eyebrow).tracking(Localizer.shared.tracking(Tracking.eyebrow)).foregroundStyle(color).lineLimit(1)
     }
 }
 
@@ -467,12 +576,20 @@ extension View {
         }
     }
 
+    /// A round icon button in the system's glass style (bordered before macOS 26; round from macOS 14).
+    @ViewBuilder
+    func glassIconButton() -> some View {
+        if #available(macOS 14, *) { glassButton().buttonBorderShape(.circle) } else { glassButton() }
+    }
+
     /// The system's glass button style on macOS 26 (`prominent`: tinted with the accent), the bordered styles
     /// before it.
     @ViewBuilder
     func glassButton(prominent: Bool = false) -> some View {
         if #available(macOS 26, *) {
-            if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass) }
+            // A plain glass button is the system's untinted glass: the window's accent tint would otherwise colour
+            // its glass and make it read as the prominent one.
+            if prominent { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.glass).tint(nil) }
         } else {
             if prominent { self.buttonStyle(.borderedProminent) } else { self.buttonStyle(.bordered) }
         }

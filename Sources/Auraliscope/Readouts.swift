@@ -14,8 +14,16 @@ final class Readouts: ObservableObject {
         var heldPeaks = [Float](repeating: 0, count: Role.count)
         /// Highest true peak (any role) since the last reset, linear.
         var heldTruePeak: Float = 0
+        /// Highest true peak per role since the last reset, linear: above 1 the channel went over 0 dBTP.
+        var heldTruePeaks = [Float](repeating: 0, count: Role.count)
         /// L/R correlation, smoothed for reading; `MeterSnapshot.noCorrelation` in silence.
         var correlation: Float = MeterSnapshot.noCorrelation
+        /// Per `StereoBands` band, smoothed the same way; `noCorrelation` while a band is silent.
+        var bandCorrelation = [Float](repeating: MeterSnapshot.noCorrelation, count: StereoBands.groups.count)
+        /// What the correlation means (with hysteresis, so the name holds steady); nil in silence.
+        var correlationZone: CorrelationZone?
+        /// Level change of L+R summed to mono, dB (`MeterScale.monoFoldDown`), smoothed; nil in silence.
+        var monoFoldDown: Float?
         /// Power sum of every routed role except LFE, dBFS: the VU readout's number.
         var programmeLevel: Float = -120
         var elapsed: TimeInterval = 0
@@ -23,6 +31,8 @@ final class Readouts: ObservableObject {
         var shortHistory: [Float] = []
         var momentaryHistory: [Float] = []
         var peak = PeakTracker()
+        /// Every note the keyboard lights (the dominant one is `peak`).
+        var notes = NoteHolds()
 
         var maxPeak: Float { heldPeaks.max() ?? 0 }
         var truePeakDecibels: Float { MeterScale.decibels(heldTruePeak) }
@@ -53,6 +63,19 @@ final class Readouts: ObservableObject {
     func reset() {
         latest = Values()
         values = latest
+        truePeakGrace = 0
+    }
+
+    /// Ticks left in which a snapshot's held true peaks may predate a true-peak reset (the DSP clears its own
+    /// within a tick).
+    private var truePeakGrace = 0
+
+    /// Clears the held true peaks alone: the TRUE PEAK reading and every channel's over.
+    func resetTruePeak() {
+        latest.heldTruePeak = 0
+        latest.heldTruePeaks = Array(repeating: 0, count: Role.count)
+        truePeakGrace = 2
+        values = latest
     }
 
     /// Hidden, minimised or covered by a full-screen app: re-rendering the readouts would be wasted work.
@@ -67,6 +90,7 @@ final class Readouts: ObservableObject {
         model.refreshDroppedFrames()
         guard model.running else {
             if latest.peak.visible { latest.peak.reset() }
+            if !latest.notes.notes.isEmpty { latest.notes.reset() }
             publish()
             return
         }
@@ -80,19 +104,43 @@ final class Readouts: ObservableObject {
         let routed = model.routedRoles
         // The DSP keeps the maxima since the stream started, so peaks in snapshots this 10 Hz tick never
         // sampled still count.
+        // The DSP's held true peak already includes the sample peaks, so a true-peak reset is not undone by the
+        // held sample peak.
+        let held = truePeakGrace == 0
+        if truePeakGrace > 0 { truePeakGrace -= 1 }
         for role in 0..<Role.count where routed[role] {
             next.heldPeaks[role] = max(next.heldPeaks[role], snapshot.channelPeaks[role], snapshot.heldPeaks[role])
-            next.heldTruePeak = max(next.heldTruePeak, snapshot.channelTruePeaks[role], snapshot.channelPeaks[role],
-                                    snapshot.heldTruePeaks[role], snapshot.heldPeaks[role])
+            next.heldTruePeaks[role] = max(next.heldTruePeaks[role], snapshot.channelTruePeaks[role], snapshot.channelPeaks[role],
+                                           held ? snapshot.heldTruePeaks[role] : 0)
+            next.heldTruePeak = max(next.heldTruePeak, next.heldTruePeaks[role])
         }
+        // The DSP integrates correlation already; this only steadies the hundredths between 10 Hz samples.
         if snapshot.correlation == MeterSnapshot.noCorrelation || next.correlation == MeterSnapshot.noCorrelation {
             next.correlation = snapshot.correlation
         } else {
-            next.correlation += (snapshot.correlation - next.correlation) * 0.35
+            next.correlation += (snapshot.correlation - next.correlation) * 0.5
+        }
+        for band in 0..<StereoBands.groups.count {
+            let target = snapshot.bandCorrelation[band]
+            if target == MeterSnapshot.noCorrelation || next.bandCorrelation[band] == MeterSnapshot.noCorrelation {
+                next.bandCorrelation[band] = target
+            } else {
+                next.bandCorrelation[band] += (target - next.bandCorrelation[band]) * 0.5
+            }
+        }
+        next.correlationZone = next.correlation == MeterSnapshot.noCorrelation ? nil
+            : CorrelationZone(next.correlation, previous: next.correlationZone)
+        let foldDown = MeterScale.monoFoldDown(correlation: next.correlation, left: snapshot.channelRMS[Role.left],
+                                               right: snapshot.channelRMS[Role.right])
+        if let foldDown, let previous = next.monoFoldDown {
+            next.monoFoldDown = previous + (foldDown - previous) * 0.5
+        } else {
+            next.monoFoldDown = foldDown
         }
         next.programmeLevel = VUScale.aggregate(rms: snapshot.channelRMS, roles: routed)
         next.elapsed = model.captureStarted.map { Date().timeIntervalSince($0) } ?? 0
         next.peak.update(frequency: snapshot.peakFrequency, level: snapshot.peakLevel, deltaTime: 1 / Self.rate)
+        next.notes.update(snapshot.notes, deltaTime: 1 / Self.rate)
         next.shortHistory.append(snapshot.shortLUFS)
         next.momentaryHistory.append(snapshot.momentaryLUFS)
         if next.shortHistory.count > Self.historyLength {

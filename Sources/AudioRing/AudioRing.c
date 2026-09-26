@@ -80,6 +80,7 @@ struct MeterExchange {
     unsigned consumer;
     _Atomic unsigned shared;
     _Atomic int mode;
+    _Atomic unsigned true_peak_resets;
 };
 
 MeterExchange *meter_exchange_create(void) {
@@ -99,6 +100,14 @@ void meter_exchange_set_mode(MeterExchange *exchange, int mode) {
 
 int meter_exchange_mode(MeterExchange *exchange) {
     return atomic_load_explicit(&exchange->mode, memory_order_relaxed);
+}
+
+void meter_exchange_reset_true_peaks(MeterExchange *exchange) {
+    atomic_fetch_add_explicit(&exchange->true_peak_resets, 1u, memory_order_relaxed);
+}
+
+unsigned meter_exchange_true_peak_resets(MeterExchange *exchange) {
+    return atomic_load_explicit(&exchange->true_peak_resets, memory_order_relaxed);
 }
 
 void meter_exchange_publish(MeterExchange *exchange, const float *values) {

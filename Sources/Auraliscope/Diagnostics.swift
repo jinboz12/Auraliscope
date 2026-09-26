@@ -12,16 +12,29 @@ enum Diagnostics {
     static let demo = CommandLine.arguments.contains("--demo") || snapshotRequested
     static let snapshotRequested = CommandLine.arguments.contains("--snapshot")
     static let showSettings = CommandLine.arguments.contains("--show-settings")
+    /// `--settings-apply <language>`: with `--show-settings`, stages that language and Light appearance in Settings
+    /// one second after it opens, presses Apply two seconds later (unless `--settings-stage-only`), then prints
+    /// the outcome and the menu bar, so the Apply flow can be checked in a snapshot.
+    static let settingsApply: AppLanguage? = CommandLine.arguments.firstIndex(of: "--settings-apply")
+        .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? AppLanguage(rawValue: CommandLine.arguments[$0 + 1]) : nil }
+    static let settingsStageOnly = CommandLine.arguments.contains("--settings-stage-only")
+    /// `--settings-preview`: stages Light and the spectrum on the left, previews, then reverts, printing each state.
+    static let settingsPreview = CommandLine.arguments.contains("--settings-preview")
     static let showWelcome = CommandLine.arguments.contains("--show-welcome")
     static let showAbout = CommandLine.arguments.contains("--show-about")
     /// Toggles the meter window into full screen and back, printing the result of each step, then quits.
     static let testFullScreen = CommandLine.arguments.contains("--test-full-screen")
+    /// With `--snapshot`: enters full screen first, then captures the whole screen area of this app's windows
+    /// (the full-screen toolbar is a window of its own), to review the full-screen arrangement.
+    static let snapshotFullScreen = CommandLine.arguments.contains("--snapshot-full-screen")
     static var snapshotSize: CGSize? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--snapshot-size"), index + 1 < arguments.count else { return nil }
         let parts = arguments[index + 1].split(separator: "x").compactMap { Double($0) }
         return parts.count == 2 ? CGSize(width: parts[0], height: parts[1]) : nil
     }
+    /// `--preview-stereo` draws `--render-preview` in Stereo instead of the layout's Spatial view.
+    static let previewStereo = CommandLine.arguments.contains("--preview-stereo")
     /// `--preview-layout 7.1.4` picks the layout drawn by `--render-preview`.
     static var previewLayout: SpeakerLayout {
         let arguments = CommandLine.arguments
@@ -41,6 +54,9 @@ enum Diagnostics {
     }
 
     static func runIfRequested() {
+        if CommandLine.arguments.contains("--test-peak-reset") {
+            exit(SoundstageScene.checkPeakReset() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--render-preview") {
             do {
                 let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")
@@ -112,9 +128,9 @@ enum Diagnostics {
             func poll() {
                 if window.styleMask.contains(.fullScreen) == target || Date() > deadline {
                     report(step)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: next)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { next() }
                 } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: poll)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { poll() }
                 }
             }
             poll()
@@ -133,6 +149,36 @@ enum Diagnostics {
         }
     }
 
+    private static var themeSwitchStarted = false
+
+    /// `--test-theme-switch`: moves the meter window, switches Light/Dark twice and prints the window frame after
+    /// each step; the frame must stay where it was moved. Restores the frame, then quits.
+    @MainActor
+    static func testThemeSwitchIfRequested(_ window: NSWindow) {
+        guard CommandLine.arguments.contains("--test-theme-switch"), !themeSwitchStarted else { return }
+        themeSwitchStarted = true
+        let original = window.frame
+        func report(_ step: String) {
+            let frame = MainWindow.window?.frame ?? .zero
+            print(String(format: "[%@] x=%.0f y=%.0f w=%.0f h=%.0f", step, frame.minX, frame.minY, frame.width, frame.height))
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            window.setFrame(original.offsetBy(dx: 60, dy: -40), display: true)
+            report("moved")
+            ThemeSettings.shared.toggle()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                report("after switch")
+                ThemeSettings.shared.toggle()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    report("after switch back")
+                    MainWindow.window?.setFrame(original, display: true)
+                    exit(0)
+                }
+            }
+        }
+    }
+
     /// Captures this app's own window (no screen-recording permission needed) and exits.
     @MainActor
     static func captureWindowIfRequested(_ window: NSWindow) {
@@ -141,14 +187,22 @@ enum Diagnostics {
         fflush(stdout)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             if let size = snapshotSize { window.setContentSize(size) }
+            if snapshotFullScreen { MainWindow.toggleFullScreen() }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+        // `--snapshot-band-switch`: switches both band settings 0.25 s before the capture, to catch the morph.
+        if CommandLine.arguments.contains("--snapshot-band-switch") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (snapshotFullScreen ? 7.75 : 5.75)) {
+                UserDefaults.standard.set(StereoBands.Resolution.overall.rawValue, forKey: "soundstage.bands")
+                UserDefaults.standard.set(StereoBands.Resolution.three.rawValue, forKey: "levels.bands")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (snapshotFullScreen ? 8 : 6)) {
             print("capturing window \(window.windowNumber)")
             fflush(stdout)
             let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-window.png")
             // The welcome sheet has its own window; capture the screen area of the meter window to include it.
             let image: CGImage?
-            if showWelcome, let screen = NSScreen.screens.first {
+            if showWelcome || snapshotFullScreen, let screen = NSScreen.screens.first {
                 let frame = window.frame
                 let rect = CGRect(x: frame.minX, y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
                 image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
@@ -221,6 +275,7 @@ enum Diagnostics {
     }
 
     private static var appearanceSwitchStarted = false
+    private static var themeFadeStarted = false
     private static var systemAppearanceSwitchStarted = false
     private static var deviceSourceSelectionStarted = false
 
@@ -357,6 +412,86 @@ enum Diagnostics {
             }
         }
     }
+
+    /// `--test-theme-fade`: flips Light ↔ Dark from the toolbar's action, then captures the meter window at points
+    /// through the cross-fade (`ThemeFade`) from a background queue, so the captures never hold up the rebuild they
+    /// are watching. Writes `Auraliscope-fade-<ms>.png` to the temporary directory, restores the saved choice, quits.
+    @MainActor
+    static func testThemeFadeIfRequested() {
+        guard CommandLine.arguments.contains("--test-theme-fade"), !themeFadeStarted else { return }
+        themeFadeStarted = true
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[ThemeSettings.modeKey]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            guard let window = MainWindow.window else { exit(1) }
+            let id = CGWindowID(window.windowNumber)
+            let directory = FileManager.default.temporaryDirectory
+            let offsets = [0, 100, 170, 240, 310, 380, 450, 700]
+            let start = DispatchTime.now()
+            // When the main thread next goes idle, the rebuild has been committed.
+            let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, Int.max) { observer, _ in
+                print(String(format: "main thread idle after %.1f ms", Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6))
+                fflush(stdout)
+                CFRunLoopObserverInvalidate(observer)
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+            ThemeSettings.shared.toggle()
+            let rebuilt = DispatchTime.now()
+            print(String(format: "toggle returned after %.1f ms", Double(rebuilt.uptimeNanoseconds - start.uptimeNanoseconds) / 1e6))
+            fflush(stdout)
+            DispatchQueue.global(qos: .userInteractive).async {
+                for offset in offsets {
+                    let due = start + .milliseconds(offset)
+                    while DispatchTime.now() < due { usleep(500) }
+                    let taken = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e6
+                    guard let image = CGWindowListCreateImage(.null, .optionIncludingWindow, id, [.boundsIgnoreFraming, .nominalResolution]) else { continue }
+                    let url = directory.appendingPathComponent(String(format: "Auraliscope-fade-%03d.png", offset))
+                    if let output = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                        CGImageDestinationAddImage(output, image, nil)
+                        CGImageDestinationFinalize(output)
+                    }
+                    print(String(format: "%@ (taken at %.0f ms)", url.path, taken))
+                    fflush(stdout)
+                }
+                DispatchQueue.main.async {
+                    if let saved { UserDefaults.standard.set(saved, forKey: ThemeSettings.modeKey) }
+                    else { UserDefaults.standard.removeObject(forKey: ThemeSettings.modeKey) }
+                    exit(0)
+                }
+            }
+        }
+    }
+
+    /// `--benchmark-theme-switch`: flips Light ↔ Dark 20 times, 0.7 s apart, and prints how long the main thread
+    /// was busy with each switch (from the toggle until it next goes idle), then the median. Restores the saved
+    /// choice and quits.
+    @MainActor
+    static func benchmarkThemeSwitchIfRequested() {
+        guard CommandLine.arguments.contains("--benchmark-theme-switch"), !themeSwitchBenchmarkStarted else { return }
+        themeSwitchBenchmarkStarted = true
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[ThemeSettings.modeKey]
+        var busy: [Double] = []
+        func run(_ remaining: Int) {
+            guard remaining > 0 else {
+                let sorted = busy.sorted()
+                print(String(format: "theme switch: median %.1f ms, min %.1f ms, max %.1f ms over %d switches",
+                             sorted[sorted.count / 2], sorted.first ?? 0, sorted.last ?? 0, sorted.count))
+                fflush(stdout)
+                if let saved { UserDefaults.standard.set(saved, forKey: ThemeSettings.modeKey) }
+                else { UserDefaults.standard.removeObject(forKey: ThemeSettings.modeKey) }
+                exit(0)
+            }
+            let start = CACurrentMediaTime()
+            let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, Int.max) { observer, _ in
+                busy.append((CACurrentMediaTime() - start) * 1000)
+                CFRunLoopObserverInvalidate(observer)
+            }
+            CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+            ThemeSettings.shared.toggle()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { run(remaining - 1) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { run(20) }
+    }
+    private static var themeSwitchBenchmarkStarted = false
 
     /// Prints the menu bar, so a diagnostic run can confirm what AppKit and SwiftUI merged into it.
     @MainActor

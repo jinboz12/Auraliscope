@@ -38,8 +38,10 @@ uint64_t channel_ring_dropped(const ChannelRing *ring);
 typedef struct MeterExchange MeterExchange;
 // 64 spectrum bins, 16 peaks, 16 RMS, 16 true peaks, 16 held peaks, 16 held true peaks, 12 scalars (3 LUFS,
 // loudness range, frame sequence, stream identity, dominant peak (2), detected format, waveform serial,
-// L/R correlation, spectrogram serial), 512 spectrogram rows, then 64 waveform columns × 16 roles × (min, max).
-#define METER_SNAPSHOT_FLOATS 2716
+// L/R correlation, spectrogram serial), 512 spectrogram rows, 9 band groups (5 bands, 3, overall) ×
+// (correlation, width, balance, level), 5 stereo bands × 128 (L, R) stereometer points, 16 roles × 5 band mean squares, then 64 waveform
+// columns × 16 roles × (min, max).
+#define METER_SNAPSHOT_FLOATS 4124
 MeterExchange *meter_exchange_create(void);
 void meter_exchange_destroy(MeterExchange *exchange);
 void meter_exchange_publish(MeterExchange *exchange, const float *values);
@@ -47,5 +49,8 @@ int meter_exchange_read(MeterExchange *exchange, float *values);
 // A small setting the UI hands to the DSP queue without a lock (1 = spatial spectrum).
 void meter_exchange_set_mode(MeterExchange *exchange, int mode);
 int meter_exchange_mode(MeterExchange *exchange);
+// Counts requests from the UI to clear the held true peaks; the DSP queue compares it with the last count it saw.
+void meter_exchange_reset_true_peaks(MeterExchange *exchange);
+unsigned meter_exchange_true_peak_resets(MeterExchange *exchange);
 
 #endif

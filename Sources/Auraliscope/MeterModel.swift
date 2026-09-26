@@ -22,6 +22,7 @@ final class DSPWorker {
         var values = [Float](repeating: 0, count: Int(METER_SNAPSHOT_FLOATS))
         var receivedPCM = false
         var receivedSignal = false
+        var truePeakResets: UInt32 = 0
         source.schedule(deadline: .now(), repeating: .nanoseconds(Int(1_000_000_000 / MeterPipeline.tickRate)), leeway: .milliseconds(1))
         source.setEventHandler {
             batch.withUnsafeMutableBufferPointer { buffer in
@@ -38,6 +39,11 @@ final class DSPWorker {
                 }
             }
             pipeline.spatialSpectrum = meter_exchange_mode(exchange) != 0
+            let resets = meter_exchange_true_peak_resets(exchange)
+            if resets != truePeakResets {
+                truePeakResets = resets
+                pipeline.resetTruePeaks()
+            }
             values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: CACurrentMediaTime()) }
             if !receivedSignal && pipeline.newestPeak > 0.000001 {
                 Diagnostics.log("Nonzero audio signal confirmed")
@@ -48,6 +54,9 @@ final class DSPWorker {
         timer = source
         source.resume()
     }
+
+    /// Asks the DSP queue to clear its held true peaks before its next snapshot.
+    func resetTruePeaks() { meter_exchange_reset_true_peaks(exchange) }
 
     /// Spatial monitoring: spectrum and waterfall sum every routed channel.
     func setSpatialSpectrum(_ spatial: Bool) { meter_exchange_set_mode(exchange, spatial ? 1 : 0) }
@@ -78,8 +87,15 @@ final class DSPWorker {
         s.streamID = v[SnapshotSlots.stream]
         s.peakFrequency = v[SnapshotSlots.peakFrequency]
         s.peakLevel = v[SnapshotSlots.peakLevel]
+        s.notes = Array(v[SnapshotSlots.notes..<(SnapshotSlots.notes + 2 * SpectrumAnalyzer.maxNotes)])
         s.detectedFormat = v[SnapshotSlots.format]
         s.correlation = v[SnapshotSlots.correlation]
+        s.bandCorrelation = Array(v[SnapshotSlots.bandCorrelation..<(SnapshotSlots.bandCorrelation + StereoBands.groups.count)])
+        s.bandWidth = Array(v[SnapshotSlots.bandWidth..<(SnapshotSlots.bandWidth + StereoBands.groups.count)])
+        s.bandBalance = Array(v[SnapshotSlots.bandBalance..<(SnapshotSlots.bandBalance + StereoBands.groups.count)])
+        s.bandLevel = Array(v[SnapshotSlots.bandLevel..<(SnapshotSlots.bandLevel + StereoBands.groups.count)])
+        s.roleBandPower = Array(v[SnapshotSlots.roleBandPower..<(SnapshotSlots.roleBandPower + StereoBands.roleFloats)])
+        s.bandPoints = Array(v[SnapshotSlots.bandPoints..<(SnapshotSlots.bandPoints + StereoBands.scopeFloats)])
         s.waveSerial = v[SnapshotSlots.waveSerial]
         s.spectrogram = Array(v[SnapshotSlots.spectrogram..<(SnapshotSlots.spectrogram + MeterSnapshot.spectrogramBandCount)])
         s.waveform = Array(v[SnapshotSlots.waveform..<SnapshotSlots.total])
@@ -164,6 +180,16 @@ enum MeterStatus: Equatable {
         case let .failure(message): return message.text
         }
     }
+
+    /// The status for the diagnostic log, in English whatever the interface language (a failure keeps its text).
+    var logDescription: String {
+        switch self {
+        case let .capturing(device, output, channels, layout):
+            return "Capturing \(output ? "output" : "input") \"\(device)\" · \(channels) ch → \(layout)"
+        case let .failure(message): return "Error: \(message.text)"
+        default: return "Status: \(self)"
+        }
+    }
 }
 
 /// A failure reported in the status line, rendered on demand in the current language.
@@ -190,6 +216,7 @@ final class MeterModel: ObservableObject {
         didSet {
             guard speakerLayout != oldValue else { return }
             UserDefaults.standard.set(speakerLayout.rawValue, forKey: "speakerLayout")
+            DiagnosticLog.event("Speaker layout: \(speakerLayout.name)")
             loadAssignment()
             if demoStart != nil {
                 activeRoles = (0..<Role.count).map(speakerLayout.contains)
@@ -202,7 +229,9 @@ final class MeterModel: ObservableObject {
     @Published private(set) var devices: [InputDevice] = []
     @Published private(set) var selectedID = SourceID.none
     private var snapshot = MeterSnapshot()
-    @Published private(set) var status = MeterStatus.chooseInput
+    @Published private(set) var status = MeterStatus.chooseInput {
+        didSet { if status != oldValue { DiagnosticLog.event(status.logDescription) } }
+    }
     @Published private(set) var running = false
     @Published private(set) var sampleRate: Double = 48_000
     @Published private(set) var droppedFrames: UInt64 = 0
@@ -212,6 +241,7 @@ final class MeterModel: ObservableObject {
     @Published var formatMode: FormatMode {
         didSet {
             UserDefaults.standard.set(formatMode.rawValue, forKey: "formatMode")
+            if formatMode != oldValue { DiagnosticLog.event("Monitoring mode: \(formatMode.rawValue)") }
             // Mono measures a single input, so entering or leaving it restarts the stream (like a routing change).
             let wasMono = (oldValue.fixed ?? automaticFormat) == .mono
             if wasMono != (format == .mono) && wantsCapture && running && demoStart == nil { restart() }
@@ -219,6 +249,25 @@ final class MeterModel: ObservableObject {
     }
     @Published private(set) var detectedFormat = ChannelFormat.stereo
     var format: ChannelFormat { formatMode.fixed ?? automaticFormat }
+
+    /// Mono is rarely needed, so it is off until turned on in Settings ▸ Channels: while off it is left out of the
+    /// mode selector, the menus and Auto, and a pinned Mono falls back to Stereo.
+    @Published var monoEnabled: Bool {
+        didSet {
+            guard monoEnabled != oldValue else { return }
+            UserDefaults.standard.set(monoEnabled, forKey: "showMonoMode")
+            DiagnosticLog.event("Show Mono mode: \(monoEnabled ? "on" : "off")")
+            if !monoEnabled && formatMode == .mono {
+                formatMode = .stereo
+            } else if formatMode == .auto && loneInput && wantsCapture && running {
+                // Auto on a lone input switches between Mono and Stereo, which measure different inputs.
+                restart()
+            }
+        }
+    }
+    /// The monitoring modes offered, in selector order.
+    var availableModes: [FormatMode] { FormatMode.allCases.filter { monoEnabled || $0 != .mono } }
+    var selectorFormats: [ChannelFormat] { ChannelFormat.selectorOrder.filter { monoEnabled || $0 != .mono } }
 
     /// Loudness standard of Stereo (and Mono) and of Spatial. Every loudness reference (gauge, delta, history
     /// band, VU alignment, true-peak ceiling) follows the one for the current format, so switching format,
@@ -260,18 +309,37 @@ final class MeterModel: ObservableObject {
         defaults.set(spatialCeiling, forKey: "truePeakCeiling.spatial")
     }
 
-    /// Auto: a lone routed input (L on, R and every positional channel off) is Mono; otherwise the detector decides.
-    var automaticFormat: ChannelFormat {
-        let lone = demoStart == nil && sourceForRole[Role.left] >= 0 && sourceForRole[Role.right] < 0
+    /// Auto: a lone routed input (L on, R and every positional channel off) is Mono when Mono is enabled;
+    /// otherwise the detector decides.
+    var automaticFormat: ChannelFormat { monoEnabled && loneInput ? .mono : detectedFormat }
+
+    /// L routed with R and every positional channel off (never in the demo).
+    private var loneInput: Bool {
+        demoStart == nil && sourceForRole[Role.left] >= 0 && sourceForRole[Role.right] < 0
             && !Role.evidence.contains { sourceForRole[$0] >= 0 }
-        return lone ? .mono : detectedFormat
     }
 
     /// Clicking a mode pins it; the AUTO toggle hands control back to the detector.
     func pin(_ format: ChannelFormat) { formatMode = FormatMode(format) }
     func toggleAuto() { formatMode = formatMode == .auto ? FormatMode(format) : .auto }
+    /// Width of the Spectrum card's live spectrum, dragged by its divider; 0 is automatic. Plain (not published):
+    /// the card's own `@AppStorage` redraws its labels, and the canvases read it every frame.
+    var spectrumStrip = CGFloat(UserDefaults.standard.double(forKey: "layout.spectrumStrip"))
+    /// Band resolution chosen on the Soundstage and Channel Levels panels (their switchers write it together with
+    /// their own `@AppStorage`); plain, read by the canvases every frame.
+    var stageBands = MeterModel.storedBands("soundstage.bands")
+    var levelsBands = MeterModel.storedBands("levels.bands")
+    /// The stereometer's style, chosen on the Soundstage header; plain, like the band resolutions.
+    var stageStyle = StageStyle.stored
+    /// Spectrum side, peak holds and waveform span, chosen in Settings › Panels.
+    var displayOptions = DisplayOptions.stored
+    static func storedBands(_ key: String) -> StereoBands.Resolution {
+        StereoBands.Resolution(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .five
+    }
+    private var bandsObserver: NSObjectProtocol?
     private(set) var captureStarted: Date?
     private(set) var captureChannels = 0
+    private var lastDropLog = Date.distantPast
     let readouts = Readouts()
 
     private let capture = AudioCapture()
@@ -293,26 +361,47 @@ final class MeterModel: ObservableObject {
     init() {
         speakerLayout = UserDefaults.standard.string(forKey: "speakerLayout").flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
         let savedMode = UserDefaults.standard.string(forKey: "formatMode")
-        // 2.0 stored the pinned multichannel mode as "surround".
-        formatMode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
+        let showMono = UserDefaults.standard.bool(forKey: "showMonoMode")
+        monoEnabled = showMono
+        // 2.0 stored the pinned multichannel mode as "surround". A pinned Mono needs Mono enabled.
+        let mode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
+        formatMode = mode == .mono && !showMono ? .stereo : mode
         devices = AudioDevices.availableSources()
-        let defaultID = AudioDevices.defaultInputID()
         let savedUID = UserDefaults.standard.string(forKey: "inputDeviceUID")
         let savedOutput = UserDefaults.standard.bool(forKey: "inputDeviceIsOutput")
         let requested = devices.first { !$0.output && $0.device == Diagnostics.requestedDeviceID }
+        // Launch meters the current macOS default output, what the Mac is playing. Before macOS 14.2 (no output
+        // capture) it takes the default input instead; the saved device is the fallback when there is no default.
+        let outputID = AudioDevices.defaultDeviceID(output: true)
+        let inputID = AudioDevices.defaultDeviceID(output: false)
+        let systemDefault = devices.first { $0.output && $0.device == outputID }
+            ?? devices.first { !$0.output && $0.device == inputID }
         let saved = devices.first { !$0.uid.isEmpty && $0.uid == savedUID && $0.output == savedOutput }
-        let systemDefault = devices.first { !$0.output && $0.device == defaultID }
         if let requested {
             selectedID = requested.id
-        } else if savedUID != nil {
-            // An explicit empty UID means "no device". A missing saved device waits for that same source
-            // to return instead of silently switching the meter to another input or output.
-            selectedID = saved?.id ?? (savedOutput ? .noOutput : .none)
+        } else if savedUID == "" {
+            // An explicit empty UID means the person chose "no device"; that choice is kept.
+            selectedID = savedOutput ? .noOutput : .none
         } else {
-            selectedID = (systemDefault ?? devices.first)?.id ?? .none
+            selectedID = (systemDefault ?? saved ?? devices.first)?.id ?? .none
         }
         loadAssignment()
         readouts.attach(to: self)
+        // The band switches write user defaults; follow them so every writer (the switches, a defaults change)
+        // reaches the canvases.
+        bandsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let stage = Self.storedBands("soundstage.bands"), levels = Self.storedBands("levels.bands")
+                if stage != self.stageBands { self.stageBands = stage }
+                if levels != self.levelsBands { self.levelsBands = levels }
+                let style = StageStyle.stored
+                if style != self.stageStyle { self.stageStyle = style }
+                let options = DisplayOptions.stored
+                if options != self.displayOptions { self.displayOptions = options }
+            }
+        }
         hardwareObserver = HardwareObserver(devicesChanged: { [weak self] in
             Task { @MainActor in self?.refreshDevices() }
         }, configurationChanged: { [weak self] in
@@ -346,7 +435,9 @@ final class MeterModel: ObservableObject {
         worker?.setSpatialSpectrum(format == .spatial)
         return CanvasFrame(snapshot: pollSnapshot(), sampleRate: sampleRate, running: running,
                     activeRoles: routedRoles, epoch: epoch, spatial: format == .spatial, mono: format == .mono,
-                    layout: speakerLayout)
+                    layout: speakerLayout, spectrumStrip: spectrumStrip, truePeakEpoch: truePeakEpoch,
+                    stageBands: stageBands, levelsBands: levelsBands, stageStyle: stageStyle,
+                    options: displayOptions)
     }
 
     /// Roles that carry signal: routed and part of the current layout. Mono keeps only the input routed to L.
@@ -364,6 +455,7 @@ final class MeterModel: ObservableObject {
         let detected = ChannelFormat(rawValue: Int(snapshot.detectedFormat)) ?? .stereo
         guard detected != detectedFormat else { return }
         detectedFormat = detected
+        DiagnosticLog.event("Detected format: \(detected == .spatial ? "Immersive" : "Stereo")")
         Diagnostics.log("Detected format: \(detected == .spatial ? "spatial" : "stereo")")
     }
 
@@ -376,7 +468,15 @@ final class MeterModel: ObservableObject {
     /// Called at the readout rate rather than per frame.
     func refreshDroppedFrames() {
         let dropped = capture.map { channel_ring_dropped($0.ring) } ?? 0
-        if dropped != droppedFrames { droppedFrames = dropped }
+        if dropped != droppedFrames {
+            droppedFrames = dropped
+            // At most one line every 10 s, however often the count grows.
+            let now = Date()
+            if dropped > 0 && now.timeIntervalSince(lastDropLog) >= 10 {
+                lastDropLog = now
+                DiagnosticLog.event("Dropped audio frames: \(dropped) since capture started")
+            }
+        }
     }
 
     func resetMeasurements() {
@@ -385,16 +485,34 @@ final class MeterModel: ObservableObject {
         if running { captureStarted = Date() }
     }
 
+    /// Clicking a red or amber TRUE PEAK: clears the held true peaks alone (the summary reading, each channel's
+    /// over readout and over fill), keeping integrated loudness, held sample peaks and the stream running.
+    func resetTruePeak() {
+        worker?.resetTruePeaks()
+        readouts.resetTruePeak()
+        truePeakEpoch += 1
+        DiagnosticLog.event("True peak reset")
+    }
+
+    /// Bumped by a TRUE PEAK reset; the Channel Levels canvas clears its over fills on a change.
+    @Published private(set) var truePeakEpoch = 0
+
     private func clearMeasurements() {
         epoch += 1
         readouts.reset()
     }
 
     var formatSummary: String {
-        guard running else { return "\(Int(sampleRate / 1000)) kHz" }
+        streamParts.map { $0.unit.isEmpty ? $0.value : "\($0.value) \($0.unit)" }.joined(separator: " · ")
+    }
+
+    /// The stream as value–unit pairs for the heading: sample rate, captured channels and the monitored layout.
+    var streamParts: [(value: String, unit: String)] {
         let rate = sampleRate.truncatingRemainder(dividingBy: 1000) == 0
             ? "\(Int(sampleRate / 1000))" : String(format: "%.1f", sampleRate / 1000)
-        return "\(rate) kHz · \(captureChannels) ch · \(format == .spatial ? speakerLayout.name : (format == .mono ? "1.0" : "2.0"))"
+        guard running else { return [(rate, "kHz")] }
+        return [(rate, "kHz"), ("\(captureChannels)", "ch"),
+                (format == .spatial ? speakerLayout.name : (format == .mono ? "1.0" : "2.0"), "")]
     }
 
     func reportRendererError(_ message: StatusMessage) {
@@ -408,6 +526,9 @@ final class MeterModel: ObservableObject {
 
     /// Accepts an injected list so a disappearing input or output can be checked without unplugging hardware.
     func refreshDevices(using available: [InputDevice]) {
+        if available.map(\.id) != devices.map(\.id) {
+            DiagnosticLog.event("Devices: \(available.filter { !$0.output }.count) inputs, \(available.filter(\.output).count) outputs")
+        }
         devices = available
         let savedUID = UserDefaults.standard.string(forKey: "inputDeviceUID")
         let savedOutput = UserDefaults.standard.bool(forKey: "inputDeviceIsOutput")
@@ -478,6 +599,30 @@ final class MeterModel: ObservableObject {
     }
 
     private func saveAssignment() { UserDefaults.standard.set(sourceForRole.map(Int.init), forKey: assignmentKey()) }
+
+    /// The routing `resetAssignment` restores for the current device and layout: input n to the n-th role.
+    var defaultAssignment: [Int32] {
+        let count = Int(min(selectedDevice?.channels ?? 0, 64))
+        var routing = [Int32](repeating: -1, count: Role.count)
+        for (index, role) in speakerLayout.roles.enumerated() where index < count { routing[role] = Int32(index) }
+        return routing
+    }
+
+    /// Routes every role of the current layout at once (Settings ▸ Apply): one save and one capture restart,
+    /// where `assign(role:source:)` restarts per role. Sources the device does not have, and roles outside the
+    /// layout, are switched off.
+    func assign(routing: [Int32]) {
+        let count = Int32(min(selectedDevice?.channels ?? 0, 64))
+        var next = [Int32](repeating: -1, count: Role.count)
+        for role in 0..<min(Role.count, routing.count) where speakerLayout.contains(role) {
+            next[role] = routing[role] >= 0 && routing[role] < count ? routing[role] : -1
+        }
+        guard next != sourceForRole else { return }
+        sourceForRole = next
+        activeRoles = next.map { $0 >= 0 }
+        saveAssignment()
+        if wantsCapture { restart() }
+    }
 
     /// Puts the current layout back to input n → n-th role.
     func resetAssignment() {
@@ -587,6 +732,7 @@ final class MeterModel: ObservableObject {
                 UserDefaults.standard.set(device.output, forKey: "inputDeviceIsOutput")
             }
             hardwareObserver?.watch(device.device)
+            DiagnosticLog.event(String(format: "Stream: %.0f Hz, %d ch", capture.sampleRate, Int(capture.channels)))
             status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels),
                                 layout: speakerLayout.name)
             Diagnostics.log("Capture started: \(status.text)")

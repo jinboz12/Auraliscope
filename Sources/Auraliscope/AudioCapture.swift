@@ -89,8 +89,10 @@ enum AudioDevices {
         return result != noErr || alive != 0
     }
 
-    static func defaultInputID() -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    /// The macOS default input, or with `output` the default output (what System Settings ▸ Sound plays to).
+    static func defaultDeviceID(output: Bool = false) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(mSelector: output ? kAudioHardwarePropertyDefaultOutputDevice : kAudioHardwarePropertyDefaultInputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var id = AudioDeviceID(0)
         var size = UInt32(MemoryLayout<AudioDeviceID>.size)
         return AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &id) == noErr ? id : nil

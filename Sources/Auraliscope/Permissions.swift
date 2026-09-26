@@ -55,7 +55,7 @@ struct PermissionControl: View {
             ))
             .labelsHidden().toggleStyle(.switch).controlSize(.small)
             Button { permission.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.borderless).help(L("Check again"))
+                .glassIconButton().help(L("Check again"))
         }
     }
 }

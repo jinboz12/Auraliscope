@@ -2,6 +2,183 @@ import Accelerate
 import AudioRing
 import Foundation
 
+/// The five frequency bands of the multiband stereo readings: the correlation bar's lanes in Channel Levels, the
+/// stereometer and the Immersive band map. Edges in Hz; the top band runs to the display ceiling. Each view shows
+/// them at a `Resolution` of its own: the five bands, three (merged from the five) or one overall reading.
+enum StereoBands {
+    static let count = 5
+    static let edges: [Double] = [20, 120, 500, 2_000, 8_000]
+
+    /// How finely a view splits the spectrum: one full-band reading (the whole spectrum, as a conventional meter
+    /// reads it), three bands (below 120 Hz, 120 Hz–2 kHz, above 2 kHz) or the five.
+    enum Resolution: String, CaseIterable {
+        case overall, three, five
+
+        /// The five bands each group merges, low to high.
+        var groups: [[Int]] {
+            switch self {
+            case .overall: return [[0, 1, 2, 3, 4]]
+            case .three: return [[0], [1, 2], [3, 4]]
+            case .five: return [[0], [1], [2], [3], [4]]
+            }
+        }
+        var count: Int { groups.count }
+        /// Index of this resolution's first group among `StereoBands.groups` (the published readings).
+        var offset: Int {
+            switch self {
+            case .five: return 0
+            case .three: return 5
+            case .overall: return 8
+            }
+        }
+        /// A group's label: its lower edge, or "Full band".
+        func label(_ group: Int) -> String { self == .overall ? L("Full band") : StereoBands.label(groups[group][0]) }
+        /// The switcher's segment: "Full band", "3 bands", "5 bands" (multiband meters name their split by the
+        /// number of bands, and a meter that does not split reads full band).
+        var title: String { self == .overall ? L("Full band") : L("%d bands", count) }
+    }
+
+    /// Every group any resolution shows, in `Resolution.offset` order: the five bands, the three, then overall.
+    static let groups = Resolution.five.groups + Resolution.three.groups + Resolution.overall.groups
+    /// Values published per group: correlation, width, balance and level (see `MeterSnapshot`).
+    static let publishedFloats = 4 * groups.count
+
+    /// Values published for the Immersive room's band image: each role's mean square in each band.
+    static let roleFloats = Role.count * count
+
+    /// Points per band in the stereometer's cloud, taken evenly across the newest 1/30 s.
+    static let scopePoints = 128
+    /// Floats of the stereometer's cloud: per band, `scopePoints` (L, R) pairs.
+    static let scopeFloats = count * scopePoints * 2
+
+    /// A band's label: its lower edge, "20 Hz", "120 Hz", "500 Hz", "2 kHz", "8 kHz"; each band reaches up to the
+    /// next one's.
+    static func label(_ band: Int) -> String {
+        let edge = edges[band]
+        return edge >= 1_000 ? "\(Int(edge / 1_000)) kHz" : "\(Int(edge)) Hz"
+    }
+
+    /// Band of each FFT bin from 1 to `fftSize / 2 − 1`, or −1 outside 20 Hz…the display ceiling.
+    static func binBands(sampleRate: Double, fftSize: Int) -> [Int8] {
+        let binWidth = sampleRate / Double(fftSize)
+        let upper = min(20_000, sampleRate / 2)
+        return (0..<(fftSize / 2)).map { bin in
+            let frequency = Double(bin) * binWidth
+            guard bin > 0, frequency >= edges[0], frequency <= upper else { return -1 }
+            return Int8(edges.lastIndex { frequency >= $0 } ?? 0)
+        }
+    }
+}
+
+/// Splits L and R into the five `StereoBands` with fourth-order Linkwitz–Riley crossovers (two cascaded
+/// Butterworth sections at each edge, from the RBJ cookbook) and keeps the newest samples of every band, for the
+/// stereometer's multiband cloud. Owned by the DSP queue.
+final class StereoBandSplitter {
+    static let historyLength = 4096
+    let sampleRate: Double
+    /// One cascade per band: low-pass for the lowest, high-pass for the highest, both for the bands between.
+    private var setups: [vDSP_biquad_Setup] = []
+    private var sections: [Int] = []
+    /// Filter state per band and side (L, R).
+    private var delays: [[Float]] = []
+    /// Newest `historyLength` filtered samples per band and side, all sharing `cursor`.
+    private var history: [Float]
+    private var cursor = 0
+    private var left: [Float] = []
+    private var right: [Float] = []
+    private var scratch: [Float] = []
+
+    init?(sampleRate: Double) {
+        guard sampleRate.isFinite, sampleRate > 100 else { return nil }
+        self.sampleRate = sampleRate
+        history = [Float](repeating: 0, count: StereoBands.count * 2 * Self.historyLength)
+        let nyquist = sampleRate / 2
+        func butterworth(_ frequency: Double, highPass: Bool) -> [Double] {
+            let w = 2 * Double.pi * min(frequency, nyquist * 0.95) / sampleRate
+            let alpha = sin(w) / (2 * 0.5.squareRoot())
+            let c = cos(w), a0 = 1 + alpha
+            let b0 = highPass ? (1 + c) / 2 : (1 - c) / 2
+            let b1 = highPass ? -(1 + c) : 1 - c
+            return [b0 / a0, b1 / a0, b0 / a0, -2 * c / a0, (1 - alpha) / a0]
+        }
+        for band in 0..<StereoBands.count {
+            var coefficients: [Double] = []
+            if band > 0 {
+                let edge = butterworth(StereoBands.edges[band], highPass: true)
+                coefficients += edge + edge
+            }
+            if band + 1 < StereoBands.count, StereoBands.edges[band + 1] < nyquist {
+                let edge = butterworth(StereoBands.edges[band + 1], highPass: false)
+                coefficients += edge + edge
+            }
+            let count = coefficients.count / 5
+            guard count > 0, let setup = vDSP_biquad_CreateSetup(coefficients, vDSP_Length(count)) else { return nil }
+            setups.append(setup)
+            sections.append(count)
+            delays.append([Float](repeating: 0, count: 2 * count + 2))
+            delays.append([Float](repeating: 0, count: 2 * count + 2))
+        }
+    }
+
+    deinit { setups.forEach { vDSP_biquad_DestroySetup($0) } }
+
+    /// Filters `count` frames of L and R, read from `samples` with `stride` floats per frame.
+    func consume(_ samples: UnsafePointer<Float>, stride: Int, count: Int, leftOffset: Int = 0, rightOffset: Int = 1) {
+        guard count > 0 else { return }
+        if left.count < count {
+            left = [Float](repeating: 0, count: count)
+            right = [Float](repeating: 0, count: count)
+            scratch = [Float](repeating: 0, count: count)
+        }
+        let n = vDSP_Length(count)
+        vDSP_mmov(samples + leftOffset, &left, 1, n, vDSP_Length(stride), 1)
+        vDSP_mmov(samples + rightOffset, &right, 1, n, vDSP_Length(stride), 1)
+        let length = Self.historyLength
+        for band in 0..<StereoBands.count {
+            for side in 0..<2 {
+                let input = side == 0 ? left : right
+                vDSP_biquad(setups[band], &delays[2 * band + side], input, 1, &scratch, 1, n)
+                // Newest `historyLength` samples into the band's ring.
+                let skip = max(0, count - length)
+                var written = 0
+                var position = cursor + skip
+                while written < count - skip {
+                    let run = min(count - skip - written, length - position % length)
+                    let base = (2 * band + side) * length + position % length
+                    history.withUnsafeMutableBufferPointer { ring in
+                        scratch.withUnsafeBufferPointer { source in
+                            (ring.baseAddress! + base).update(from: source.baseAddress! + skip + written, count: run)
+                        }
+                    }
+                    written += run
+                    position += run
+                }
+            }
+        }
+        cursor = (cursor + count) % length
+    }
+
+    /// Writes `StereoBands.scopeFloats`: per band, `scopePoints` (L, R) pairs spread evenly over the newest
+    /// 1/30 s, oldest first. `silent` writes zeros.
+    func writePoints(into v: UnsafeMutablePointer<Float>, silent: Bool) {
+        let points = StereoBands.scopePoints
+        guard !silent else {
+            for i in 0..<StereoBands.scopeFloats { v[i] = 0 }
+            return
+        }
+        let length = Self.historyLength
+        let window = min(length, max(points, Int(sampleRate / 30)))
+        for band in 0..<StereoBands.count {
+            for point in 0..<points {
+                let age = window - 1 - point * window / points
+                let index = (cursor - 1 - age + 2 * length) % length
+                v[(band * points + point) * 2] = history[(2 * band) * length + index]
+                v[(band * points + point) * 2 + 1] = history[(2 * band + 1) * length + index]
+            }
+        }
+    }
+}
+
 struct MeterSnapshot: Equatable {
     static let bandCount = 64
     /// Log-spaced rows for the waterfall: at least one row per device pixel on a typical Retina panel, so the
@@ -36,11 +213,26 @@ struct MeterSnapshot: Equatable {
     /// Spatial), in Hz and dBFS.
     var peakFrequency: Float = 0
     var peakLevel: Float = -120
+    /// The notes sounding together (`SpectrumAnalyzer.tonalPeaks`): up to `maxNotes` (Hz, dBFS) pairs, loudest
+    /// first; an unused pair has frequency 0.
+    var notes = [Float](repeating: 0, count: 2 * SpectrumAnalyzer.maxNotes)
     /// `ChannelFormat` raw value from the DSP-side detector.
     var detectedFormat: Float = 0
     /// L/R phase correlation over the last tick, −1…+1, or `noCorrelation` in silence.
     var correlation: Float = MeterSnapshot.noCorrelation
-    /// Running column count (mod `WaveformEnvelope.serialModulus`) and the newest envelope columns of every role.
+    /// Per `StereoBands.groups` entry (five bands, three, overall), integrated like `correlation`: the L/R
+    /// correlation (`noCorrelation` while the group is silent), the width (side share of the energy: 0 mono,
+    /// ½ unrelated sides, 1 out of phase), the balance (−1 all left … +1 all right) and the level (RMS of L and R,
+    /// dBFS).
+    var bandCorrelation = [Float](repeating: MeterSnapshot.noCorrelation, count: StereoBands.groups.count)
+    var bandWidth = [Float](repeating: 0, count: StereoBands.groups.count)
+    var bandBalance = [Float](repeating: 0, count: StereoBands.groups.count)
+    var bandLevel = [Float](repeating: -120, count: StereoBands.groups.count)
+    /// The stereometer's cloud: per band, `StereoBands.scopePoints` (L, R) sample pairs from the newest 1/30 s.
+    var bandPoints = [Float](repeating: 0, count: StereoBands.scopeFloats)
+    /// Mean square of every role in every band (role-major), integrated like the band correlation: where each
+    /// band's energy sits in the Immersive room. Only L and R carry values outside Spatial analysis.
+    var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
     var waveSerial: Float = 0
     var waveform: [Float] = Array(repeating: 0, count: WaveformEnvelope.publishedFloats)
 }
@@ -83,6 +275,14 @@ final class SpectrumAnalyzer {
     /// Scratch for one pass of row powers, converted to dB together.
     private var rowPower = [Float](repeating: 0, count: max(MeterSnapshot.bandCount, MeterSnapshot.spectrogramBandCount))
     private var amplitudeScale: Float = 0
+    /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
+    private var binBands: [Int8] = []
+    private(set) var bandSums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
+    /// Mean square of the windowed signal per unit of one-sided |X|² (Parseval): 2 / (N · Σw²).
+    private(set) var bandPowerScale: Double = 0
+    /// First and last bin of each band, and every transformed role's mean square per band (role-major).
+    private var bandBins: [ClosedRange<Int>] = []
+    private(set) var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
     private var cursor = 0
     private var historyCount = 0
     private var peakLeft: Float = 0
@@ -103,6 +303,14 @@ final class SpectrumAnalyzer {
         var windowSum: Float = 0
         vDSP_sve(window, 1, &windowSum, vDSP_Length(Self.fftSize))
         amplitudeScale = 2 / windowSum
+        var windowSquares: Float = 0
+        vDSP_svesq(window, 1, &windowSquares, vDSP_Length(Self.fftSize))
+        bandPowerScale = 2 / (Double(Self.fftSize) * Double(windowSquares))
+        binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: Self.fftSize)
+        bandBins = (0..<StereoBands.count).map { band in
+            let bins = binBands.indices.filter { binBands[$0] == band }
+            return (bins.first ?? 1)...(bins.last ?? 1)
+        }
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
         spectrogramBands = Self.bandMaps(count: MeterSnapshot.spectrogramBandCount, sampleRate: sampleRate)
         let lowBins = (bands + spectrogramBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
@@ -222,7 +430,82 @@ final class SpectrumAnalyzer {
         transform(roles)
         refreshLowDecibels()
         levels(bands, into: &spectrum)
+        notes = tonalPeaks()
         return dominantPeak()
+    }
+
+    /// Most notes the keyboard lights at once.
+    static let maxNotes = 6
+    /// The newest transform's notes (`tonalPeaks`), loudest first.
+    private(set) var notes: [(frequency: Float, level: Float)] = []
+
+    /// The notes most likely sounding together, from the newest transform: tonal peaks between A0 and C8 (a
+    /// local maximum at least 10 dB above the spectrum 3 to 8 bins either side, so noise and the window's own
+    /// skirt do not count), within 30 dB of the loudest and above −70 dBFS, one per semitone. A peak lying on
+    /// the 2nd to 8th harmonic of a lower note already kept (within 40 cents) and not clearly louder than it is
+    /// that note's overtone, not a note of its own. Each frequency is refined like `dominantPeak`.
+    private func tonalPeaks() -> [(frequency: Float, level: Float)] {
+        let binWidth = sampleRate / Double(Self.fftSize)
+        let first = max(2, Int(27 / binWidth))
+        let last = min(Self.fftSize / 2 - 10, Int(min(4_200, sampleRate / 2) / binWidth))
+        guard first < last else { return [] }
+        let scale = amplitudeScale * amplitudeScale
+        func decibels(_ power: Float) -> Float { 10 * log10(max(power * scale, 1e-12)) }
+        var candidates: [(bin: Int, level: Float)] = []
+        for bin in first...last {
+            let p = power[bin]
+            guard p > power[bin - 1], p >= power[bin + 1], p > power[bin - 2], p >= power[bin + 2] else { continue }
+            let level = decibels(p)
+            guard level > -70 else { continue }
+            var around: Float = 0
+            var neighbors: Float = 0
+            // Near DC there are fewer bins below the tone. Use only available neighbours rather than
+            // dropping the first eight bins (which hid bass notes below 105 Hz at 96 kHz).
+            for offset in 3...8 {
+                if bin - offset >= 1 { around += power[bin - offset]; neighbors += 1 }
+                around += power[bin + offset]; neighbors += 1
+            }
+            guard level - decibels(around / neighbors) >= 10 else { continue }
+            candidates.append((bin, level))
+        }
+        guard let loudest = candidates.map(\.level).max() else { return [] }
+        var peaks: [(frequency: Float, level: Float)] = candidates
+            .filter { $0.level >= loudest - 30 }
+            .sorted { $0.level > $1.level }
+            .prefix(16)
+            .map { candidate in
+                let a = decibels(power[candidate.bin - 1]), b = candidate.level, c = decibels(power[candidate.bin + 1])
+                let curvature = a - 2 * b + c
+                let offset = curvature < 0 ? max(-0.5, min(0.5, 0.5 * (a - c) / curvature)) : 0
+                return (Float((Double(candidate.bin) + Double(offset)) * binWidth), b - 0.25 * (a - c) * offset)
+            }
+        peaks = peaks.filter { (27...4_200).contains($0.frequency) }
+        // One per semitone: the louder of two peaks on the same key.
+        var byKey: [Int: (frequency: Float, level: Float)] = [:]
+        for peak in peaks {
+            let key = Int((69 + 12 * log2(Double(peak.frequency) / 440)).rounded())
+            if byKey[key].map({ $0.level < peak.level }) ?? true { byKey[key] = peak }
+        }
+        peaks = byKey.values.sorted { $0.frequency < $1.frequency }
+        var kept: [(frequency: Float, level: Float)] = []
+        for peak in peaks {
+            let overtone = kept.contains { root in
+                let ratio = Double(peak.frequency / root.frequency)
+                let harmonic = ratio.rounded()
+                return (2...8).contains(harmonic) && abs(1200 * log2(ratio / harmonic)) < 40 && peak.level < root.level + 6
+            }
+            if !overtone { kept.append(peak) }
+        }
+        return Array(kept.sorted { $0.level > $1.level }.prefix(Self.maxNotes))
+    }
+
+    /// `notes` packed as `MeterSnapshot.notes`.
+    func packedNotes(into output: UnsafeMutablePointer<Float>) {
+        for index in 0..<Self.maxNotes {
+            let note: (frequency: Float, level: Float) = index < notes.count ? notes[index] : (0, -120)
+            output[2 * index] = note.frequency
+            output[2 * index + 1] = note.level
+        }
     }
 
     /// Waterfall rows of the most recent transform.
@@ -240,6 +523,7 @@ final class SpectrumAnalyzer {
             result.correlation = Self.correlation(left: sumLeft, right: sumRight, product: sumProduct)
             if ready {
                 (result.peakFrequency, result.peakLevel) = refreshSpectrum(into: &result.spectrum)
+                result.notes.withUnsafeMutableBufferPointer { packedNotes(into: $0.baseAddress!) }
                 spectrogram(into: &result.spectrogram)
             }
         }
@@ -348,6 +632,9 @@ final class SpectrumAnalyzer {
         while index < roles.count {
             let pair = index + 1 < roles.count
             transformPair(roles[index], pair ? roles[index + 1] : nil)
+            if index == 0 && pair && roles[0] == Role.left && roles[1] == Role.right { accumulateStereoBands() }
+            if index == 0 { for i in roleBandPower.indices { roleBandPower[i] = 0 } }
+            accumulateRoleBands(roles[index], pair ? roles[index + 1] : nil)
             power.withUnsafeMutableBufferPointer { sum in
                 let out = sum.baseAddress!
                 if index == 0 {
@@ -361,6 +648,40 @@ final class SpectrumAnalyzer {
         }
         var half: Float = 0.5
         power.withUnsafeMutableBufferPointer { vDSP_vsmul($0.baseAddress!, 1, &half, $0.baseAddress!, 1, bins) }
+    }
+
+    /// Mean square per band of the pair just transformed (`leftPower` for `a`, `rightPower` for `b`).
+    private func accumulateRoleBands(_ a: Int, _ b: Int?) {
+        let scale = Float(bandPowerScale)
+        for (band, bins) in bandBins.enumerated() {
+            var sum: Float = 0
+            leftPower.withUnsafeBufferPointer { vDSP_sve($0.baseAddress! + bins.lowerBound, 1, &sum, vDSP_Length(bins.count)) }
+            roleBandPower[a * StereoBands.count + band] = sum * scale
+            if let b {
+                rightPower.withUnsafeBufferPointer { vDSP_sve($0.baseAddress! + bins.lowerBound, 1, &sum, vDSP_Length(bins.count)) }
+                roleBandPower[b * StereoBands.count + band] = sum * scale
+            }
+        }
+    }
+
+    /// Per-band |L|², |R|² and the cross spectrum Re(L·R̄) of the L/R transform just made. With z = L + iR, the
+    /// conjugate-symmetric split gives Re(L[k]·conj(R[k])) = (Zr[k]·Zi[N−k] + Zr[N−k]·Zi[k]) / 2.
+    private func accumulateStereoBands() {
+        let n = Self.fftSize
+        var sums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
+        outputReal.withUnsafeBufferPointer { zr in
+            outputImaginary.withUnsafeBufferPointer { zi in
+                for bin in 1..<(n / 2) {
+                    let band = Int(binBands[bin])
+                    guard band >= 0 else { continue }
+                    let cross = 0.5 * (zr[bin] * zi[n - bin] + zr[n - bin] * zi[bin])
+                    sums[band].left += Double(leftPower[bin])
+                    sums[band].right += Double(rightPower[bin])
+                    sums[band].cross += Double(cross)
+                }
+            }
+        }
+        bandSums = sums
     }
 
     /// Fills `leftPower` with |A|² and `rightPower` with |B|² (zero without a second role).

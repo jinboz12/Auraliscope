@@ -56,6 +56,76 @@ enum MeterScale {
         let magnitude = abs(scaled)
         return "\(scaled < 0 ? "−" : "")\(magnitude / 10).\(magnitude % 10)"
     }
+
+    /// `tenths` with an explicit plus for positive values, for amounts over a limit: "+0.8".
+    static func signedTenths(_ value: Float, floor: Float = -99) -> String {
+        let text = tenths(value, floor: floor)
+        return Int((value * 10).rounded()) > 0 ? "+" + text : text
+    }
+
+    /// Level change when L and R are summed to mono, in dB, against the average of the two sides: 0 for identical
+    /// sides, about −3 for unrelated ones, and falling toward −∞ as the sides cancel. `left` and `right` are RMS
+    /// amplitudes; nil in silence. Clamped at −40 dB.
+    static func monoFoldDown(correlation: Float, left: Float, right: Float) -> Float? {
+        let pl = Double(left) * Double(left), pr = Double(right) * Double(right)
+        guard pl + pr > 1e-10, correlation != MeterSnapshot.noCorrelation else { return nil }
+        let r = Double(max(-1, min(1, correlation)))
+        let ratio = (pl + pr + 2 * r * (pl * pr).squareRoot()) / (2 * (pl + pr))
+        return Float(max(-40, 10 * log10(max(ratio, 1e-4))))
+    }
+}
+
+/// What an L/R correlation reading means: +1 is the same signal on both sides (mono), 0 two unrelated sides
+/// (very wide), −1 one side inverted, which cancels when the mix is folded to mono. The meter names the zone
+/// beside its number and colours its bar by it.
+enum CorrelationZone: Int, CaseIterable {
+    case outOfPhase, wide, stereo, mono
+
+    /// Lower edges of `wide`, `stereo` and `mono`.
+    static let edges: [Float] = [-0.1, 0.3, 0.9]
+    /// A reading leaves its zone only once it is this far past the edge, so the name does not flicker.
+    static let hysteresis: Float = 0.05
+
+    /// The name printed beside the correlation reading, in the current language.
+    var title: String {
+        switch self {
+        case .outOfPhase: return L("OUT OF PHASE")
+        case .wide: return L("WIDE")
+        case .stereo: return L("STEREO")
+        case .mono: return L("MONO")
+        }
+    }
+
+    /// The zone's name under the track.
+    var caption: String {
+        switch self {
+        case .outOfPhase: return L("Out of phase")
+        case .wide: return L("Wide")
+        case .stereo: return L("Stereo")
+        case .mono: return L("Mono")
+        }
+    }
+
+    /// What the reading means for the listener, in one or two short lines.
+    var hint: String {
+        switch self {
+        case .outOfPhase: return L("Sounds hollow and loses its centre; cancels on mono speakers, phones and club PAs.")
+        case .wide: return L("Very wide: some parts thin out or drop away when played in mono.")
+        case .stereo: return L("Healthy stereo width that holds up on mono speakers.")
+        case .mono: return L("Almost mono: narrow and centred, fully mono-safe.")
+        }
+    }
+
+    /// The zone of `value`; next to an edge the `previous` zone holds until the reading clears it.
+    init(_ value: Float, previous: CorrelationZone? = nil) {
+        let raw = CorrelationZone(rawValue: Self.edges.filter { value >= $0 }.count) ?? .mono
+        if let previous, abs(previous.rawValue - raw.rawValue) == 1,
+           abs(value - Self.edges[min(previous.rawValue, raw.rawValue)]) < Self.hysteresis {
+            self = previous
+        } else {
+            self = raw
+        }
+    }
 }
 
 /// Equal-tempered pitch (A4 = 440 Hz) of a frequency: MIDI = 69 + 12·log2(f / 440).
@@ -127,67 +197,168 @@ struct PeakTracker: Equatable {
     }
 }
 
-/// Plot geometry shared by the Spectrum and Spectrogram panels: the same gutter and margins, so when the two
-/// panels are stacked at the same width their logarithmic 20 Hz – upper frequency axes line up exactly.
+/// The notes lit on the Spectrum panel's keyboard, from the analyzer's `notes` sampled at 10 Hz: each key stays
+/// lit 0.35 s after its note was last found (so a note does not flicker between readouts), with its newest level;
+/// notes under the peak readout's gate are ignored.
+struct NoteHolds: Equatable {
+    static let holdTime = 0.35
+
+    struct Note: Equatable {
+        let midi: Int
+        var level: Float
+        var hold: Double
+    }
+
+    private(set) var notes: [Note] = []
+
+    /// `packed` is `MeterSnapshot.notes`: (Hz, dBFS) pairs, frequency 0 for none.
+    mutating func update(_ packed: [Float], deltaTime: Double) {
+        for index in notes.indices { notes[index].hold -= deltaTime }
+        for pair in stride(from: 0, to: packed.count - 1, by: 2) {
+            let frequency = packed[pair], level = packed[pair + 1]
+            guard frequency > 0, level >= PeakTracker.gate else { continue }
+            let midi = Int((69 + 12 * log2(Double(frequency) / 440)).rounded())
+            if let index = notes.firstIndex(where: { $0.midi == midi }) {
+                notes[index].level = level
+                notes[index].hold = Self.holdTime
+            } else {
+                notes.append(Note(midi: midi, level: level, hold: Self.holdTime))
+            }
+        }
+        notes.removeAll { $0.hold <= 0 }
+    }
+
+    mutating func reset() { notes = [] }
+}
+
+/// Margins shared by the analyzer wells.
 enum FrequencyAxis {
-    static let gutter: CGFloat = 34
-    static let top: CGFloat = 10
-    static let right: CGFloat = 12
-    /// Frequency tick labels under the plot.
+    /// Tick labels under a plot.
     static let labelHeight: CGFloat = 20
-
-    static func plot(in size: CGSize) -> CGRect {
-        CGRect(x: gutter, y: top, width: max(1, size.width - gutter - right),
-               height: max(1, size.height - top - labelHeight))
-    }
-
-    static func x(_ frequency: Double, in plot: CGRect, sampleRate: Double) -> CGFloat {
-        plot.minX + MeterScale.frequencyFraction(frequency, sampleRate: sampleRate) * plot.width
-    }
 }
 
-/// The Spectrum panel's display well: live spectrum of the monitored channels in dBFS over the frequency axis.
-struct SpectrumLayout {
-    static let grid: [Float] = [0, -24, -48, -72]
-
-    let plot: CGRect
-
-    init(size: CGSize) { plot = FrequencyAxis.plot(in: size) }
-
-    func x(frequency: Double, sampleRate: Double) -> CGFloat { FrequencyAxis.x(frequency, in: plot, sampleRate: sampleRate) }
-    func y(decibels db: Float) -> CGFloat { plot.maxY - MeterScale.spectrumFraction(db) * plot.height }
-}
-
-/// The Spectrogram panel's display well, horizontal: time runs left to right (newest at the right edge) and
-/// frequency bottom to top on the log axis. A vertical piano keyboard on the left shares that axis, so each
-/// key sits exactly on its pitch band; octave labels (C1, C2…) sit left of the keys.
+/// The Spectrum card's display well, which holds the spectrogram and the live spectrum on one frequency axis:
+/// frequency runs bottom to top on the log axis. A vertical piano keyboard on the left shares that axis, so
+/// each key sits exactly on its pitch band, with octave labels (C1, C2…) left of the keys. The waterfall
+/// (`plot`) runs left to right in time, newest at its right edge, and the live spectrum (`spectrum`) continues
+/// from "now" to the right: level in dBFS grows rightward from the −96 dB floor, so a band's colour in the
+/// waterfall and its length in the spectrum read along the same row.
 struct SpectrogramLayout {
     /// DSP publishes one analysis column per tick (see DSPWorker).
     static let analysisRate = 30.0
-    /// The panel shows the most recent 8 s of the stored history.
-    static let historySeconds = 8.0
-    static let visibleColumns = Int(historySeconds * analysisRate)
+    /// The waterfall shows the most recent 3 to 8 s of the stored history, whole seconds at about 100 pt per
+    /// second, so narrowing it (by widening the spectrum or the window) shortens the span instead of squeezing it.
+    static let maxSeconds = 8.0
+    static let minSeconds = 3.0
+    static let pointsPerSecond: CGFloat = 100
     static let noteLabels: CGFloat = 26
     static let keyboardWidth: CGFloat = 18
     static let keyGap: CGFloat = 3
+    /// Gap between the waterfall's "now" edge and the spectrum; it holds the divider that resizes them.
+    static let spectrumGap: CGFloat = 14
+    /// The spectrum's width: `0` is automatic (about a quarter of the well), a dragged width is kept within these
+    /// limits and always leaves the waterfall `minWaterfall`.
+    static let minStrip: CGFloat = 96
+    static let minWaterfall: CGFloat = 160
+    /// Level grid of the spectrum, in dBFS.
+    static let grid: [Float] = [0, -24, -48, -72]
 
     let keyboard: CGRect
+    /// The waterfall.
     let plot: CGRect
+    /// The live spectrum.
+    let spectrum: CGRect
+    /// Seconds the waterfall spans, and the analysis columns that takes.
+    let seconds: Double
+    /// The spectrum sits left of the waterfall, and the pair mirrors: "now" is the waterfall's left edge, and the
+    /// spectrum's 0 dBFS is its left edge, so the newest column still meets the spectrum's floor.
+    let mirrored: Bool
+    var visibleColumns: Int { Int(seconds * Self.analysisRate) }
 
-    init(size: CGSize) {
-        let top: CGFloat = 8, right: CGFloat = 12
+    /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair.
+    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false) {
+        mirrored = spectrumLeft
+        let top: CGFloat = 8, margin: CGFloat = 12
         let height = max(1, size.height - top - FrequencyAxis.labelHeight)
-        keyboard = CGRect(x: Self.noteLabels, y: top, width: Self.keyboardWidth, height: height)
-        let left = keyboard.maxX + Self.keyGap
-        plot = CGRect(x: left, y: top, width: max(1, size.width - left - right), height: height)
+        // Mirrored, the keyboard and its octave labels move to the right edge, beside the waterfall's oldest
+        // column, and the pair starts at the left margin.
+        let keysX = spectrumLeft ? size.width - Self.noteLabels - Self.keyboardWidth : Self.noteLabels
+        keyboard = CGRect(x: keysX, y: top, width: Self.keyboardWidth, height: height)
+        let left = spectrumLeft ? margin : keyboard.maxX + Self.keyGap
+        let right = spectrumLeft ? size.width - keyboard.minX + Self.keyGap : margin
+        let available = max(1, size.width - left - right)
+        let automatic = min(240, max(Self.minStrip, (available * 0.24).rounded()))
+        let upper = max(Self.minStrip, available - Self.spectrumGap - Self.minWaterfall)
+        let valid = requested.isFinite && requested > 0 ? requested.rounded() : automatic
+        let strip = max(1, min(available - Self.spectrumGap - 1, PanelLayout.clamp(valid, Self.minStrip, upper)))
+        let waterfall = max(1, available - strip - Self.spectrumGap)
+        let spectrumWidth = max(1, available - waterfall - Self.spectrumGap)
+        if spectrumLeft {
+            spectrum = CGRect(x: left, y: top, width: spectrumWidth, height: height)
+            plot = CGRect(x: spectrum.maxX + Self.spectrumGap, y: top, width: waterfall, height: height)
+        } else {
+            plot = CGRect(x: left, y: top, width: waterfall, height: height)
+            spectrum = CGRect(x: plot.maxX + Self.spectrumGap, y: top, width: spectrumWidth, height: height)
+        }
+        seconds = max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
     }
+
+    /// Centre of the octave labels' column, beside the keyboard on its outer side.
+    var noteLabelX: CGFloat { mirrored ? keyboard.maxX + 2 + (Self.noteLabels - 4) / 2 : (Self.noteLabels - 4) / 2 }
+    /// Where the white keys' octave ticks and the black keys sit: the keyboard's edge nearer the plot has the
+    /// ticks, the outer edge holds the black keys.
+    var keysInnerX: CGFloat { mirrored ? keyboard.minX : keyboard.maxX }
+    func blackKeyX(width: CGFloat) -> CGFloat { mirrored ? keyboard.maxX - width : keyboard.minX }
+
+    /// The waterfall's "now" edge, and the spectrum's floor and 0 dBFS edges.
+    var nowX: CGFloat { mirrored ? plot.minX : plot.maxX }
+    var floorX: CGFloat { mirrored ? spectrum.maxX : spectrum.minX }
+    var fullScaleX: CGFloat { mirrored ? spectrum.minX : spectrum.maxX }
+    /// The divider's position (the gap between the two) and the width before it.
+    var dividerX: CGFloat { mirrored ? spectrum.maxX : plot.maxX }
+    var dividerLeading: CGFloat { mirrored ? spectrum.width : plot.width }
 
     func y(frequency: Double, sampleRate: Double) -> CGFloat {
         plot.maxY - MeterScale.frequencyFraction(frequency, sampleRate: sampleRate) * plot.height
     }
     /// Centre of a MIDI note, and its semitone band edges at ±50 cents.
     func y(midi: Double, sampleRate: Double) -> CGFloat { y(frequency: 440 * pow(2, (midi - 69) / 12), sampleRate: sampleRate) }
-    func x(secondsAgo seconds: Double) -> CGFloat { plot.maxX - CGFloat(seconds / Self.historySeconds) * plot.width }
+    func x(secondsAgo seconds: Double) -> CGFloat {
+        let offset = CGFloat(seconds / self.seconds) * plot.width
+        return mirrored ? plot.minX + offset : plot.maxX - offset
+    }
+    /// Where a spectrum level lands: from the floor at the edge beside "now" to 0 dBFS at the far edge.
+    func x(decibels db: Float) -> CGFloat {
+        let offset = MeterScale.spectrumFraction(db) * spectrum.width
+        return mirrored ? spectrum.maxX - offset : spectrum.minX + offset
+    }
+
+    /// Frequency marks along the spectrum: 20, 50, 100, 200, 500 Hz… up to the ceiling, each at least 13 pt
+    /// from the last one kept and from the plot's edges.
+    static let frequencyMarks: [(Double, String)] = [(20, "20"), (30, "30"), (50, "50"), (100, "100"), (200, "200"),
+        (300, "300"), (500, "500"), (1_000, "1k"), (2_000, "2k"), (3_000, "3k"), (5_000, "5k"), (10_000, "10k"), (20_000, "20k")]
+
+    static func frequencyTicks(_ layout: SpectrogramLayout, sampleRate: Double) -> [(Double, String)] {
+        let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+        var kept: [(Double, String)] = []
+        // Decades first so 100, 1k and 10k always survive, then the rest where they fit.
+        let order = frequencyMarks.filter { [100, 1_000, 10_000].contains($0.0) } + frequencyMarks.filter { ![100, 1_000, 10_000].contains($0.0) }
+        for mark in order where mark.0 <= upper {
+            let y = layout.y(frequency: mark.0, sampleRate: sampleRate)
+            guard y - 12 > layout.spectrum.minY, y < layout.spectrum.maxY + 1 else { continue }
+            if kept.allSatisfy({ abs(layout.y(frequency: $0.0, sampleRate: sampleRate) - y) >= 13 }) { kept.append(mark) }
+        }
+        return kept.sorted { $0.0 < $1.0 }
+    }
+
+    /// Spectrum width for a drag that makes the waterfall `waterfall` points wide (before clamping).
+    func strip(forWaterfall waterfall: CGFloat) -> CGFloat {
+        spectrum.maxX - (plot.minX + waterfall + Self.spectrumGap)
+    }
+
+    /// The spectrum width for a divider drag to `leading` points: the waterfall's width on the right, the
+    /// spectrum's own when it leads.
+    func strip(forDivider leading: CGFloat) -> CGFloat { mirrored ? leading : strip(forWaterfall: leading) }
 
     /// Height of one semitone. The axis is logarithmic, so this is constant and `y(midi:)` is affine in MIDI.
     func semitoneHeight(sampleRate: Double) -> CGFloat {
@@ -255,46 +426,32 @@ struct WaveformLayout {
     func laneY(_ index: Int, amplitude: CGFloat) -> CGFloat { lanes[index].midY - amplitude * lanes[index].height / 2 }
 }
 
-/// The left column below the loudness summary: Spectrum, then Spectrogram, then Waveform, separated by two
-/// draggable dividers. Heights are stored as fractions of the panel area so they scale with the window.
-/// Dragging a divider only trades size between the two panels it separates, and every panel keeps a
-/// minimum at which its contents stay legible.
+/// The left column below the loudness summary: the Spectrum card (spectrogram and live spectrum together), then
+/// the Waveform, separated by a draggable divider. The Spectrum's height is stored as a fraction of the panel
+/// area so it scales with the window, and both panels keep a minimum at which their contents stay legible.
 struct PanelLayout {
     /// A divider's hit strip, which is also the gap between the two panels.
     static let divider: CGFloat = 14
-    static let minSpectrum: CGFloat = 110
-    static let minSpectrogram: CGFloat = 90
+    static let minSpectrum: CGFloat = 180
     static let minWaveform: CGFloat = 120
-    static let defaultSpectrum: CGFloat = 0.34
-    static let defaultSpectrogram: CGFloat = 0.30
+    static let defaultSpectrum: CGFloat = 0.64
 
     let spectrum: CGFloat
-    let spectrogram: CGFloat
     let waveform: CGFloat
 
-    /// `height` is the whole column, dividers included.
-    init(height: CGFloat, spectrum spectrumFraction: CGFloat, spectrogram spectrogramFraction: CGFloat) {
-        let panels = max(0, height - 2 * Self.divider)
-        func valid(_ value: CGFloat, _ fallback: CGFloat) -> CGFloat { value.isFinite && value > 0 ? value : fallback }
-        spectrum = Self.clamp((valid(spectrumFraction, Self.defaultSpectrum) * panels).rounded(),
-                              Self.minSpectrum, panels - Self.minSpectrogram - Self.minWaveform)
-        spectrogram = Self.clamp((valid(spectrogramFraction, Self.defaultSpectrogram) * panels).rounded(),
-                                 Self.minSpectrogram, panels - spectrum - Self.minWaveform)
-        waveform = max(0, panels - spectrum - spectrogram)
+    /// `height` is the whole column, divider included.
+    init(height: CGFloat, spectrum spectrumFraction: CGFloat) {
+        let panels = max(0, height - Self.divider)
+        let valid = spectrumFraction.isFinite && spectrumFraction > 0 ? spectrumFraction : Self.defaultSpectrum
+        spectrum = Self.clamp((valid * panels).rounded(), Self.minSpectrum, panels - Self.minWaveform)
+        waveform = max(0, panels - spectrum)
     }
 
-    var panels: CGFloat { spectrum + spectrogram + waveform }
+    var panels: CGFloat { spectrum + waveform }
 
-    /// Fractions after dragging the first divider so the Spectrum is `height` tall; the Waveform stays put.
-    func draggingSpectrum(to height: CGFloat) -> (spectrum: CGFloat, spectrogram: CGFloat) {
-        let pair = spectrum + spectrogram
-        let newSpectrum = Self.clamp(height.rounded(), Self.minSpectrum, pair - Self.minSpectrogram)
-        return (newSpectrum / max(1, panels), (pair - newSpectrum) / max(1, panels))
-    }
-
-    /// Spectrogram fraction after dragging the second divider so it is `height` tall; the Spectrum stays put.
-    func draggingSpectrogram(to height: CGFloat) -> CGFloat {
-        Self.clamp(height.rounded(), Self.minSpectrogram, spectrogram + waveform - Self.minWaveform) / max(1, panels)
+    /// Spectrum fraction after dragging the divider so the Spectrum is `height` tall.
+    func draggingSpectrum(to height: CGFloat) -> CGFloat {
+        Self.clamp(height.rounded(), Self.minSpectrum, panels - Self.minWaveform) / max(1, panels)
     }
 
     /// Clamp that favours the minimum when the window is too small for both limits.
@@ -307,9 +464,9 @@ struct PanelLayout {
 enum HeroLayout {
     static let minHeight: CGFloat = 170
     static let maxHeight: CGFloat = 420
-    /// The analyzer rows and dividers at their minimum, plus the heading, status bar and gaps.
-    static let reservedBelow: CGFloat = PanelLayout.minSpectrum + PanelLayout.minSpectrogram + PanelLayout.minWaveform
-        + 2 * PanelLayout.divider + 110
+    /// The analyzer rows and dividers at their minimum, plus the status bar and gaps (the heading now lives in
+    /// the toolbar).
+    static let reservedBelow: CGFloat = PanelLayout.minSpectrum + PanelLayout.minWaveform + PanelLayout.divider + 106
 
     static func defaultHeight(tall: Bool) -> CGFloat { tall ? 192 : 182 }
 
@@ -371,6 +528,19 @@ enum ColumnLayout {
     static let defaultStage: CGFloat = 380
     static let minAnalyzers: CGFloat = 600
 
+    /// The right-hand column holds the Soundstage room above the Channel Levels panel; the room's share of the
+    /// column's height is stored, and each panel keeps its minimum.
+    static let defaultRoomShare: CGFloat = 0.42
+    static let minRoom: CGFloat = 200
+    static let minLevels: CGFloat = 310
+
+    /// Soundstage (room) panel height for a stored share of a column `total` points tall (both panels and the divider).
+    static func roomHeight(share: CGFloat, total: CGFloat) -> CGFloat {
+        let valid = share.isFinite && share > 0 ? share : defaultRoomShare
+        let upper = max(minRoom, total - PanelLayout.divider - minLevels)
+        return PanelLayout.clamp((valid * total).rounded(), minRoom, upper)
+    }
+
     /// Soundstage width for a requested width inside `total` (both columns and the divider).
     static func stageWidth(_ requested: CGFloat, total: CGFloat) -> CGFloat {
         let valid = requested.isFinite && requested > 0 ? requested : defaultStage
@@ -400,31 +570,77 @@ extension Speaker {
     func displayName(mono: CGFloat) -> String { role == Role.left && mono >= 0.5 ? "M" : name }
 }
 
-/// The Soundstage panel's display well, a tall column: the top-down room above, then one horizontal meter
-/// row per channel grouped under FRONT / LFE / SURROUND / HEIGHT headers, the dB axis, and the L/R phase
-/// correlation meter at the foot. `size` is the well.
+/// The two wells of the right-hand column. `.room`: the Soundstage panel's top-down room. `.levels`: the Channel
+/// Levels panel, one vertical meter per channel grouped under FRONT / LFE / SURROUND / HEIGHT headers, with the
+/// dB scale on the left and a true-peak over zone above 0 dB, and the L/R correlation section at the foot in
+/// Stereo. `size` is the well.
 ///
 /// `presence` runs from 1 (Spatial) to 0 (Stereo). Every rect is a pure function of the size, the speaker
 /// layout and the presence, so Metal (stepping its own spring) and SwiftUI (animating `presence`) place bars,
-/// nodes and labels identically on every frame of the transition. In Stereo the extended rows and their
-/// headers collapse and dissolve while L and R grow; the room takes the freed height and zooms onto the
-/// ±30° stereo stage.
+/// nodes and labels identically on every frame of the transition. In Stereo the extended columns and their
+/// headers narrow to nothing and dissolve while L and R widen, the correlation section unfolds, and the room
+/// zooms onto the ±30° stereo stage.
 struct SoundstageLayout {
-    static let groupTitles: [SpeakerGroup: String] = [.front: "FRONT", .lfe: "LFE", .surround: "SURROUND", .height: "HEIGHT"]
+    enum Part { case room, levels }
+
+    /// Group header over the meter columns, in the current language; LFE is a channel label and stays as is.
+    static func groupTitle(_ group: SpeakerGroup) -> String {
+        switch group {
+        case .front: return L("FRONT")
+        case .lfe: return "LFE"
+        case .surround: return L("SURROUND")
+        case .height: return L("HEIGHT")
+        }
+    }
     static let scaleTicks: [Float] = [-60, -48, -36, -24, -18, -12, -6, 0]
-    /// Meter row, left to right: channel name, bar, clip LED, held-peak readout.
-    static let nameColumn: CGFloat = 36
-    static let clipColumn: CGFloat = 16
-    static let readoutColumn: CGFloat = 44
-    static let headerHeight: CGFloat = 20
-    static let axisHeight: CGFloat = 16
-    static let correlationHeight: CGFloat = 46
+    /// The meters read up to +3 dBTP, so a true-peak over shows how far it went.
+    static let overTop: Float = 3
+    /// Share of the bar height above 0 dB.
+    static let overShare: CGFloat = 0.1
+    /// Meter block, top to bottom: group headers, held-peak readouts, bars, channel names; the dB scale on the left.
+    static let headerHeight: CGFloat = 16
+    static let readoutHeight: CGFloat = 16
+    /// Band over each bar for its clip light, latched by a true-peak over or a full-scale sample.
+    static let capHeight: CGFloat = 12
+    /// Diameter of the clip light.
+    static let capDiameter: CGFloat = 6
+    static let nameHeight: CGFloat = 18
+    static let axisColumn: CGFloat = 26
+    static let groupGap: CGFloat = 6
+    /// Correlation section: title row, the bar (one lane per band group), zone captions and the listener hint.
+    static func correlationHeight(lanes: CGFloat) -> CGFloat { 22 + trackHeight(lanes: lanes) + 60 }
+    /// One lane per band group, the highest at the top like every frequency axis in the window; fewer lanes are
+    /// a little taller (the full-band lane is the classic single bar).
+    static func laneHeight(lanes: Int) -> CGFloat { lanes <= 1 ? 12 : (lanes <= 3 ? 11 : 9) }
+    static let laneGap: CGFloat = 3
+    /// Half the height of the lanes' rounded ends, where −1 and +1 sit.
+    static let laneCap: CGFloat = 4.5
+    static func trackHeight(count: Int) -> CGFloat {
+        CGFloat(count) * laneHeight(lanes: count) + CGFloat(max(0, count - 1)) * laneGap
+    }
+    /// The bar's height for a lane count that may be between resolutions while a band switch animates: straight
+    /// between the heights of 1, 3 and 5 lanes, so the section glides instead of jumping.
+    static func trackHeight(lanes: CGFloat) -> CGFloat {
+        let counts = StereoBands.Resolution.allCases.map(\.count).sorted()
+        let clamped = max(CGFloat(counts.first!), min(CGFloat(counts.last!), lanes))
+        for (low, high) in zip(counts, counts.dropFirst()) where clamped <= CGFloat(high) {
+            let t = (clamped - CGFloat(low)) / CGFloat(high - low)
+            return trackHeight(count: low) + (trackHeight(count: high) - trackHeight(count: low)) * t
+        }
+        return trackHeight(count: counts.last!)
+    }
+    /// Band names left of the lanes and band readings right of them.
+    static let laneLabelColumn: CGFloat = 50
+    static let laneValueColumn: CGFloat = 34
     static let roomGap: CGFloat = 14
-    /// Row pitch L and R grow to in Stereo, and the single row in Mono, when the column allows it.
-    static let stereoPitch: CGFloat = 46
-    static let monoPitch: CGFloat = 58
-    /// Row pitch in Spatial: small layouts get taller rows (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14 or
-    /// more channels. A column too short for that compresses every row alike.
+    /// Column pitch L and R widen to in Stereo, and the single column in Mono, when the well allows it.
+    static let stereoPitch: CGFloat = 112
+    static let monoPitch: CGFloat = 128
+    /// Bar thickness limit: 10 pt in Spatial, up to 18 pt for the wide Stereo and Mono columns.
+    static let spatialBar: CGFloat = 10
+    static let pairBar: CGFloat = 18
+    /// Column pitch in Spatial: small layouts get wider columns (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14
+    /// or more channels. A narrow well compresses every column alike.
     static func spatialPitch(channels: Int) -> CGFloat { max(30, min(42, 44 - CGFloat(channels))) }
     /// Label offset beyond a node's rim, shared by the stereo fit below and `label(_:)`.
     static let labelOffset: CGFloat = 12
@@ -432,122 +648,186 @@ struct SoundstageLayout {
     let speakers: [Speaker]
     let presence: CGFloat
     let mono: CGFloat
+    /// 1 in Stereo, folding to 0 toward Multi Channel and toward Mono: correlation is an L/R measure, and in
+    /// Multi Channel L/R alone says little about what reaches the listener.
+    let correlationWeight: CGFloat
     let stageWell: CGRect
     /// Square the room is fitted into; the room itself zooms within it as presence changes.
     let radar: CGRect
-    let center: CGPoint
-    let bedRadius: CGFloat
-    let heightRadius: CGFloat
+    /// The listener on screen, and the length of one room unit (the bed ring's radius) at the listener, in points.
+    let stageOrigin: CGPoint
+    let stageScale: CGFloat
     let nodeRadius: CGFloat
-    /// Everything under the room: headers, names, bars, LEDs, readouts, the dB axis and correlation.
-    let meterArea: CGRect
-    /// Horizontal extent of every bar; −70 dBFS at `minX`, 0 dBFS at `maxX`.
-    let scale: CGRect
-    /// One full-width row slot per entry of `speakers`. Receding rows collapse to zero height.
-    let rows: [CGRect]
-    /// Header slot per group present, in display order; receding headers collapse too.
-    let headers: [(group: SpeakerGroup, rect: CGRect)]
-    /// Vertical span of headers and rows.
+    /// The vertical meters: headers, readouts, bars, names and the dB scale.
     let block: CGRect
-    /// The mirrored correlation track (−1 at both ends, +1 at the centre) and its whole area.
+    /// Vertical extent of every bar (−70 dBFS at `maxY`, +3 dB at `minY`) across the columns' horizontal span.
+    let scale: CGRect
+    /// One full-height column slot per entry of `speakers`. Receding columns narrow to zero width.
+    let columns: [CGRect]
+    /// Height of the group header row: full in Spatial, none in Stereo and Mono.
+    let headerSpace: CGFloat
+    /// Header slot per group present, over its columns; receding headers narrow too.
+    let headers: [(group: SpeakerGroup, rect: CGRect)]
+    /// The correlation track (−1 at the left, 0 at the centre, +1 at the right) and its whole section.
     let correlationTrack: CGRect
     let correlationArea: CGRect
 
-    init(size: CGSize, presence: CGFloat = 1, mono: CGFloat = 0, layout: SpeakerLayout = .standard) {
+    /// Lanes of the correlation bar: 1 (full band), 3 or 5 (`StereoBands.Resolution`), or a value between them
+    /// while a band switch animates; the bar's height follows it.
+    let lanes: CGFloat
+
+    init(size: CGSize, presence: CGFloat = 1, mono: CGFloat = 0, layout: SpeakerLayout = .standard, part: Part,
+         lanes: CGFloat = CGFloat(StereoBands.count)) {
+        self.lanes = max(1, lanes)
+        let correlationHeight = Self.correlationHeight(lanes: max(1, lanes))
         let p = max(0, min(1, presence))
         let m = max(0, min(1, mono))
         self.presence = p
         self.mono = m
+        correlationWeight = (1 - p) * (1 - m)
         speakers = layout.speakers
         stageWell = CGRect(origin: .zero, size: CGSize(width: max(1, size.width), height: max(1, size.height)))
         let inner = stageWell.insetBy(dx: 12, dy: 10)
 
-        // Columns shared by rows, the dB axis and the correlation meter.
-        let barLeft = inner.minX + Self.nameColumn + 2
-        scale = CGRect(x: barLeft, y: inner.minY,
-                       width: max(1, inner.maxX - Self.readoutColumn - Self.clipColumn - barLeft), height: inner.height)
+        // Room: the largest centred square. Levels: the meters fill the well above the correlation section, which
+        // takes its height only as far as it is shown.
+        let side: CGFloat
+        let meterHeight: CGFloat
+        switch part {
+        case .room:
+            side = max(1, min(inner.width, inner.height))
+            radar = CGRect(x: (inner.midX - side / 2).rounded(), y: (inner.midY - side / 2).rounded(), width: side, height: side)
+            meterHeight = 0
+            block = CGRect(x: inner.minX, y: inner.maxY, width: inner.width, height: 0)
+        case .levels:
+            side = 0
+            radar = CGRect(x: inner.midX, y: inner.minY, width: 0, height: 0)
+            meterHeight = max(1, inner.height - (correlationHeight + Self.roomGap) * correlationWeight)
+            block = CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: meterHeight)
+        }
+        correlationArea = CGRect(x: inner.minX, y: block.maxY + Self.roomGap, width: inner.width, height: correlationHeight)
+        correlationTrack = CGRect(x: inner.minX + Self.laneLabelColumn, y: correlationArea.minY + 22,
+                                  width: max(1, inner.width - Self.laneLabelColumn - Self.laneValueColumn),
+                                  height: Self.trackHeight(lanes: max(1, lanes)))
 
-        // Stack, top to bottom: room, rows block, dB axis, correlation meter. The rows take the height they
-        // want (up to a comfortable pitch), the room the largest square left, and the whole stack is centred
-        // so a tall column has no dead band in the middle.
+        // Columns: each takes a pitch share by its weight, groups sit a small gap apart, and the set is centred
+        // over the space right of the dB scale.
         let groups = layout.groups
         let weights = speakers.map { $0.weight(presence: p, mono: m) }
         let totalWeight = weights.reduce(0, +)
+        // Group headers name the groups of a multichannel layout; Stereo and Mono have only the front pair, so
+        // FRONT folds away with the other headers and gives its height to the bars.
         let headerWeights = groups.map { $0 == .front ? CGFloat(1) : p }
-        let headerTotal = headerWeights.reduce(0, +) * Self.headerHeight
-        // Mono has no L/R pair, so the correlation meter folds away with R.
-        let footer = Self.axisHeight + Self.correlationHeight * (1 - m)
-        let minimumRoom = min(inner.width, 150)
+        headerSpace = Self.headerHeight * p
+        let gaps = headerWeights.dropFirst().reduce(0, +) * Self.groupGap
+        let area = CGRect(x: inner.minX + Self.axisColumn, y: block.minY, width: max(1, inner.width - Self.axisColumn),
+                          height: meterHeight)
         let spatialPitch = Self.spatialPitch(channels: layout.channelCount)
         let pairPitch = Self.stereoPitch + (Self.monoPitch - Self.stereoPitch) * m
         let maxPitch = pairPitch + (spatialPitch - pairPitch) * p
-        let rowsSpace = inner.height - footer - minimumRoom - Self.roomGap - headerTotal
-        let pitch = max(4, min(maxPitch, rowsSpace / max(0.0001, totalWeight)))
-        let blockHeight = pitch * totalWeight + headerTotal
-        let side = max(1, min(inner.width, inner.height - footer - blockHeight - Self.roomGap))
-        let stackHeight = side + Self.roomGap + blockHeight + footer
-        let top = inner.minY + max(0, (inner.height - stackHeight) / 2)
-        radar = CGRect(x: (inner.midX - side / 2).rounded(), y: top.rounded(), width: side, height: side)
-        let blockTop = radar.maxY + Self.roomGap
-        let blockBottom = blockTop + blockHeight
-        correlationArea = CGRect(x: inner.minX, y: blockBottom + Self.axisHeight, width: inner.width, height: Self.correlationHeight)
-        correlationTrack = CGRect(x: scale.minX, y: correlationArea.minY + 20, width: scale.width, height: 8)
-
-        var y = blockTop
-        var rowRects = [CGRect](repeating: .zero, count: speakers.count)
+        let pitch = max(1, min(maxPitch, (area.width - gaps) / max(0.0001, totalWeight)))
+        let used = pitch * totalWeight + gaps
+        var x = area.minX + max(0, (area.width - used) / 2)
+        var columnRects = [CGRect](repeating: .zero, count: speakers.count)
         var headerRects: [(SpeakerGroup, CGRect)] = []
         for (groupIndex, group) in groups.enumerated() {
-            let headerHeight = Self.headerHeight * headerWeights[groupIndex]
-            headerRects.append((group, CGRect(x: inner.minX, y: y, width: inner.width, height: headerHeight)))
-            y += headerHeight
+            if groupIndex > 0 { x += Self.groupGap * headerWeights[groupIndex] }
+            let start = x
             for (index, speaker) in speakers.enumerated() where speaker.group == group {
-                let height = pitch * weights[index]
-                rowRects[index] = CGRect(x: inner.minX, y: y, width: inner.width, height: height)
-                y += height
+                let width = pitch * weights[index]
+                columnRects[index] = CGRect(x: x, y: area.minY, width: width, height: area.height)
+                x += width
             }
+            headerRects.append((group, CGRect(x: start, y: area.minY, width: x - start, height: Self.headerHeight)))
         }
-        rows = rowRects
+        columns = columnRects
         headers = headerRects
-        block = CGRect(x: inner.minX, y: blockTop, width: inner.width, height: blockHeight)
-        meterArea = CGRect(x: inner.minX, y: block.minY, width: inner.width, height: correlationArea.maxY - block.minY)
+        let barsTop = area.minY + headerSpace + Self.readoutHeight + Self.capHeight
+        scale = CGRect(x: area.minX, y: barsTop, width: area.width,
+                       height: max(0, area.maxY - Self.nameHeight - barsTop))
         nodeRadius = max(5, min(9, side * 0.028))
 
-        // Spatial: the whole room centred in the square. Stereo: zoom onto the listener–L–R triangle and
-        // centre it, labels included, so the stage fills the square.
-        let spatialRadius = side * 0.36
-        let stereoRadius = side * 0.68
-        let reach = stereoRadius + nodeRadius + Self.labelOffset + 6
-        // L and R close in to a single front-centre source as Mono takes over.
-        let stereoTop = -reach * cos(.pi / 6 * (1 - m)), stereoBottom: CGFloat = 8
-        let spatialCenter = CGPoint(x: radar.midX, y: radar.midY)
-        let stereoCenter = CGPoint(x: radar.midX, y: radar.midY - (stereoTop + stereoBottom) / 2)
-        center = CGPoint(x: stereoCenter.x + (spatialCenter.x - stereoCenter.x) * p,
-                         y: stereoCenter.y + (spatialCenter.y - stereoCenter.y) * p)
-        bedRadius = stereoRadius + (spatialRadius - stereoRadius) * p
-        heightRadius = bedRadius * 0.54
+        // Immersive: the room drawn flat (`flat`), fitted with its speaker names into the well above
+        // the band legend. The fit depends on the format only, so the room holds still through mode changes and
+        // only its speakers come and go.
+        let well = CGRect(x: inner.minX, y: inner.minY, width: inner.width,
+                          height: max(1, inner.height - (Self.legendHeight + 6) * (1 - m)))
+        // The floor ring and the axis, with each speaker's marker (about 0.09 room units with its level ring).
+        var extent: [CGPoint] = (0..<36).map { step in
+            Self.flat(Self.roomPoint(azimuth: Double(step) * 10, height: false)).point
+        }
+        for speaker in layout.speakers {
+            guard let azimuth = speaker.azimuth else { continue }
+            let at = Self.flat(Self.roomPoint(azimuth: azimuth, height: speaker.group == .height))
+            let reach = 0.09 * at.scale
+            extent += [CGPoint(x: at.point.x - reach, y: at.point.y - reach), CGPoint(x: at.point.x + reach, y: at.point.y + reach)]
+        }
+        extent.append(Self.flat(Point3(x: 0, y: Self.axisTop, z: 0)).point)
+        let minX = extent.map(\.x).min()!, maxX = extent.map(\.x).max()!
+        let minY = extent.map(\.y).min()!, maxY = extent.map(\.y).max()!
+        let fit = CGRect(x: well.minX + Self.labelSide, y: well.minY + Self.labelTop,
+                         width: max(1, well.width - 2 * Self.labelSide), height: max(1, well.height - Self.labelTop - 6))
+        stageScale = max(8, min(fit.width / max(0.01, maxX - minX), fit.height / max(0.01, maxY - minY)))
+        stageOrigin = CGPoint(x: fit.midX - (minX + maxX) / 2 * stageScale, y: fit.midY - (minY + maxY) / 2 * stageScale)
     }
 
     /// L always weighs 1, R recedes in Mono, every other channel follows the Spatial presence.
     func weight(_ index: Int) -> CGFloat { speakers[index].weight(presence: presence, mono: mono) }
-    func headerWeight(_ group: SpeakerGroup) -> CGFloat { group == .front ? 1 : presence }
+    func headerWeight(_ group: SpeakerGroup) -> CGFloat { presence }
 
-    /// The bar inside a row: thickness follows the row pitch, so collapsing rows thin out as they fade.
+    /// The bar inside a column: thickness follows the column pitch, so narrowing columns thin out as they fade.
     func bar(_ index: Int) -> CGRect {
-        let row = rows[index]
-        let thickness = min(row.height * 0.56, max(3, min(18, row.height * 0.46)))
-        return CGRect(x: scale.minX, y: row.midY - thickness / 2, width: scale.width, height: thickness)
+        let column = columns[index]
+        // Slim, like the loudness gauge on the summary, in Atmos; the two wide Stereo columns carry fuller bars.
+        let limit = Self.pairBar + (Self.spatialBar - Self.pairBar) * presence
+        let thickness = min(column.width * 0.6, max(3, min(limit, column.width * 0.4)))
+        return CGRect(x: column.midX - thickness / 2, y: scale.minY, width: thickness, height: scale.height)
     }
 
-    func x(decibels db: Float) -> CGFloat { scale.minX + CGFloat(MeterScale.position(decibels: db)) * scale.width }
-    /// How far each mirrored marker moves from −1 at an end toward +1 at the centre.
-    func correlationInset(_ value: Float) -> CGFloat {
-        CGFloat((max(-1, min(1, value)) + 1) / 2) * correlationTrack.width / 2
+    /// The clip light over a bar: a dot centred on it, narrower for thin bars.
+    func cap(_ index: Int) -> CGRect {
+        let bar = bar(index)
+        let diameter = min(Self.capDiameter, bar.width)
+        return CGRect(x: bar.midX - diameter / 2, y: scale.minY - Self.capHeight / 2 - diameter / 2,
+                      width: diameter, height: diameter)
     }
 
-    var nameX: CGFloat { meterArea.minX + Self.nameColumn / 2 }
-    var clipX: CGFloat { scale.maxX + Self.clipColumn / 2 }
-    var readoutMaxX: CGFloat { meterArea.maxX }
-    var axisY: CGFloat { block.maxY + Self.axisHeight / 2 + 1 }
+    /// The part of a bar above 0 dB, up to `overTop`: tinted in the track, filled in ember by an over.
+    func overTrack(_ index: Int) -> CGRect {
+        let bar = bar(index)
+        return CGRect(x: bar.minX, y: bar.minY, width: bar.width, height: max(0, y(decibels: 0) - bar.minY))
+    }
+
+    /// Height fraction of a level on the bar: the IEC deflection up to 0 dB, then linear to `overTop`.
+    static func fraction(decibels db: Float) -> CGFloat {
+        guard db > 0 else { return CGFloat(MeterScale.position(decibels: db)) * (1 - overShare) }
+        return 1 - overShare + CGFloat(min(db, overTop) / overTop) * overShare
+    }
+
+    func y(decibels db: Float) -> CGFloat { scale.maxY - Self.fraction(decibels: db) * scale.height }
+    /// Where a correlation reading sits on the track: −1 and +1 at the centres of the lanes' rounded ends, 0 halfway.
+    func correlationX(_ value: Float) -> CGFloat {
+        let cap = Self.laneCap
+        return correlationTrack.minX + cap + CGFloat((max(-1, min(1, value)) + 1) / 2) * (correlationTrack.width - 2 * cap)
+    }
+
+    /// The lane of band group `band` (0 = lowest) when the bar shows `count` lanes: the top group on top. The
+    /// lanes share the bar's current height, so during a band switch the outgoing and incoming sets both fit it.
+    func correlationLane(_ band: Int, of count: Int) -> CGRect {
+        let n = CGFloat(max(1, count))
+        let height = max(1, (correlationTrack.height - (n - 1) * Self.laneGap) / n)
+        let row = n - 1 - CGFloat(band)
+        return CGRect(x: correlationTrack.minX, y: correlationTrack.minY + row * (height + Self.laneGap),
+                      width: correlationTrack.width, height: height)
+    }
+
+    /// Centre of a column's held-peak readout, and of its channel name.
+    func readoutPoint(_ index: Int) -> CGPoint {
+        CGPoint(x: columns[index].midX, y: block.minY + headerSpace + Self.readoutHeight / 2)
+    }
+    func namePoint(_ index: Int) -> CGPoint { CGPoint(x: columns[index].midX, y: scale.maxY + Self.nameHeight / 2 + 1) }
+    /// Right edge of the dB labels.
+    var axisMaxX: CGFloat { scale.minX - 5 }
 
     static func direction(_ azimuth: Double) -> CGVector {
         let radians = azimuth * .pi / 180
@@ -562,20 +842,118 @@ struct SoundstageLayout {
 
     func direction(_ speaker: Speaker) -> CGVector { Self.direction(azimuth(speaker) ?? 0) }
 
-    func node(_ speaker: Speaker) -> CGPoint {
-        guard let azimuth = azimuth(speaker) else { return center }
-        let radius = speaker.group == .height ? heightRadius : bedRadius
-        let direction = Self.direction(azimuth)
-        return CGPoint(x: center.x + direction.dx * radius, y: center.y + direction.dy * radius)
+    // MARK: Surround scope (Immersive)
+
+    /// A point of the room in room units: the listener at the origin, the bed ring's radius 1, x to the right,
+    /// y up, z toward the front.
+    struct Point3 {
+        var x: CGFloat, y: CGFloat, z: CGFloat
+        static func + (a: Point3, b: Point3) -> Point3 { Point3(x: a.x + b.x, y: a.y + b.y, z: a.z + b.z) }
+        static func * (a: Point3, k: CGFloat) -> Point3 { Point3(x: a.x * k, y: a.y * k, z: a.z * k) }
+    }
+    /// The room is drawn flat, with no perspective: the floor circle squashed to an ellipse (`floorTilt`) and
+    /// height as a straight lift up the screen (`liftRatio`), so every room circle is an ellipse and every
+    /// position a multiply-add. A small linear size cue (`sizeCue`) keeps the rear of the room nearer.
+    static let floorTilt: CGFloat = 0.42
+    static let liftRatio: CGFloat = 0.95
+    static let sizeCue: CGFloat = 0.14
+    /// The upper layer: raised above the bed, a little inside its ring.
+    static let heightReach: CGFloat = 0.78
+    static let heightLift: CGFloat = 1.0
+    /// The vertical axis through the listener reaches this high.
+    static let axisTop: CGFloat = 1.2
+    /// A speaker marker's radius, in room units at the listener, and its limits in points.
+    static let markerSize: CGFloat = 0.055
+    static let markerLimits: ClosedRange<CGFloat> = 5...9
+    /// Room kept around the room for the speaker names: above the markers and to either side.
+    static let labelTop: CGFloat = 12
+    static let labelSide: CGFloat = 16
+
+    /// Unfitted screen offset of a room point (y down), and its size cue: 1 at the listener, larger toward the rear.
+    static func flat(_ p: Point3) -> (point: CGPoint, scale: CGFloat) {
+        (CGPoint(x: p.x, y: -(p.z * floorTilt + p.y * liftRatio)), 1 - sizeCue * p.z)
     }
 
-    /// Where a speaker's name sits: radially outside its node, or under the listener for LFE.
+    /// Where a speaker at `azimuth` stands in the room: on the bed ring at ear level, or raised in the upper layer.
+    static func roomPoint(azimuth: Double, height: Bool) -> Point3 {
+        let radians = azimuth * .pi / 180
+        let reach = height ? heightReach : 1
+        return Point3(x: CGFloat(sin(radians)) * reach, y: height ? heightLift : 0, z: CGFloat(cos(radians)) * reach)
+    }
+
+    /// A speaker in the room (L and R slide to front centre in Mono); LFE, which has no direction, at the listener.
+    func position(_ speaker: Speaker) -> Point3 {
+        guard let azimuth = azimuth(speaker) else { return Point3(x: 0, y: 0, z: 0) }
+        return Self.roomPoint(azimuth: azimuth, height: speaker.group == .height)
+    }
+
+    /// A room point on screen and its size cue. Points lower on screen are nearer, so drawing in screen order
+    /// top to bottom lays near over far.
+    func project(_ p: Point3) -> (point: CGPoint, scale: CGFloat) {
+        let raw = Self.flat(p)
+        return (CGPoint(x: stageOrigin.x + raw.point.x * stageScale, y: stageOrigin.y + raw.point.y * stageScale), raw.scale)
+    }
+
+    func point(_ p: Point3) -> CGPoint { project(p).point }
+
+    /// A speaker marker's radius where `p` stands.
+    func markerRadius(_ p: Point3) -> CGFloat {
+        let base = min(Self.markerLimits.upperBound, max(Self.markerLimits.lowerBound, stageScale * Self.markerSize))
+        return base * Self.flat(p).scale
+    }
+
+    // MARK: Stereometer (Stereo)
+
+    /// Level scale of the stereometer's cloud: a sample at this level or below sits at the centre, 0 dBFS on the rim.
+    static let scopeFloor: Float = -60
+    /// Band rims just outside the plot: one arc per band, the lowest innermost.
+    static let rimGap: CGFloat = 7
+    static let rimPitch: CGFloat = 5
+    /// Room kept outside the plot for the rims and the L, M, R labels.
+    static let scopeMargin: CGFloat = rimGap + rimPitch * CGFloat(StereoBands.count - 1) + 16
+    static let legendHeight: CGFloat = 18
+
+    /// The stereometer's half disc, in Stereo: a polar sample plot, mid (L+R) straight up and side (R−L) to the
+    /// right, so a mono sample points to M, a sample on L alone to the upper left (−45°), on R alone to the upper
+    /// right (+45°), and an out-of-phase one lies along the horizon. Distance from the centre is the sample's level.
+    var scopeCenter: CGPoint {
+        let inner = stageWell.insetBy(dx: 12, dy: 10)
+        let height = inner.height - Self.legendHeight - 6
+        let slack = max(0, height - Self.scopeMargin - scopeRadius - 16)
+        return CGPoint(x: inner.midX, y: inner.minY + Self.scopeMargin + scopeRadius + slack / 2)
+    }
+    var scopeRadius: CGFloat {
+        let inner = stageWell.insetBy(dx: 12, dy: 10)
+        let height = inner.height - Self.legendHeight - 6
+        return max(20, min(inner.width / 2 - Self.scopeMargin + 6, height - Self.scopeMargin - 16))
+    }
+    /// A point of the plot: `angle` in degrees from M (−90 = −S, +90 = +S), `fraction` of the radius.
+    func scopePoint(angle: Double, fraction: CGFloat) -> CGPoint {
+        let radians = angle * .pi / 180
+        let radius = scopeRadius * fraction
+        return CGPoint(x: scopeCenter.x + CGFloat(sin(radians)) * radius, y: scopeCenter.y - CGFloat(cos(radians)) * radius)
+    }
+    /// Radius of a band's rim arc.
+    func rimRadius(_ band: Int) -> CGFloat { scopeRadius + Self.rimGap + Self.rimPitch * CGFloat(band) }
+    /// Where the L, M and R labels sit: beyond the outermost rim.
+    func scopeLabel(angle: Double) -> CGPoint {
+        scopePoint(angle: angle, fraction: (rimRadius(StereoBands.count - 1) + 10) / max(1, scopeRadius))
+    }
+    /// The band legend under the plot.
+    var scopeLegend: CGRect {
+        let inner = stageWell.insetBy(dx: 12, dy: 10)
+        return CGRect(x: inner.minX, y: inner.maxY - Self.legendHeight, width: inner.width, height: Self.legendHeight)
+    }
+    /// Where a sample's level lands on the radius.
+    static func scopeFraction(decibels db: Float) -> CGFloat {
+        CGFloat(max(0, min(1, (db - scopeFloor) / -scopeFloor)))
+    }
+
+    /// Where a speaker's name sits: just above its marker and level ring, or under the listener for LFE.
     func label(_ speaker: Speaker) -> CGPoint {
-        guard let azimuth = azimuth(speaker) else { return CGPoint(x: center.x, y: center.y + nodeRadius + 13) }
-        let point = node(speaker)
-        let direction = Self.direction(azimuth)
-        // Bed labels sit outside the ring; upper-layer labels inside theirs, clear of the bed labels.
-        let offset = (nodeRadius + Self.labelOffset) * (speaker.group == .height ? -1 : 1)
-        return CGPoint(x: point.x + direction.dx * offset, y: point.y + direction.dy * offset)
+        let at = position(speaker)
+        let projected = point(at)
+        guard speaker.azimuth != nil else { return CGPoint(x: projected.x, y: projected.y + 14) }
+        return CGPoint(x: projected.x, y: projected.y - markerRadius(at) - 12)
     }
 }

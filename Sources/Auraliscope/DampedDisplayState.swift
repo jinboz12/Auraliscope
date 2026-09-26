@@ -8,6 +8,7 @@ final class DampedDisplayState {
     private var rmsVelocity = [Float](repeating: 0, count: Role.count)
     private var loudnessVelocity = [Float](repeating: 0, count: 3)
     private var correlationVelocity: Float = 0
+    private var bandVelocity = [Float](repeating: 0, count: 3 * StereoBands.groups.count)
     private var initialized = false
 
     func step(target: MeterSnapshot, deltaTime: Float) -> MeterSnapshot {
@@ -17,6 +18,7 @@ final class DampedDisplayState {
             peakVelocity = Array(repeating: 0, count: Role.count)
             rmsVelocity = Array(repeating: 0, count: Role.count)
             loudnessVelocity = Array(repeating: 0, count: 3)
+            bandVelocity = Array(repeating: 0, count: 3 * StereoBands.groups.count)
             initialized = true
             return value
         }
@@ -32,12 +34,26 @@ final class DampedDisplayState {
         damp(&value.momentaryLUFS, &loudnessVelocity[0], target.momentaryLUFS, dt, 13)
         damp(&value.shortLUFS, &loudnessVelocity[1], target.shortLUFS, dt, 10)
         damp(&value.integratedLUFS, &loudnessVelocity[2], target.integratedLUFS, dt, 7)
-        // A gentle needle: correlation flickers tick to tick, so it settles more slowly than levels.
+        // The DSP already integrates correlation over 0.25 s, so the needle only needs smoothing between ticks.
         if target.correlation == MeterSnapshot.noCorrelation || value.correlation == MeterSnapshot.noCorrelation {
             value.correlation = target.correlation
             correlationVelocity = 0
         } else {
-            damp(&value.correlation, &correlationVelocity, target.correlation, dt, 6)
+            damp(&value.correlation, &correlationVelocity, target.correlation, dt, 12)
+        }
+        // Band correlations rest in silence like the broadband one; width and balance only move while it reads.
+        for band in 0..<StereoBands.groups.count {
+            value.bandLevel[band] = target.bandLevel[band]
+            if target.bandCorrelation[band] == MeterSnapshot.noCorrelation || value.bandCorrelation[band] == MeterSnapshot.noCorrelation {
+                value.bandCorrelation[band] = target.bandCorrelation[band]
+                value.bandWidth[band] = target.bandWidth[band]
+                value.bandBalance[band] = target.bandBalance[band]
+                for k in 0..<3 { bandVelocity[3 * band + k] = 0 }
+            } else {
+                damp(&value.bandCorrelation[band], &bandVelocity[3 * band], target.bandCorrelation[band], dt, 12)
+                damp(&value.bandWidth[band], &bandVelocity[3 * band + 1], target.bandWidth[band], dt, 12)
+                damp(&value.bandBalance[band], &bandVelocity[3 * band + 2], target.bandBalance[band], dt, 12)
+            }
         }
         value.sequence = target.sequence
         return value

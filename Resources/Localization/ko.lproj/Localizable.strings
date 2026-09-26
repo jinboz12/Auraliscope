@@ -1,4 +1,4 @@
-/* 한국어. 미터 창의 레이블은 영어로 유지하고, 그 밖의 문구는 통용 번역어를 쓰며 True Peak, 단위, 약어, 표준 이름은 영어로 둡니다. */
+/* 한국어. 미터 창을 포함한 모든 문구에 통용 번역어를 쓰고, 단위, 채널 레이블, 약어, 표준과 제품 이름은 그대로 둡니다. */
 /* The policy and the glossary live in scripts/check-localization.py, which ./scripts/test.sh runs. */
 
 /* Menu bar and window titles */
@@ -11,30 +11,29 @@
 "Start Capture" = "캡처 시작";
 "Reset Measurements" = "측정 재설정";
 "Monitoring Mode" = "모니터링 모드";
-"Multi Channel Format" = "멀티채널 포맷";
+"Immersive Format" = "이머시브 포맷";
 "Channel Routing…" = "채널 라우팅…";
 "Auto" = "자동";
 "Mono" = "모노";
 "Stereo" = "스테레오";
-"Multi Channel" = "멀티채널";
 
 /* Toolbar and meter tooltips (the labels on the meter itself stay in English) */
 "Reset: clear peak holds and clip latches, and restart Integrated LUFS" = "재설정: 피크 홀드와 클립 래치를 지우고 통합 LUFS를 다시 시작합니다";
 "Monitor in Mono: one channel, read from the input routed to L" = "모노로 모니터링: 한 채널, L에 라우팅된 입력을 읽습니다";
 "Monitor in Stereo: L and R lead; other channels recede" = "스테레오로 모니터링: L과 R을 앞세우고 다른 채널은 뒤로 물립니다";
-"Monitor in Multi Channel: every channel of %@. Change the format in Settings ▸ Channels." = "멀티채널로 모니터링: %@의 모든 채널. 포맷은 설정 ▸ 채널에서 변경합니다.";
-"Auto: Mono when a single input is routed. Otherwise Multi Channel after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@." = "자동: 입력이 하나만 라우팅되면 모노입니다. 그 밖에는 L, R, LFE 이외 채널에 −60 dBFS를 넘는 신호가 150 ms 이어지면 멀티채널로, 전면 채널만 2.5초 이어지면 스테레오로 돌아갑니다. 무음이면 현재 모드를 유지하며 LFE만으로는 전환하지 않습니다. 현재 감지: %@.";
+"Monitor in Immersive: every channel of %@. Change the format in Settings ▸ Channels." = "이머시브로 모니터링: %@의 모든 채널. 포맷은 설정 ▸ 채널에서 변경합니다.";
+"Auto: Mono when a single input is routed. Otherwise Immersive after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@." = "자동: 입력이 하나만 라우팅되면 모노입니다. 그 밖에는 L, R, LFE 이외 채널에 −60 dBFS를 넘는 신호가 150 ms 이어지면 이머시브로, 전면 채널만 2.5초 이어지면 스테레오로 돌아갑니다. 무음이면 현재 모드를 유지하며 LFE만으로는 전환하지 않습니다. 현재 감지: %@.";
 "Auto mode" = "자동 모드";
 "Off" = "끔";
-"TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Multi Channel each keep their own and follow the mode." = "TARGET: 현재 모드의 라우드니스 표준. 게이지, 차이, 기록 대역과 VU 미터가 이 값을 기준으로 합니다. 스테레오와 멀티채널은 각자의 표준을 유지하며 모드에 따라 전환됩니다.";
-"CEILING: the True Peak limit of the current mode. TRUE PEAK turns amber above it." = "CEILING: 현재 모드의 True Peak 상한. 이를 넘으면 TRUE PEAK가 호박색으로 바뀝니다.";
+"TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Immersive each keep their own and follow the mode." = "목표: 현재 모드의 라우드니스 표준. 게이지, 차이, 기록 대역과 VU 미터가 이 값을 기준으로 합니다. 스테레오와 이머시브는 각자의 표준을 유지하며 모드에 따라 전환됩니다.";
+"CEILING: the True Peak limit of the current mode. TRUE PEAK turns amber above it." = "상한: 현재 모드의 트루 피크 상한. 이를 넘으면 트루 피크 값이 호박색으로 바뀝니다.";
 "VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS)." = "VU: 전체 프로그램을 하나의 바늘로 표시합니다. LFE를 제외한 모든 라우팅 채널의 전력 합이며 표준 300 ms VU 탄도를 사용합니다. 0 VU는 현재 모드의 라우드니스 목표(%@ dBFS)에 맞춰집니다.";
 "Drag to resize · double-click to reset" = "드래그하여 크기 조절 · 이중 클릭하여 재설정";
 "Dropped %d" = "누락 %d";
 
 /* Loudness standard menus */
 "Loudness target" = "라우드니스 목표";
-"True Peak ceiling" = "True Peak 상한";
+"True Peak ceiling" = "트루 피크 상한";
 "%@ · in use" = "%@ · 사용 중";
 "Loud master · club, EDM" = "라우드 마스터 · 클럽, EDM";
 "Streaming · Spotify, YouTube, Tidal" = "스트리밍 · Spotify, YouTube, Tidal";
@@ -43,10 +42,8 @@
 "Stereo & Mono" = "스테레오 및 모노";
 
 /* Accessibility */
-"Spectrum, 20 Hz to 20 kHz" = "스펙트럼, 20 Hz–20 kHz";
-"Spectrogram, last 8 seconds" = "스펙트로그램, 최근 8초";
+"Spectrogram and spectrum, 20 Hz to 20 kHz, last 3 to 8 seconds" = "스펙트로그램과 스펙트럼, 20 Hz–20 kHz, 최근 3–8초";
 "Waveform of each channel, last 4 seconds" = "채널별 파형, 최근 4초";
-"Soundstage: channel map and per-channel Peak and RMS meters" = "사운드스테이지: 채널 배치와 채널별 피크·RMS 미터";
 "VU meter, all channels" = "VU 미터, 모든 채널";
 "Resize panels" = "패널 크기 조절";
 
@@ -86,12 +83,10 @@
 "General" = "일반";
 "Audio" = "오디오";
 "Channels" = "채널";
-"Metering" = "미터링";
 "Appearance" = "모양";
 "LANGUAGE" = "언어";
 "Language" = "언어";
 "System" = "시스템 언어";
-"Switches instantly; metering carries on. Menu items supplied by macOS follow at the next launch. The meter itself keeps its English labels (units, channel names, modes, panel titles), as on consoles and DAWs." = "즉시 전환되며 측정은 계속됩니다. macOS가 제공하는 메뉴 항목은 다음 실행 시 바뀝니다. 미터 자체는 콘솔과 DAW처럼 영어 레이블(단위, 채널 이름, 모드, 패널 제목)을 유지합니다.";
 "WINDOW" = "윈도우";
 "Always on top" = "항상 위에 표시";
 "Full screen" = "전체 화면";
@@ -129,10 +124,9 @@
 
 /* Settings: Channels */
 "FORMAT" = "포맷";
-"Multi Channel format" = "멀티채널 포맷";
+"Immersive format" = "이머시브 포맷";
 "%@ · %d channels" = "%@ · %d채널";
 "Monitoring mode" = "모니터링 모드";
-"Multi Channel shows every channel of this format in Soundstage and Waveform; Stereo shows L and R; Mono reads only the input routed to L. Auto picks Mono when a single input is routed, and otherwise follows the programme between Stereo and Multi Channel." = "멀티채널은 사운드스테이지와 파형에 이 포맷의 모든 채널을, 스테레오는 L과 R을 표시하고, 모노는 L에 라우팅된 입력만 읽습니다. 자동은 입력이 하나만 라우팅되면 모노를, 그 밖에는 프로그램에 따라 스테레오와 멀티채널을 오갑니다.";
 "ROUTING" = "라우팅";
 "Default Order" = "기본 순서";
 "Input 1 to the first channel, input 2 to the second, and so on" = "입력 1은 첫 번째 채널, 입력 2는 두 번째 채널 순서로 연결합니다";
@@ -144,11 +138,8 @@
 "Height" = "하이트";
 
 /* Settings: Metering and Appearance */
-"MEASUREMENT" = "측정";
+"Start every measurement over: Integrated loudness, Range, peaks and the loudness history" = "모든 측정을 처음부터 다시 시작합니다: 통합 라우드니스, 레인지, 피크, 라우드니스 기록";
 "Reset measurements" = "측정 재설정";
-"Reset" = "재설정";
-"Momentary, Short-term and Integrated LUFS follow ITU-R BS.1770-5, including its gating. Range follows EBU Tech 3342. True Peak is measured with 4× oversampling below 96 kHz." = "순간·단기·통합 LUFS는 게이팅을 포함해 ITU-R BS.1770-5를 따릅니다. 라우드니스 레인지는 EBU Tech 3342를 따르며, True Peak는 96 kHz 미만에서 4× 오버샘플링으로 측정합니다.";
-"Set the loudness target and True Peak ceiling from the TARGET and CEILING menus on the loudness summary. Stereo and Multi Channel each keep their own." = "라우드니스 목표와 True Peak 상한은 라우드니스 요약의 TARGET 및 CEILING 메뉴에서 설정합니다. 스테레오와 멀티채널은 각각 따로 유지합니다.";
 "COLOR" = "색상";
 "Color theme" = "색상 테마";
 "INTERFACE" = "인터페이스";
@@ -157,14 +148,14 @@
 "Switch to Light Appearance" = "라이트 모양으로 전환";
 "Switch to Dark Appearance" = "다크 모양으로 전환";
 "Auto follows macOS. The sun and moon button in the toolbar, or View ▸ Appearance, switches between Light and Dark at any time." = "자동은 macOS 설정을 따릅니다. 도구 막대의 해·달 버튼이나 보기 ▸ 모양에서 언제든지 라이트와 다크를 전환할 수 있습니다.";
-"The accent colors controls, traces and level meters in both appearances. In Light it is deepened just enough to stay legible on white." = "강조 색상은 두 모양 모두에서 컨트롤, 트레이스, 레벨 미터에 적용됩니다. 라이트에서는 흰 배경에서도 잘 읽히도록 필요한 만큼만 진하게 조정됩니다.";
+"The theme's accent colors the controls, traces and level meters in both appearances. In Light it is deepened just enough to stay legible on white." = "테마의 강조 색상은 두 모양 모두에서 컨트롤, 트레이스, 레벨 미터에 적용됩니다. 라이트에서는 흰 배경에서도 잘 읽히도록 필요한 만큼만 진하게 조정됩니다.";
 
 /* Welcome */
 "See your sound in real time" = "소리를 실시간으로 확인하세요";
 "Live analysis of any input or output, from Mono to 9.1.6." = "모든 입력과 출력을 모노부터 9.1.6까지 실시간으로 분석합니다.";
 "Frequency content and pitch, live and over the last 8 seconds." = "실시간 및 최근 8초의 주파수 성분과 음높이.";
-"LUFS, Range and True Peak against a delivery target." = "납품 목표 대비 LUFS, 라우드니스 레인지, True Peak.";
-"Every channel over the last four seconds." = "모든 채널의 최근 4초 파형.";
+"LUFS, Range and True Peak against a delivery target." = "납품 목표 대비 LUFS, 라우드니스 레인지, 트루 피크.";
+"Every channel over the last 2, 4 or 8 seconds." = "모든 채널의 최근 2초, 4초 또는 8초 파형.";
 "Formats up to 9.1.6, with up to 64 inputs to route." = "최대 9.1.6 포맷, 최대 64개 입력 라우팅.";
 "Needed to read the input you select. Audio stays on this Mac and is never recorded." = "선택한 입력을 읽으려면 필요합니다. 오디오는 이 Mac에만 머무르며 녹음되지 않습니다.";
 "Allow Microphone Access" = "마이크 접근 허용";
@@ -176,7 +167,7 @@
 "Only needed to monitor what apps play to an output. macOS requests access when that output starts; permission can later be changed in System Settings." = "앱이 출력으로 재생하는 소리를 모니터링할 때만 필요합니다. 해당 출력 캡처를 시작하면 macOS가 권한을 요청하며, 나중에 시스템 설정에서 변경할 수 있습니다.";
 "Don't show this again" = "다시 표시하지 않음";
 "Start Metering" = "측정 시작";
-"Spectrum & Spectrogram" = "스펙트럼과 스펙트로그램";
+"Spectrogram & Spectrum" = "스펙트로그램과 스펙트럼";
 "Waveform" = "파형";
 "Soundstage" = "사운드스테이지";
 
@@ -191,9 +182,160 @@
 "Third-party notices" = "서드파티 고지";
 "Third-party notices are included in the packaged app." = "서드파티 고지는 패키지된 앱에 포함되어 있습니다.";
 "Copy Version Info" = "버전 정보 복사";
-"Live frequency analysis, pitch detection and spectral history." = "실시간 주파수 분석, 음높이 감지 및 스펙트럼 기록.";
-"LUFS, loudness range and True Peak against your target." = "목표 대비 LUFS, 라우드니스 레인지 및 True Peak.";
+"Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard." = "실시간 스펙트럼과 스펙트럼 기록을 하나의 음높이 축에 표시하고, 함께 울리는 음을 건반에 표시.";
+"LUFS, loudness range and True Peak against your target." = "목표 대비 LUFS, 라우드니스 레인지 및 트루 피크.";
 "Real-time waveforms for each monitored channel." = "모니터링 중인 각 채널의 실시간 파형.";
-"Channel levels, clipping and correlation, from Mono to 9.1.6." = "모노부터 9.1.6까지 채널 레벨, 클리핑 및 상관도.";
 "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "오디오는 Mac의 메모리에서만 분석되며 녹음되거나 업로드되지 않습니다.";
 "Spectrogram inspired by AudioSpectrogram. MIT license included." = "스펙트로그램은 AudioSpectrogram에서 영감을 받았습니다. MIT 라이선스가 포함되어 있습니다.";
+
+/* Meter window, theme names and the language restart (1.0.1). */
+"LOUDNESS" = "라우드니스";
+"SHORT-TERM LOUDNESS" = "단기 라우드니스";
+"MOMENTARY" = "순간";
+"INTEGRATED" = "통합";
+"RANGE" = "레인지";
+"TRUE PEAK" = "트루 피크";
+"PEAK" = "피크";
+"TARGET" = "목표";
+"Dots" = "점";
+"Outlines" = "윤곽선";
+"Filled" = "채움";
+"Stereometer style" = "스테레오미터 스타일";
+"How the Stereo stereometer draws each band. Dots shows every sample; Outlines traces where each band's samples reach; Filled tints each outline, laying the smaller shapes over the larger so every edge stays visible." = "스테레오 모드에서 스테레오미터가 각 대역을 그리는 방식입니다. 점은 모든 샘플을 표시하고, 윤곽선은 각 대역의 샘플이 닿는 범위를 그리며, 채움은 각 윤곽선 안을 색조로 채우고 작은 도형을 큰 도형 위에 겹쳐 모든 가장자리가 보이게 합니다.";
+"Panels" = "패널";
+"Peak holds" = "피크 홀드";
+"Time span" = "시간 범위";
+"%d s" = "%d초";
+"A short mark at each band's recent peak on the live spectrum, held 1.2 s and then falling." = "실시간 스펙트럼에서 각 대역의 최근 피크에 짧은 표시를 하고, 1.2초 유지한 뒤 내려갑니다.";
+"How much history the lanes show. A short span resolves single transients; a long one shows the shape of a phrase." = "레인에 표시할 기록의 길이입니다. 짧으면 개별 트랜지언트가 또렷하고, 길면 프레이즈의 모양이 보입니다.";
+"Previewing. Source and routing change on Apply." = "미리 보는 중입니다. 소스와 라우팅은 적용 시 변경됩니다.";
+"Previewing settings" = "설정 미리 보는 중";
+"Click to clear the over warning" = "클릭하여 오버 경고 지우기";
+"Over on %@" = "%@ 오버";
+"MOMENTARY LOUDNESS" = "순간 라우드니스";
+"INTEGRATED LOUDNESS" = "통합 라우드니스";
+"SHORT-TERM" = "단기";
+"Momentary" = "순간";
+"Short-term" = "단기";
+"Integrated" = "통합";
+"Main reading" = "주 측정값";
+"Orientation" = "방향";
+"Standard" = "표준";
+"Mirrored" = "미러";
+"Previewing in the main window. Apply to keep, or Revert." = "메인 윈도우에서 미리 보는 중입니다. 유지하려면 적용, 아니면 되돌리기를 누르세요.";
+"Standard: keyboard on the left, the spectrogram scrolling left from now, the spectrum on the right. Mirrored flips the panel: the spectrum on the left, the spectrogram scrolling right from now, the keyboard on the right." = "표준: 건반은 왼쪽, 스펙트로그램은 현재에서 왼쪽으로 흐르고, 스펙트럼은 오른쪽에 있습니다. 미러는 패널을 좌우로 뒤집습니다: 스펙트럼은 왼쪽, 스펙트로그램은 현재에서 오른쪽으로 흐르고, 건반은 오른쪽에 있습니다.";
+"The large reading, gauge and target difference follow this choice. The other two readings stay beside it. Momentary covers 400 ms; Short-term covers 3 s. Integrated measures the programme since the last reset, with loudness gating." = "큰 측정값, 게이지와 목표 차이가 이 선택을 따릅니다. 나머지 두 값은 옆에 유지됩니다. 순간 라우드니스는 400 ms, 단기는 3 s를 측정합니다. 통합은 라우드니스 게이팅을 적용해 마지막 초기화 이후의 프로그램을 측정합니다.";
+"Band markers in the room: the full band, 3 or 5 bands, or off" = "룸의 대역 마커: 전체 대역, 3개 또는 5개 대역, 또는 끔";
+"BANDS" = "대역";
+"CEILING" = "상한";
+"ON TARGET" = "목표 도달";
+"LIVE" = "실시간";
+"PAUSED" = "일시정지";
+"LAST 15 S" = "최근 15초";
+"ALL CHANNELS" = "전체 채널";
+"now" = "현재";
+"all channels" = "전체 채널";
+"SPECTRUM" = "스펙트럼";
+"SPECTROGRAM" = "스펙트로그램";
+"pitch" = "음높이";
+"WAVEFORM" = "파형";
+"linear" = "선형";
+"min/max" = "최소/최대";
+"Left side" = "왼쪽";
+"Right side" = "오른쪽";
+"Left" = "왼쪽 채널";
+"Right" = "오른쪽 채널";
+"Clip" = "클리핑";
+"SOUNDSTAGE" = "사운드스테이지";
+"Peak" = "피크";
+"CORRELATION" = "상관도";
+"OUT OF PHASE" = "역위상";
+"WIDE" = "와이드";
+"STEREO" = "스테레오";
+"MONO" = "모노";
+"FRONT" = "프런트";
+"SURROUND" = "서라운드";
+"HEIGHT" = "하이트";
+"AUTO" = "자동";
+"Starlight" = "스타라이트";
+"Blossom Pink" = "블로섬 핑크";
+"Sage" = "세이지";
+"Vintage Amber" = "빈티지 앰버";
+"Phosphor Green" = "포스퍼 그린";
+"Ice Blue" = "아이스 블루";
+"Electric Violet" = "일렉트릭 바이올렛";
+"Safety Orange" = "세이프티 오렌지";
+"Ocean & Mist" = "오션 & 미스트";
+"Plum & Pearl" = "플럼 & 펄";
+"Copper & Linen" = "코퍼 & 리넨";
+
+/* Soundstage: vertical meters, true-peak overs and correlation (1.0.1 build 11). */
+"Out of phase" = "역위상";
+"Wide" = "와이드";
+"Sounds hollow and loses its centre; cancels on mono speakers, phones and club PAs." = "소리가 비고 중앙이 사라집니다. 모노 스피커, 휴대폰, 클럽 PA에서 상쇄됩니다.";
+"Very wide: some parts thin out or drop away when played in mono." = "매우 넓음: 모노로 재생하면 일부 소리가 얇아지거나 사라집니다.";
+"Healthy stereo width that holds up on mono speakers." = "건강한 스테레오 폭으로, 모노 스피커에서도 유지됩니다.";
+"Almost mono: narrow and centred, fully mono-safe." = "거의 모노: 좁고 중앙에 모이며, 모노 재생에도 안전합니다.";
+"No stereo signal." = "스테레오 신호 없음.";
+"IN MONO" = "모노에서";
+"OVER" = "오버";
+
+/* Soundstage and Channel Levels panels, Mono mode setting (1.0.1 build 12). */
+"Immersive shows every channel of this format in Soundstage, Channel Levels and Waveform; Stereo shows L and R with their correlation; Mono reads only the input routed to L. Auto follows the programme between Stereo and Immersive, and picks Mono for a single routed input when Mono is shown." = "이머시브는 사운드스테이지, 채널 레벨, 파형에 이 포맷의 모든 채널을, 스테레오는 L과 R 및 그 상관도를 표시하고, 모노는 L에 라우팅된 입력만 읽습니다. 자동은 프로그램에 따라 스테레오와 이머시브를 오가며, 모노 모드를 표시할 때는 입력이 하나만 라우팅되면 모노를 선택합니다.";
+"CHANNEL LEVELS" = "채널 레벨";
+"Soundstage: channel map" = "사운드스테이지: 채널 배치";
+"Channel levels: Peak and RMS meters per channel, and correlation in Stereo" = "채널 레벨: 채널별 피크·RMS 미터와 스테레오의 상관도";
+"Show Mono mode" = "모노 모드 표시";
+"Mono reads only the input routed to L and is rarely needed, so it stays out of the mode selector, the Meter menu and Auto until you turn it on." = "모노는 L에 라우팅된 입력만 읽으며 자주 쓰이지 않으므로, 켜기 전에는 모드 선택기, 미터 메뉴, 자동 모드에 나타나지 않습니다.";
+
+/* Launch meters the macOS default output (1.0.1 build 16). */
+"At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)." = "실행 시 Auraliscope는 현재 macOS 기본 출력, 즉 Mac이 재생 중인 소리를 측정합니다(macOS 14.2 이전에는 기본 입력).";
+
+/* Channel Levels legend (1.0.1 build 15). */
+"Hold" = "홀드";
+
+/* Help menu: diagnostic log (1.0.1). */
+"Show Diagnostic Logs" = "진단 로그 보기";
+
+/* About (1.0.1). */
+"The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive." = "스테레오와 이머시브 레이아웃(최대 9.1.6)의 채널 배치와 각 스피커의 레벨, 그리고 주파수 대역(전체 대역, 3개 또는 5개)의 위치: 스테레오에서는 스테레오미터, 이머시브에서는 대역 마커.";
+"Channel Levels" = "채널 레벨";
+"Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo." = "채널별 피크, RMS, 트루 피크 오버와 스테레오의 3개 또는 5개 주파수 대역 상관도.";
+"Click to reset True Peak" = "클릭하여 트루 피크 재설정";
+"Immersive" = "이머시브";
+"%d bands" = "%d개 대역";
+"Full band" = "전대역";
+"Frequency bands" = "주파수 대역";
+"Stereo readings for the full band, or split into 3 or 5 frequency bands" = "스테레오 판독: 전대역, 또는 3개나 5개 주파수 대역으로 분할";
+"Routing" = "라우팅";
+"Revert" = "되돌리기";
+"Apply" = "적용";
+"Applying…" = "적용 중…";
+"Could not apply: %@" = "적용하지 못함: %@";
+"All changes applied." = "모든 변경 사항이 적용되었습니다.";
+"Changes are not applied yet." = "변경 사항이 아직 적용되지 않았습니다.";
+"Apply the source and format first, then route their channels." = "먼저 소스와 포맷을 적용한 다음 채널을 라우팅하세요.";
+"Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation." = "메뉴 막대를 포함한 언어가 즉시 미리보기로 바뀌며 측정은 계속됩니다. 적용하면 변경 사항이 저장되고, 되돌리면 이전 언어로 돌아갑니다. 단위, 채널 레이블과 표준은 콘솔 및 DAW 표기를 유지합니다.";
+"Hide Auraliscope" = "Auraliscope 가리기";
+"Hide Others" = "기타 가리기";
+"Show All" = "모두 보기";
+"Quit Auraliscope" = "Auraliscope 종료";
+"Services" = "서비스";
+"Edit" = "편집";
+"Undo" = "실행 취소";
+"Redo" = "실행 복귀";
+"Cut" = "오려두기";
+"Copy" = "복사하기";
+"Paste" = "붙여넣기";
+"Paste and Match Style" = "붙여넣고 스타일 일치시키기";
+"Delete" = "삭제";
+"Select All" = "전체 선택";
+"Emoji & Symbols" = "이모티콘 및 기호";
+"Window" = "윈도우";
+"Minimize" = "최소화";
+"Zoom" = "확대/축소";
+"Bring All to Front" = "모두 앞으로 가져오기";
+"Help" = "도움말";
+"Start Dictation…" = "받아쓰기 시작…";
+"View" = "보기";
+"AutoFill" = "자동 완성";

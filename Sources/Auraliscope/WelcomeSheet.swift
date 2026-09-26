@@ -37,12 +37,12 @@ struct WelcomeSheet: View {
             .frame(height: 168)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                WelcomeFeature(symbol: "waveform.path", title: L("Spectrum & Spectrogram"),
+                WelcomeFeature(symbol: "waveform.path", title: L("Spectrogram & Spectrum"),
                                detail: L("Frequency content and pitch, live and over the last 8 seconds."), color: Theme.sage)
                 WelcomeFeature(symbol: "chart.xyaxis.line", title: L("Loudness"),
                                detail: L("LUFS, Range and True Peak against a delivery target."), color: Theme.ochre)
                 WelcomeFeature(symbol: "waveform", title: L("Waveform"),
-                               detail: L("Every channel over the last four seconds."), color: Theme.sand)
+                               detail: L("Every channel over the last 2, 4 or 8 seconds."), color: Theme.sand)
                 WelcomeFeature(symbol: "speaker.wave.3", title: L("Soundstage"),
                                detail: L("Formats up to 9.1.6, with up to 64 inputs to route."), color: Theme.heather)
             }
@@ -59,7 +59,7 @@ struct WelcomeSheet: View {
                     Spacer()
                     Text(permission.statusText).foregroundStyle(Theme.secondary)
                     Button { permission.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                        .buttonStyle(.borderless).help(L("Check again"))
+                        .glassIconButton().help(L("Check again"))
                 }
                 Text(L("Needed to read the input you select. Audio stays on this Mac and is never recorded."))
                     .font(.system(size: 11)).foregroundStyle(Theme.secondary)

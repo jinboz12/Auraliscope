@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Native menu images preserve the exact swatch colors in both the menu and selected item. Theme names are
-/// proper names and stay in English; only the accessibility label follows the language.
+/// Native menu images preserve the exact swatch colors in both the menu and selected item. Theme names follow
+/// the app language; a language switch retitles the items in place.
 struct ThemePicker: NSViewRepresentable {
     @Binding var selection: String
     @ObservedObject private var l10n = Localizer.shared
@@ -12,6 +12,10 @@ struct ThemePicker: NSViewRepresentable {
     func makeNSView(context: Context) -> NSPopUpButton {
         let button = NSPopUpButton(frame: .zero, pullsDown: false)
         button.controlSize = .small
+        // The glass popup SwiftUI's pickers use on macOS 26 (as the Language menu beside it), rather than AppKit's
+        // default, whose arrow capsule wears the macOS accent instead of the colour theme's.
+        // Its body comes from the Settings row (see `AppearancePane`), since a glass popup draws none on a card.
+        if #available(macOS 26, *) { button.bezelStyle = .glass }
         button.target = context.coordinator
         button.action = #selector(Coordinator.select(_:))
         for palette in Theme.Palette.allCases {
@@ -26,6 +30,9 @@ struct ThemePicker: NSViewRepresentable {
 
     func updateNSView(_ button: NSPopUpButton, context: Context) {
         context.coordinator.selection = $selection
+        for (item, palette) in zip(button.itemArray, Theme.Palette.allCases) where item.title != palette.title {
+            item.title = palette.title
+        }
         let selected = Theme.Palette(rawValue: selection) ?? .sage
         button.selectItem(at: Theme.Palette.allCases.firstIndex(of: selected)!)
         button.toolTip = "\(selected.title) · \(selected.hexLabel)"

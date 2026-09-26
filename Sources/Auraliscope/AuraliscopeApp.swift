@@ -44,9 +44,11 @@ struct AuraliscopeApp: App {
                         .modifier(ThemeIdentity())
                 }
                 .toolbar {
+                    BrandItem(model: model)
                     ModeItem(model: model)
                     TrailingItems(model: model)
                 }
+                .modifier(FullScreenToolbarBackground())
         }
         .defaultSize(width: 1400, height: 1060)
         Window(L("Settings"), id: "settings") {
@@ -59,8 +61,7 @@ struct AuraliscopeApp: App {
             AboutView()
                 .modifier(ThemeIdentity())
         }
-        .defaultSize(width: 660, height: 620)
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {
@@ -78,9 +79,9 @@ struct AuraliscopeApp: App {
                     .keyboardShortcut("r")
                 Divider()
                 Picker(L("Monitoring Mode"), selection: $model.formatMode) {
-                    ForEach(FormatMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    ForEach(model.availableModes) { mode in Text(mode.title).tag(mode) }
                 }
-                Picker(L("Multi Channel Format"), selection: $model.speakerLayout) {
+                Picker(L("Immersive Format"), selection: $model.speakerLayout) {
                     ForEach(SpeakerLayout.allCases) { layout in Text(verbatim: layout.name).tag(layout) }
                 }
                 Divider()
@@ -103,6 +104,11 @@ private struct AppearanceCommands: Commands {
     @ObservedObject private var theme = ThemeSettings.shared
 
     var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button(L("Show Diagnostic Logs")) {
+                NSWorkspace.shared.activateFileViewerSelecting([DiagnosticLog.folder])
+            }
+        }
         CommandGroup(after: .toolbar) {
             Picker(L("Appearance"), selection: $theme.mode) {
                 ForEach(AppearanceMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -114,10 +120,25 @@ private struct AppearanceCommands: Commands {
     }
 }
 
-/// The Mono | Stereo | Spatial selector (with AUTO) in the centre of the toolbar, as the HIG places a
-/// window's view switcher: the leading edge beside the window controls stays clear, which also keeps it free
-/// in full screen, where the controls slide in over that corner only when the pointer reaches the top edge.
-/// Actions sit at the trailing edge; the brand is in the heading row below.
+/// The toolbar is the window's only header, in a window and in full screen alike: the brand and the stream at
+/// the leading edge (after the window controls; in full screen, where those only slide in with the menu bar,
+/// it takes the corner itself), the mode selector in the centre as the HIG places a view switcher, and the
+/// actions at the trailing edge. Folding the former heading row into it gives the panels its height.
+private struct BrandItem: ToolbarContent {
+    let model: MeterModel
+
+    var body: some ToolbarContent {
+        if #available(macOS 26, *) {
+            // Plain text on the bar, not a glass control.
+            ToolbarItem(placement: .navigation) { ToolbarBrand(model: model) }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) { ToolbarBrand(model: model) }
+        }
+    }
+}
+
+/// The mode selector (Stereo | Atmos, Mono when enabled, with AUTO) in the centre of the toolbar.
 private struct ModeItem: ToolbarContent {
     let model: MeterModel
 
@@ -163,6 +184,7 @@ private struct TrailingItems: ToolbarContent {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
+        DiagnosticLog.start()
         // Light, Dark or Auto for the whole app, so system controls, menus, popovers and sheets match the
         // custom surfaces.
         ThemeSettings.shared.attach()
@@ -172,16 +194,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // The menu bar's AppKit items follow a language change at once (see `SystemMenus`).
+        DispatchQueue.main.async {
+            SystemMenus.follow()
+            SettingsDraft.shared.follow()
+        }
         if Diagnostics.enabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Diagnostics.logMenus() }
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationWillTerminate(_ notification: Notification) {
+        // A preview is not kept: put back what the app had before quitting.
+        SettingsDraft.shared.revert()
+        DiagnosticLog.finish("Quit")
+    }
 }
 
 /// The meter window, registered by its probe so menus and Settings can act on it.
+/// Whether the meter window is in full screen, for the views that dress differently there.
+@MainActor
+final class FullScreenState: ObservableObject {
+    static let shared = FullScreenState()
+    @Published var active = false
+}
+
+/// In a window the toolbar is transparent over the backdrop. In full screen AppKit moves it into a bar of its own
+/// with the system's grey; this gives that bar the backdrop's top colour, so the header reads the same in both.
+private struct FullScreenToolbarBackground: ViewModifier {
+    @ObservedObject private var state = FullScreenState.shared
+    @ObservedObject private var theme = ThemeSettings.shared
+
+    // One view whatever the state: branching here would give the whole window content a new identity on every
+    // switch, and its `onDisappear` would stop capture.
+    func body(content: Content) -> some View {
+        let dressed = content
+            .toolbarBackground(Theme.windowTop, for: .windowToolbar)
+            .toolbarBackground(state.active ? .visible : .automatic, for: .windowToolbar)
+        // A visible bar would also print the window title beside the brand; the brand already names the app.
+        if #available(macOS 15, *) {
+            dressed.toolbar(removing: .title)
+        } else {
+            dressed
+        }
+    }
+}
+
 enum MainWindow {
     static weak var window: NSWindow?
+    /// The saved frame has been applied this launch; later window probes must not apply it again.
+    static var frameRestored = false
     static func toggleFullScreen() {
         guard let window else { return }
         allowFullScreen(window)
@@ -261,11 +323,13 @@ private final class WindowProbe: NSView {
         window.styleMask.formUnion([.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView])
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.isOpaque = false
-        window.backgroundColor = .clear
+        // Opaque: the backdrop covers the whole window, so the window server need not blend it with the desktop
+        // on every frame the meters draw (a translucent window about doubled the GPU load).
+        window.isOpaque = true
+        window.backgroundColor = .windowBackgroundColor
         // The window follows the app's appearance (Light, Dark or Auto) rather than fixing its own.
         window.appearance = nil
-        window.isMovableByWindowBackground = true
+        window.isMovableByWindowBackground = !UserDefaults.standard.bool(forKey: "experimentNoBackgroundDrag")
         // The green button and View ▸ Enter Full Screen take the meter into its own Space.
         MainWindow.allowFullScreen(window)
         MainWindow.adoptGreenButton(window)
@@ -289,19 +353,40 @@ private final class WindowProbe: NSView {
             for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] note in
                     guard let self, let window = self.window else { return }
+                    let entering = note.name == NSWindow.willEnterFullScreenNotification
                     // Entering: a floating window would sit above the menu bar reveal; leaving: restore the preference.
-                    window.level = note.name == NSWindow.willEnterFullScreenNotification ? .normal : (self.floating ? .floating : .normal)
+                    window.level = entering ? .normal : (self.floating ? .floating : .normal)
+                    MainActor.assumeIsolated { FullScreenState.shared.active = entering }
+                    DiagnosticLog.event(entering ? "Full screen: on" : "Full screen: off")
                 })
             }
-            // Remember position and size across launches: AppKit restores the saved frame now (clamped to a
-            // visible screen) and writes it back on every move or resize. Snapshot runs leave it untouched.
+            // Remember position and size across launches. The saved frame is restored once per launch (clamped
+            // to a visible screen). A palette or appearance change rebuilds this view, and SwiftUI puts its own
+            // autosave name back on the window meanwhile, so a rebuilt probe only takes the name back and leaves
+            // the window where it is. Every move and resize is saved under our name explicitly, so the saved
+            // frame is current whichever name the window carries. Snapshot runs leave it untouched.
             if !Diagnostics.snapshotRequested {
-                window.setFrameAutosaveName(Self.frameName)
-                window.setFrameUsingName(Self.frameName)
+                if window.frameAutosaveName != Self.frameName {
+                    let current = window.frame
+                    window.setFrameAutosaveName(Self.frameName)
+                    if MainWindow.frameRestored {
+                        if window.frame != current { window.setFrame(current, display: false) }
+                    } else {
+                        MainWindow.frameRestored = true
+                        window.setFrameUsingName(Self.frameName)
+                    }
+                }
+                for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification] {
+                    observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { note in
+                        guard let window = note.object as? NSWindow, !window.styleMask.contains(.fullScreen) else { return }
+                        window.saveFrame(usingName: Self.frameName)
+                    })
+                }
             }
             // Settings and About snapshots capture their own window instead.
             if !Diagnostics.showAbout && !Diagnostics.showSettings { Diagnostics.captureWindowIfRequested(window) }
             Diagnostics.testFullScreenIfRequested(window)
+            Diagnostics.testThemeSwitchIfRequested(window)
             Diagnostics.probeWindowIfRequested(window)
         }
     }
@@ -349,24 +434,11 @@ struct UtilityWindowProbe: NSViewRepresentable {
     }
 }
 
-private struct VibrantWindowBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.blendingMode = .behindWindow
-        view.material = .underWindowBackground
-        view.state = .active
-        return view
-    }
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
-}
-
 /// Slate (or pale grey) dashboard backdrop with a quiet pool of light at the upper edge.
 private struct WindowBackdrop: View {
     var body: some View {
         ZStack {
-            VibrantWindowBackground()
-            LinearGradient(colors: [Theme.windowTop.opacity(0.99), Theme.windowBottom.opacity(0.995)],
-                           startPoint: .top, endPoint: .bottom)
+            LinearGradient(colors: [Theme.windowTop, Theme.windowBottom], startPoint: .top, endPoint: .bottom)
             RadialGradient(colors: [Theme.dark ? Theme.ink.opacity(0.045) : Color.white.opacity(0.7), .clear],
                            center: .top, startRadius: 0, endRadius: 720)
         }
@@ -452,49 +524,59 @@ private struct SettingsButton: View {
     }
 }
 
-/// Heading row: the brand mark (logo and AURALISCOPE), the stream format, and the capture state.
-/// Shorter windows get a slimmer row, so the brand is always on screen.
-private struct DashboardHeading: View {
+/// The toolbar's leading item: the brand mark, a hairline, then the stream on the wordmark's baseline, values
+/// set firmly and units quieter. Capture state is on the loudness summary's chip and the transport button.
+private struct ToolbarBrand: View {
     @ObservedObject var model: MeterModel
-    var tall = true
 
     var body: some View {
-        HStack(spacing: 12) {
-            BrandMark(size: tall ? 15 : 13)
-            Text(model.formatSummary)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(Theme.tertiary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Circle().fill(model.running ? Theme.sage : Theme.tertiary).frame(width: 6, height: 6)
-            Text(verbatim: model.running ? "LIVE" : "PAUSED")
-                .font(.system(size: 10, weight: .semibold))
-                .tracking(0.8)
-                .foregroundStyle(Theme.secondary)
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            BrandMark(size: 13)
+            Rectangle().fill(Theme.hairline.opacity(0.18))
+                .frame(width: 1, height: 14)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 2 }
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                ForEach(Array(model.streamParts.enumerated()), id: \.offset) { index, part in
+                    if index > 0 {
+                        Text(verbatim: "·").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.tertiary.opacity(0.6))
+                    }
+                    (Text(verbatim: part.value).font(.system(size: 12, weight: .semibold).monospacedDigit())
+                        .foregroundColor(Theme.secondary)
+                     + Text(verbatim: part.unit.isEmpty ? "" : "\u{2009}" + part.unit).font(.system(size: 10, weight: .medium))
+                        .foregroundColor(Theme.tertiary))
+                        .fixedSize()
+                }
+            }
+            .lineLimit(1)
         }
-        .frame(height: tall ? 34 : 26)
+        .padding(.horizontal, 6)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
     }
 }
 
-/// The loudness summary. Its labels are instrument vocabulary and stay in English; only the tooltips of the
-/// standard menus are translated.
+/// The loudness summary: short-term reading, gauge, statistics tiles, 15 s history and VU meter.
+/// Only the parts that print a reading observe `readouts` (the gauge, the short-term reading, the tiles and the
+/// history), so the 10 Hz readings re-render those and not the title, chip and menus around them.
 private struct DashboardHero: View {
     @ObservedObject var model: MeterModel
-    @ObservedObject var readouts: Readouts
+    let readouts: Readouts
+    @ObservedObject private var l10n = Localizer.shared
     /// Set by the dividers either side of the 15 s history, in points; 0 = automatic.
     @AppStorage("layout.summaryLoudnessWidth") private var loudnessWidth: Double = 0
     @AppStorage("layout.vuWidth") private var vuWidth: Double = 0
 
     var body: some View {
-        let values = readouts.values
         let target = model.loudnessTarget
         let ceiling = model.truePeakCeiling
         ZStack(alignment: .leading) {
+            // The shadow sits on this static shape, not on the live content, so readings never re-render it.
             RoundedRectangle(cornerRadius: 19, style: .continuous)
                 .fill(LinearGradient(colors: [Theme.bannerAccent.opacity(0.90),
                                               Theme.bannerAccent.opacity(0.68),
                                               Theme.windowBottom],
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
+                .shadow(color: Theme.dark ? .clear : Theme.cardShadow, radius: 9, y: 3)
             HeroArtwork()
                 .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
             LinearGradient(colors: Theme.dark ? [.black.opacity(0.04), .black.opacity(0.34)]
@@ -510,67 +592,42 @@ private struct DashboardHero: View {
                 let columns = HeroLayout.columns(width: row, compact: compact, loudness: CGFloat(loudnessWidth), vu: CGFloat(vuWidth))
                 let scale = HeroLayout.contentScale(height: geometry.size.height, compact: compact, loudnessWidth: columns.loudness)
                 HStack(alignment: .top, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack(spacing: 6) {
-                            Circle().fill(model.running ? Theme.ink : Theme.ink.opacity(0.45))
-                                .frame(width: 6, height: 6)
-                            Text(verbatim: model.running ? "LIVE" : "PAUSED")
-                                .font(.system(size: 10, weight: .bold)).tracking(1)
-                            Text("·")
-                            Text(verbatim: model.format == .spatial ? model.speakerLayout.name : model.format.title)
-                                .font(.system(size: 10, weight: .medium))
-                        }
-                        .foregroundStyle(Theme.ink.opacity(0.95))
-                        .padding(.horizontal, 10).padding(.vertical, 6)
-                        .background(Theme.chipFill, in: Capsule())
-                        Spacer(minLength: 10)
-                        Eyebrow("SHORT-TERM LOUDNESS", color: Theme.ink.opacity(0.82))
-                        HStack(alignment: .firstTextBaseline, spacing: 7) {
-                            Text(MeterScale.tenths(values.shortTerm))
-                                .font(.system(size: (compact ? 35 : 45) * (1 + (scale - 1) * 0.5), weight: .semibold).monospacedDigit())
-                            Text("LUFS").font(.system(size: 12, weight: .semibold))
-                        }
-                        .foregroundStyle(Theme.ink)
-                        DeltaBadge(value: values.shortTerm, target: Float(target))
-                            .padding(.top, 5)
-                    }
-                    .frame(width: HeroLayout.leadWidth(compact: compact), alignment: .leading)
-                    .padding(.trailing, gap)
-
-                    // Dragging the summary taller stretches this column: the tile rows share the extra height
-                    // and their readings grow with it.
+                    // A grid over the short-term reading and the loudness column: the title row spans both, the
+                    // gauge sits over the tiles, and the short-term reading is centred beside the tiles.
                     VStack(alignment: .leading, spacing: 6 * scale) {
-                        HStack(spacing: 6) {
-                            Eyebrow("LOUDNESS", color: Theme.ink.opacity(0.88))
-                            Spacer(minLength: 4)
+                        HStack(spacing: 10) {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 10) { heroTitle; statusChip(format: true) }
+                                HStack(spacing: 10) { heroTitle; statusChip(format: false) }
+                                heroTitle
+                            }
+                            Spacer(minLength: 8)
                             LoudnessStandardMenus(model: model)
                         }
-                        LoudnessGauge(value: values.shortTerm, target: Float(target), scale: scale)
-                        HStack(spacing: 7) {
-                            StatTile(title: "MOMENTARY", value: MeterScale.tenths(values.momentary), unit: "LUFS", scale: scale)
-                            StatTile(title: "INTEGRATED", value: MeterScale.tenths(values.integrated), unit: "LUFS",
-                                     color: Theme.ink, scale: scale)
-                            StatTile(title: "RANGE", value: values.range < 0 ? "—" : MeterScale.tenths(values.range, floor: -1),
-                                     unit: "LU", template: "88.8", scale: scale)
+                        .frame(height: 24)
+                        HeroGauge(readouts: readouts, target: Float(target), scale: scale)
+                            .padding(.leading, HeroLayout.leadWidth(compact: compact) + gap)
+                        HStack(alignment: .top, spacing: 0) {
+                            HeroShortTerm(readouts: readouts, target: Float(target), compact: compact, scale: scale)
+                            .frame(width: HeroLayout.leadWidth(compact: compact), alignment: .leading)
+                            .frame(maxHeight: .infinity)
+                            .padding(.trailing, gap)
+
+                            // Dragging the summary taller stretches this column: the tile rows share the extra
+                            // height and their readings grow with it.
+                            HeroTiles(readouts: readouts, ceiling: Float(ceiling), scale: scale, resetTruePeak: model.resetTruePeak)
+                            .frame(width: columns.loudness)
                         }
-                        HStack(spacing: 7) {
-                            let truePeak = values.truePeakDecibels
-                            StatTile(title: "TRUE PEAK", value: MeterScale.tenths(truePeak, floor: -119), unit: "dBTP",
-                                     color: truePeak >= 0 ? Theme.ember : (truePeak > Float(ceiling) ? Theme.ochre : Theme.ink), scale: scale)
-                            let peak = MeterScale.decibels(values.maxPeak)
-                            StatTile(title: "PEAK", value: MeterScale.tenths(peak, floor: -119), unit: "dBFS",
-                                     color: peak >= 0 ? Theme.ember : Theme.ink, scale: scale)
-                            StatTile(title: "TIME", value: clock(values.elapsed), unit: "", template: "88:88:88", scale: scale)
-                        }
+                        .frame(maxHeight: .infinity)
                     }
-                    .frame(width: columns.loudness)
+                    .frame(width: HeroLayout.leadWidth(compact: compact) + gap + columns.loudness)
 
                     // The dividers in the gaps either side of the history resize it against its neighbours.
                     PanelDivider(axis: .horizontal, leading: columns.loudness,
                                  onResize: { setLoudness($0, row: row, compact: compact) },
                                  onReset: { loudnessWidth = 0 })
                         .frame(width: gap)
-                    LoudnessHistory(short: values.shortHistory, momentary: values.momentaryHistory, target: Float(target))
+                    HeroHistory(readouts: readouts, target: Float(target))
                         .frame(width: columns.history)
                     PanelDivider(axis: .horizontal, leading: columns.history,
                                  onResize: { setVU(history: $0, loudness: columns.loudness, row: row, compact: compact) },
@@ -583,7 +640,30 @@ private struct DashboardHero: View {
             }
         }
         .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
-        .shadow(color: Theme.dark ? .clear : Theme.cardShadow, radius: 9, y: 3)
+    }
+
+    private var heroTitle: some View {
+        Eyebrow(L("LOUDNESS"), color: Theme.ink.opacity(0.88)).fixedSize()
+    }
+
+    /// LIVE or PAUSED, with the monitoring format when there is room for it.
+    private func statusChip(format: Bool) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(model.running ? Theme.ink : Theme.ink.opacity(0.45))
+                .frame(width: 6, height: 6)
+            Text(model.running ? L("LIVE") : L("PAUSED"))
+                .font(.system(size: 10, weight: .bold)).tracking(1)
+            if format {
+                Text("·")
+                Text(verbatim: model.format == .spatial ? model.speakerLayout.name : model.format.title)
+                    .font(.system(size: 10, weight: .medium))
+            }
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .foregroundStyle(Theme.ink.opacity(0.95))
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Theme.chipFill, in: Capsule())
     }
 
     // Store the clamped result, so a drag held against a limit does not churn user defaults.
@@ -600,11 +680,125 @@ private struct DashboardHero: View {
         // Pin the loudness column where it is, so the VU meter grows into the history and nothing else moves.
         if loudnessWidth == 0 { loudnessWidth = Double(loudness) }
     }
+}
 
-    private func clock(_ seconds: TimeInterval) -> String {
-        let total = Int(seconds)
-        return total >= 3600 ? String(format: "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60)
-                             : String(format: "%02d:%02d", total / 60, total % 60)
+private struct HeroGauge: View {
+    @ObservedObject var readouts: Readouts
+    let target: Float
+    let scale: CGFloat
+    @AppStorage(LoudnessReading.key) private var reading = LoudnessReading.shortTerm.rawValue
+
+    var body: some View {
+        let main = LoudnessReading(rawValue: reading) ?? .shortTerm
+        LoudnessGauge(value: main.value(readouts.values), target: target, scale: scale)
+    }
+}
+
+/// The main loudness reading (Short-term unless chosen otherwise in Settings › Panels), its value and the delta
+/// chip.
+private struct HeroShortTerm: View {
+    @ObservedObject var readouts: Readouts
+    @ObservedObject private var l10n = Localizer.shared
+    let target: Float
+    let compact: Bool
+    let scale: CGFloat
+    @AppStorage(LoudnessReading.key) private var reading = LoudnessReading.shortTerm.rawValue
+
+    var body: some View {
+        let main = LoudnessReading(rawValue: reading) ?? .shortTerm
+        let shortTerm = main.value(readouts.values)
+        VStack(alignment: .leading, spacing: 3 * scale) {
+            Eyebrow(main.heading, color: Theme.ink.opacity(0.82))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(MeterScale.tenths(shortTerm))
+                    .font(.system(size: (compact ? 35 : 45) * (1 + (scale - 1) * 0.5), weight: .semibold).monospacedDigit())
+                Text(verbatim: "LUFS").font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.ink.opacity(0.72))
+            }
+            .foregroundStyle(Theme.ink)
+            .lineLimit(1)
+            DeltaBadge(value: shortTerm, target: target)
+                .padding(.top, 2)
+        }
+    }
+}
+
+/// The statistics tiles. Dragging the summary taller stretches this column: the tile rows share the extra
+/// height and their readings grow with it.
+private struct HeroTiles: View {
+    @ObservedObject var readouts: Readouts
+    @ObservedObject private var l10n = Localizer.shared
+    let ceiling: Float
+    let scale: CGFloat
+    /// Clears the held true peaks alone; offered while the reading warns (above the ceiling or over 0 dBTP).
+    let resetTruePeak: () -> Void
+    @AppStorage(LoudnessReading.key) private var reading = LoudnessReading.shortTerm.rawValue
+
+    var body: some View {
+        let values = readouts.values
+        let main = LoudnessReading(rawValue: reading) ?? .shortTerm
+        VStack(spacing: 7) {
+            HStack(spacing: 7) {
+                // The two LUFS readings the main one leaves, in their usual order.
+                ForEach(LoudnessReading.allCases.filter { $0 != main }, id: \.self) { other in
+                    StatTile(title: other.tileTitle, value: MeterScale.tenths(other.value(values)), unit: "LUFS", scale: scale)
+                }
+                StatTile(title: L("RANGE"), value: values.range < 0 ? "—" : MeterScale.tenths(values.range, floor: -1),
+                         unit: "LU", template: "8.8", scale: scale)
+            }
+            HStack(spacing: 7) {
+                let truePeak = values.truePeakDecibels
+                // Above 0 dBTP the reading is an over: signed, in ember, flagged OVER.
+                let over = truePeak > 0.05
+                StatTile(title: L("TRUE PEAK"),
+                         value: over ? MeterScale.signedTenths(truePeak) : MeterScale.tenths(truePeak, floor: -119),
+                         unit: "dBTP",
+                         color: truePeak >= 0 ? Theme.ember : (truePeak > ceiling ? Theme.ochre : Theme.ink),
+                         template: "−8.8", scale: scale, alert: over ? L("OVER") : nil)
+                    .modifier(TruePeakReset(active: truePeak > ceiling, reset: resetTruePeak))
+                let peak = MeterScale.decibels(values.maxPeak)
+                StatTile(title: L("PEAK"), value: MeterScale.tenths(peak, floor: -119), unit: "dBFS",
+                         color: peak >= 0 ? Theme.ember : Theme.ink, template: "−8.8", scale: scale)
+            }
+        }
+    }
+}
+
+/// While TRUE PEAK warns, a click on its tile clears the held true peaks alone, so the next overshoot can be
+/// caught without resetting integrated loudness or the rest of the session.
+private struct TruePeakReset: ViewModifier {
+    let active: Bool
+    let reset: () -> Void
+    @ObservedObject private var l10n = Localizer.shared
+
+    func body(content: Content) -> some View {
+        if active {
+            Button(action: reset) {
+            content
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Theme.secondary)
+                        .padding(.top, 6).padding(.trailing, 8)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+                .buttonStyle(.plain)
+                .help(L("Click to reset True Peak"))
+                .accessibilityHint(L("Click to reset True Peak"))
+        } else {
+            content
+        }
+    }
+}
+
+private struct HeroHistory: View {
+    @ObservedObject var readouts: Readouts
+    let target: Float
+
+    var body: some View {
+        LoudnessHistory(short: readouts.values.shortHistory, momentary: readouts.values.momentaryHistory, target: target)
     }
 }
 
@@ -618,8 +812,8 @@ private struct LoudnessStandardMenus: View {
         let target = model.loudnessTarget
         let ceiling = model.truePeakCeiling
         HStack(spacing: 6) {
-            SummaryMenu(title: "TARGET", value: "\(MeterScale.signedInteger(Float(target))) LUFS",
-                        help: L("TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Multi Channel each keep their own and follow the mode.")) {
+            SummaryMenu(title: L("TARGET"), value: "\(MeterScale.signedInteger(Float(target))) LUFS",
+                        help: L("TARGET: the loudness standard of the current mode. The gauge, delta, history band and VU meter read against it. Stereo and Immersive each keep their own and follow the mode.")) {
                 ForEach(modeOrder, id: \.self) { spatial in
                     Section(sectionTitle(spatial: spatial)) {
                         Picker(L("Loudness target"), selection: Binding(
@@ -632,7 +826,7 @@ private struct LoudnessStandardMenus: View {
                     }
                 }
             }
-            SummaryMenu(title: "CEILING", value: "\(MeterScale.tenths(Float(ceiling))) dBTP",
+            SummaryMenu(title: L("CEILING"), value: "\(MeterScale.tenths(Float(ceiling))) dBTP",
                         help: L("CEILING: the True Peak limit of the current mode. TRUE PEAK turns amber above it.")) {
                 ForEach(modeOrder, id: \.self) { spatial in
                     Section(sectionTitle(spatial: spatial)) {
@@ -653,7 +847,7 @@ private struct LoudnessStandardMenus: View {
     private var modeOrder: [Bool] { model.format == .spatial ? [true, false] : [false, true] }
 
     private func sectionTitle(spatial: Bool) -> String {
-        let title = spatial ? L("Multi Channel") : L("Stereo & Mono")
+        let title = spatial ? L("Immersive") : L("Stereo & Mono")
         return (model.format == .spatial) == spatial ? L("%@ · in use", title) : title
     }
 
@@ -661,37 +855,52 @@ private struct LoudnessStandardMenus: View {
 
 /// A pill on the summary showing a preset (loudness target, true-peak ceiling) that opens a menu of choices.
 /// Interactive Liquid Glass on macOS 26; a quiet capsule on the summary before it.
-private struct SummaryMenu<Content: View>: View {
+struct SummaryMenu<Content: View>: View {
     let title: String
     let value: String
     let help: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        Menu {
-            content.pickerStyle(.inline)
-        } label: {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(Tracking.eyebrow)
-                    .foregroundStyle(Theme.ink.opacity(0.72))
-                Text(value)
-                    .font(.system(size: 10, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(Theme.ink)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(Theme.ink.opacity(0.72))
+        // macOS 26: the system glass button style draws the pill and its pointer response; before it, a quiet
+        // capsule of our own.
+        if #available(macOS 26, *) {
+            Menu { content.pickerStyle(.inline) } label: { label }
+                .menuStyle(.button)
+                .buttonStyle(.glass)
+                .controlSize(.small)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(help)
+        } else {
+            Menu { content.pickerStyle(.inline) } label: {
+                label
+                    .padding(.horizontal, 9)
+                    .frame(height: 22)
+                    .glassSurface(Capsule(), fallback: Theme.dark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
+                    .contentShape(Capsule())
             }
-            .padding(.horizontal, 9)
-            .frame(height: 22)
-            .glassSurface(Capsule(), interactive: true, fallback: Theme.dark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
-            .contentShape(Capsule())
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(help)
         }
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help(help)
+    }
+
+    /// One Text, not a stack: the glass menu button keeps only the first view of a stacked label.
+    private var label: some View {
+        Text(title)
+            .font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(Localizer.shared.tracking(Tracking.eyebrow))
+            .foregroundColor(Theme.ink.opacity(0.72))
+        + Text(verbatim: "  ")
+        + Text(value)
+            .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+            .foregroundColor(Theme.ink)
+        + Text(verbatim: " ")
+        + Text(Image(systemName: "chevron.up.chevron.down"))
+            .font(.system(size: 7, weight: .bold))
+            .foregroundColor(Theme.ink.opacity(0.72))
     }
 }
 
@@ -725,16 +934,18 @@ private struct HeroArtwork: View {
     }
 }
 
-/// The meter window: the loudness summary across the full width, and below it the analyzer column (Spectrum,
-/// Spectrogram, Waveform) on the left and the Soundstage column on the right, split by a draggable divider.
+/// The meter window: the loudness summary across the full width, and below it the analyzer column (Spectrum
+/// with its spectrogram, then Waveform) on the left and the Soundstage column on the right, split by a draggable divider.
 private struct MeterView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var l10n = Localizer.shared
     @Environment(\.openWindow) private var openWindow
     // Divider positions: row fractions of the analyzer panels, and the Soundstage width in points.
-    @AppStorage("layout.spectrumShare") private var spectrumFraction: Double = Double(PanelLayout.defaultSpectrum)
-    @AppStorage("layout.spectrogramShare") private var spectrogramFraction: Double = Double(PanelLayout.defaultSpectrogram)
+    // 1.1 merged Spectrum and Spectrogram into one card, so the share has a key of its own.
+    @AppStorage("layout.analyzerShare") private var spectrumFraction: Double = Double(PanelLayout.defaultSpectrum)
     @AppStorage("layout.stageWidth") private var stageWidth: Double = Double(ColumnLayout.defaultStage)
+    /// The Soundstage room's share of the right-hand column's height; Channel Levels takes the rest.
+    @AppStorage("layout.roomShare") private var roomShare: Double = Double(ColumnLayout.defaultRoomShare)
     /// Loudness summary height in points; 0 follows the window's default.
     @AppStorage("layout.heroHeight") private var heroHeight: Double = 0
 
@@ -748,7 +959,6 @@ private struct MeterView: View {
             let spacing: CGFloat = tall ? 10 : 8
             let hero = HeroLayout.height(CGFloat(heroHeight), tall: tall, window: window.size.height)
             VStack(spacing: spacing) {
-                DashboardHeading(model: model, tall: tall)
                 DashboardHero(model: model, readouts: model.readouts)
                     .frame(height: hero)
                     // Centred in the gap under the summary, so the gap keeps its width.
@@ -767,17 +977,18 @@ private struct MeterView: View {
                                  onResize: { setStage(total - PanelLayout.divider - $0, total: total) },
                                  onReset: { setStage(ColumnLayout.defaultStage, total: total) })
                         .frame(width: PanelLayout.divider)
-                    SoundstagePanel(model: model, readouts: model.readouts, activeRoles: model.routedRoles,
-                                    format: model.format, layout: model.speakerLayout)
+                    stagePanels
                         .frame(width: stage)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel(L("Soundstage: channel map and per-channel Peak and RMS meters"))
                 }
                 StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames)
             }
             .padding(.horizontal, gutter)
             .padding(.top, tall ? 8 : 2)
             .padding(.bottom, 8)
+        }
+        .overlay(alignment: .bottom) {
+            PreviewBanner(model: model)
+                .padding(.bottom, 30)
         }
         .background { WindowBackdrop() }
         .background(WindowConfigurator(floating: model.floating))
@@ -787,25 +998,16 @@ private struct MeterView: View {
 
     private var analyzerPanels: some View {
         GeometryReader { proxy in
-            let layout = PanelLayout(height: proxy.size.height, spectrum: CGFloat(spectrumFraction),
-                                     spectrogram: CGFloat(spectrogramFraction))
+            let layout = PanelLayout(height: proxy.size.height, spectrum: CGFloat(spectrumFraction))
             VStack(spacing: 0) {
                 let source = spectrumSource(format: model.format, layout: model.speakerLayout)
                 SpectrumPanel(model: model, sampleRate: model.sampleRate, source: source)
                     .frame(height: layout.spectrum)
                     .accessibilityElement(children: .contain)
-                    .accessibilityLabel(L("Spectrum, 20 Hz to 20 kHz"))
+                    .accessibilityLabel(L("Spectrogram and spectrum, 20 Hz to 20 kHz, last 3 to 8 seconds"))
                 PanelDivider(axis: .vertical, leading: layout.spectrum,
-                             onResize: { setRows(layout.draggingSpectrum(to: $0)) },
-                             onReset: { setRows(layout.draggingSpectrum(to: PanelLayout.defaultSpectrum * layout.panels)) })
-                    .frame(height: PanelLayout.divider)
-                SpectrogramPanel(model: model, sampleRate: model.sampleRate, source: source)
-                    .frame(height: layout.spectrogram)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel(L("Spectrogram, last 8 seconds"))
-                PanelDivider(axis: .vertical, leading: layout.spectrogram,
-                             onResize: { setSpectrogram(layout.draggingSpectrogram(to: $0)) },
-                             onReset: { setSpectrogram(layout.draggingSpectrogram(to: PanelLayout.defaultSpectrogram * layout.panels)) })
+                             onResize: { setSpectrum(layout.draggingSpectrum(to: $0)) },
+                             onReset: { setSpectrum(PanelLayout.defaultSpectrum) })
                     .frame(height: PanelLayout.divider)
                 WaveformPanel(model: model, layout: model.speakerLayout, format: model.format,
                               activeRoles: model.routedRoles)
@@ -816,14 +1018,36 @@ private struct MeterView: View {
         }
     }
 
-    // Writes only on change, so a drag held against a limit does not churn user defaults.
-    private func setRows(_ rows: (spectrum: CGFloat, spectrogram: CGFloat)) {
-        if Double(rows.spectrum) != spectrumFraction { spectrumFraction = Double(rows.spectrum) }
-        setSpectrogram(rows.spectrogram)
+    /// The right-hand column: the Soundstage room above Channel Levels, split by a divider.
+    private var stagePanels: some View {
+        GeometryReader { proxy in
+            let total = proxy.size.height
+            let room = ColumnLayout.roomHeight(share: CGFloat(roomShare), total: total)
+            VStack(spacing: 0) {
+                SoundstagePanel(model: model, activeRoles: model.routedRoles, format: model.format, layout: model.speakerLayout)
+                    .frame(height: room)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(L("Soundstage: channel map"))
+                PanelDivider(axis: .vertical, leading: room,
+                             onResize: { setRoom($0, total: total) },
+                             onReset: { roomShare = Double(ColumnLayout.defaultRoomShare) })
+                    .frame(height: PanelLayout.divider)
+                ChannelLevelsPanel(model: model, readouts: model.readouts, activeRoles: model.routedRoles,
+                                   format: model.format, layout: model.speakerLayout)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(L("Channel levels: Peak and RMS meters per channel, and correlation in Stereo"))
+            }
+        }
     }
 
-    private func setSpectrogram(_ fraction: CGFloat) {
-        if Double(fraction) != spectrogramFraction { spectrogramFraction = Double(fraction) }
+    private func setRoom(_ height: CGFloat, total: CGFloat) {
+        let share = Double(ColumnLayout.roomHeight(share: height / max(1, total), total: total) / max(1, total))
+        if abs(share - roomShare) > 0.0005 { roomShare = share }
+    }
+
+    // Writes only on change, so a drag held against a limit does not churn user defaults.
+    private func setSpectrum(_ fraction: CGFloat) {
+        if Double(fraction) != spectrumFraction { spectrumFraction = Double(fraction) }
     }
 
     private func setHero(_ height: CGFloat, tall: Bool, window: CGFloat) {
@@ -847,6 +1071,8 @@ private struct WindowOpeners: View {
             .onAppear {
                 Diagnostics.testLanguageSwitchIfRequested(model: model)
                 Diagnostics.testAppearanceSwitchIfRequested(model: model)
+                Diagnostics.testThemeFadeIfRequested()
+                Diagnostics.benchmarkThemeSwitchIfRequested()
                 Diagnostics.testSystemAppearanceSwitchIfRequested()
                 Diagnostics.testDeviceSourceSelectionIfRequested(model: model)
                 guard Diagnostics.showAbout else { return }

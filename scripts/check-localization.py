@@ -5,9 +5,10 @@
 2. No table keeps a key the code no longer uses.
 3. The English table maps each key to itself (the English text is the key).
 4. Each translation keeps the key's format specifiers (%@, %d…) and its trailing ellipsis.
-5. Terms that are never translated (units, abbreviations, True Peak, standards, product names, and labels quoted
-   as the meter prints them) appear unchanged in every translation.
-6. Terms with an established translation use it consistently (Stereo → 立体声 / 스테레오, Momentary → 瞬时 / 순간…).
+5. Terms that are never translated (units, abbreviations, channel labels, standards and product names) appear
+   unchanged in every translation.
+6. Terms with an established translation use it consistently, in the meter window too (Stereo → 立体声 / 스테레오,
+   True Peak → 真峰值 / 트루 피크, Momentary → 瞬时 / 순간…).
 7. A key made only of never-translated terms is an error: write it as a literal instead of calling L().
 8. A SwiftUI view that calls L( observes Localizer.shared, so a language switch redraws it (text inside a
    StatusMessage closure is exempt: it is rendered when shown).
@@ -29,23 +30,26 @@ PROTECTED = [
     "ITU-R BS.1770-5", "BS.1770", "EBU Tech 3342", "EBU R128", "ATSC A/85", "Dolby Atmos", "Apple Music",
     "Spotify", "YouTube", "Tidal", "Netflix", "EDM", "Core Audio", "AUHAL", "HAL", "AudioUnit", "Accelerate",
     "vDSP", "Metal", "SwiftUI", "AppKit", "C11", "MIT", "AudioSpectrogram", "OSStatus", "Float32 PCM", "FFT",
-    "Auraliscope", "macOS", "Mac", "DAW",
-    # Units, abbreviations and True Peak
-    "True Peak", "LUFS", "LKFS", "LU", "dBFS", "dBTP", "dB", "RMS", "VU", "kHz", "Hz",
+    "Auraliscope", "Atmos", "macOS", "Mac", "DAW",
+    # Units and abbreviations
+    "LUFS", "LKFS", "LU", "dBFS", "dBTP", "dB", "RMS", "VU", "kHz", "Hz",
     "LFE", "L/R", "Ls", "Rs", "L", "R", "C",
-    # Labels quoted exactly as the meter window prints them
-    "SHORT-TERM LOUDNESS", "TRUE PEAK", "TARGET", "CEILING", "SPECTROGRAM", "SPECTRUM", "WAVEFORM", "SOUNDSTAGE",
-    "LOUDNESS", "MOMENTARY", "INTEGRATED", "RANGE", "PEAK", "CORRELATION", "AUTO", "ON TARGET",
 ]
-# Terms with an established translation, used for them everywhere outside the meter window.
+# Terms with an established translation, used for them everywhere, the meter window included. Longer terms first.
 GLOSSARY = {
-    "Multi Channel": ("多声道", "멀티채널"), "Stereo": ("立体声", "스테레오"), "Mono": ("单声道", "모노"),
+    "True Peak": ("真峰值", "트루 피크"), "TRUE PEAK": ("真峰值", "트루 피크"),
+    "SHORT-TERM LOUDNESS": ("短期响度", "단기 라우드니스"), "ON TARGET": ("达标", "목표 도달"), "TARGET": ("目标", "목표"), "CEILING": ("上限", "상한"),
+    "Stereo": ("立体声", "스테레오"), "Mono": ("单声道", "모노"), "Immersive": ("沉浸声", "이머시브"),
     "Auto": ("自动", "자동"), "Momentary": ("瞬时", "순간"), "Short-term": ("短期", "단기"),
     "Integrated": ("积分", "통합"), "Range": ("响度范围", "레인지"), "Peak": ("峰值", "피크"),
     "Spectrogram": ("声谱图", "스펙트로그램"), "Spectrum": ("频谱", "스펙트럼"), "Waveform": ("波形", "파형"),
     "Soundstage": ("声场", "사운드스테이지"), "Front": ("前置", "프런트"), "Surround": ("环绕", "서라운드"),
-    "Height": ("顶部", "하이트"),
+    "Height": ("顶部", "하이트"), "MOMENTARY": ("瞬时", "순간"), "INTEGRATED": ("积分", "통합"),
+    "SPECTROGRAM": ("声谱图", "스펙트로그램"), "SPECTRUM": ("频谱", "스펙트럼"), "WAVEFORM": ("波形", "파형"),
+    "SOUNDSTAGE": ("声场", "사운드스테이지"),
 }
+# macOS's own menu titles (retitled by SystemMenus) read as macOS words them, not with the meter's glossary.
+GLOSSARY_EXEMPT = {"Bring All to Front"}
 # Word edges are ASCII-only: Korean particles and CJK characters may follow a term directly ("Stereo와").
 def whole_word(term):
     return re.compile(r"(?<![A-Za-z0-9_-])" + re.escape(term) + r"(?![A-Za-z0-9_-])")
@@ -123,7 +127,7 @@ for language, table in tables.items():
         for term in terms:
             if not dict(TERM_PATTERNS)[term].search(value):
                 fail(f"{language}: {term!r} must stay in English: {key!r} → {value!r}")
-        if language != "en":
+        if language != "en" and key not in GLOSSARY_EXEMPT:
             for term, pattern, translations in GLOSSARY_PATTERNS:
                 wanted = translations[0 if language == "zh-Hans" else 1]
                 if pattern.search(rest) and wanted not in value:

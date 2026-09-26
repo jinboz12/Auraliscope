@@ -6,7 +6,7 @@ import AudioRing
 final class CoreTests {
     func testLocalizerKeepsTermsAndUnitsTogether() {
         let nbsp = "\u{00A0}"
-        checkEqual(Localizer.typeset("Stereo 与 Multi Channel 之间切换"), "Stereo 与 Multi\(nbsp)Channel 之间切换")
+        checkEqual(Localizer.typeset("立体声与 Dolby Atmos 之间切换"), "立体声与 Dolby\(nbsp)Atmos 之间切换")
         checkEqual(Localizer.typeset("above −60 dBFS for 150 ms, back after 2.5 s"),
                    "above −60\(nbsp)dBFS for 150\(nbsp)ms, back after 2.5\(nbsp)s")
         checkEqual(Localizer.typeset("0 VU (%@ dBFS) · %d ch · True Peak"), "0\(nbsp)VU (%@\(nbsp)dBFS) · %d\(nbsp)ch · True\(nbsp)Peak")
@@ -323,6 +323,14 @@ final class CoreTests {
         checkTrue(stereo[band(2_000)] < -90)
         checkEqual(spatial[band(2_000)], 20 * log10(0.25) - 3, accuracy: 0.8)
         checkEqual(spatialPeak.frequency, 440, accuracy: 1)
+        // Each role's band energy (the Immersive room's band image): L's 440 Hz in 120–500 Hz at its mean square
+        // (0.125), C's 2 kHz in the bands around 2 kHz, and nothing on the silent roles.
+        let power = analyzer.roleBandPower
+        func energy(_ role: Int, _ band: Int) -> Float { power[role * StereoBands.count + band] }
+        checkEqual(energy(Role.left, 1), 0.125, accuracy: 0.01)
+        checkEqual(energy(Role.center, 2) + energy(Role.center, 3), 0.03125, accuracy: 0.003)
+        checkTrue(energy(Role.center, 1) < 1e-4 && energy(Role.left, 3) < 1e-4)
+        checkTrue((0..<StereoBands.count).allSatisfy { energy(4, $0) < 1e-9 })
         // Turning Spatial off and on again waits for a fresh window.
         analyzer.recordsSpatial = false
         analyzer.recordsSpatial = true
@@ -456,6 +464,131 @@ final class CoreTests {
         checkEqual(same.snapshot().correlation, 1, accuracy: 0.0001)
         checkEqual(inverted.snapshot().correlation, -1, accuracy: 0.0001)
         checkEqual(same.snapshot().correlation, MeterSnapshot.noCorrelation)
+
+        // Zones: −1 … −0.1 out of phase, … 0.3 wide, … 0.9 stereo, then mono; a reading near an edge keeps the
+        // previous zone until it is 0.05 past it, and a jump across zones is taken at once.
+        checkEqual(CorrelationZone(-0.6), .outOfPhase)
+        checkEqual(CorrelationZone(0), .wide)
+        checkEqual(CorrelationZone(0.62), .stereo)
+        checkEqual(CorrelationZone(1), .mono)
+        checkEqual(CorrelationZone(0.32, previous: .wide), .wide)
+        checkEqual(CorrelationZone(0.36, previous: .wide), .stereo)
+        checkEqual(CorrelationZone(0.27, previous: .stereo), .stereo)
+        checkEqual(CorrelationZone(0.88, previous: .mono), .mono)
+        checkEqual(CorrelationZone(-0.12, previous: .wide), .wide)
+        checkEqual(CorrelationZone(0.95, previous: .outOfPhase), .mono)
+        checkEqual(CorrelationZone(0.2, previous: .mono), .wide)
+    }
+
+    func testCorrelationIntegrator() throws {
+        // 1 kHz on L; R is L times `gain` (1 in phase, −1 inverted), 800 frames per 60 Hz tick.
+        let active = (0..<Role.count).map { $0 < 2 }
+        let pipeline = try unwrap(MeterPipeline(sampleRate: 48_000, activeRoles: active, detector: FormatDetector(), streamID: 1))
+        var values = [Float](repeating: 0, count: SnapshotSlots.total)
+        var position = 0, tick = 0
+        func run(ticks: Int, amplitude: Float, gain: Float) -> [Float] {
+            (0..<ticks).map { _ in
+                let block = (0..<800).map { i -> ChannelFrame in
+                    var frame = ChannelFrame()
+                    frame.left = amplitude * Float(sin(2 * Double.pi * 1_000 * Double(position + i) / 48_000))
+                    frame.right = frame.left * gain
+                    return frame
+                }
+                position += 800
+                tick += 1
+                block.withUnsafeBufferPointer { pipeline.consume($0) }
+                values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+                return values[SnapshotSlots.correlation]
+            }
+        }
+        checkEqual(run(ticks: 30, amplitude: 0.5, gain: 1).last!, 1, accuracy: 0.0001)
+        // Turning R over moves the reading through 0 over a few hundred milliseconds instead of jumping: past
+        // −0.95 within a second, and on to −1.
+        let turning = run(ticks: 60, amplitude: 0.5, gain: -1)
+        checkGreater(turning[0], 0.5)
+        checkTrue(turning[10] < 0 && turning[10] > -0.9)
+        checkTrue(turning.last! < -0.95)
+        checkEqual(run(ticks: 60, amplitude: 0.5, gain: -1).last!, -1, accuracy: 0.002)
+        // Energy-weighted: a passage 40 dB quieter barely moves a reading the loud one set.
+        checkGreater(run(ticks: 90, amplitude: 0.5, gain: 1).last!, 0.99)
+        checkGreater(run(ticks: 6, amplitude: 0.005, gain: -1).last!, 0.98)
+        // Silence rests the meter and restarts the average: the next passage reads as itself at once.
+        checkEqual(run(ticks: 3, amplitude: 0, gain: 1).last!, MeterSnapshot.noCorrelation)
+        checkEqual(run(ticks: 1, amplitude: 0.5, gain: -1).last!, -1, accuracy: 0.0001)
+    }
+
+    func testStereoBands() throws {
+        // 60 Hz identical on both sides, 1 kHz on L only, 4 kHz with R inverted; nothing in 120–500 Hz or 8 kHz+.
+        checkEqual(StereoBands.label(0), "20 Hz")
+        checkEqual(StereoBands.label(3), "2 kHz")
+        let map = StereoBands.binBands(sampleRate: 48_000, fftSize: SpectrumAnalyzer.fftSize)
+        let binWidth = 48_000.0 / Double(SpectrumAnalyzer.fftSize)
+        checkEqual(map[Int(60 / binWidth)], 0)
+        checkEqual(map[Int(1_000 / binWidth)], 2)
+        checkEqual(map[Int(9_000 / binWidth)], 4)
+        checkEqual(map[1], -1)
+        let active = (0..<Role.count).map { $0 < 2 }
+        let pipeline = try unwrap(MeterPipeline(sampleRate: 48_000, activeRoles: active, detector: FormatDetector(), streamID: 1))
+        var values = [Float](repeating: 0, count: SnapshotSlots.total)
+        var position = 0
+        for tick in 1...60 {
+            let block = (0..<800).map { i -> ChannelFrame in
+                let t = Double(position + i) / 48_000
+                let bass = 0.3 * Float(sin(2 * Double.pi * 60 * t))
+                let mid = 0.2 * Float(sin(2 * Double.pi * 1_000 * t))
+                let high = 0.1 * Float(sin(2 * Double.pi * 4_000 * t))
+                var frame = ChannelFrame()
+                frame.left = bass + mid + high
+                frame.right = bass - high
+                return frame
+            }
+            position += 800
+            block.withUnsafeBufferPointer { pipeline.consume($0) }
+            values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+        }
+        func band(_ slot: Int, _ index: Int) -> Float { values[slot + index] }
+        checkEqual(band(SnapshotSlots.bandCorrelation, 0), 1, accuracy: 0.01)
+        checkEqual(band(SnapshotSlots.bandWidth, 0), 0, accuracy: 0.01)
+        checkEqual(band(SnapshotSlots.bandBalance, 0), 0, accuracy: 0.01)
+        // RMS of a 0.3 sine: −13.5 dBFS.
+        checkEqual(band(SnapshotSlots.bandLevel, 0), Float(20 * log10(0.3 / 2.0.squareRoot())), accuracy: 0.5)
+        checkEqual(band(SnapshotSlots.bandCorrelation, 1), MeterSnapshot.noCorrelation)
+        // L only: no correlation to speak of (R is silent in that band), fully left, half side energy.
+        checkEqual(band(SnapshotSlots.bandBalance, 2), -1, accuracy: 0.02)
+        checkEqual(band(SnapshotSlots.bandWidth, 2), 0.5, accuracy: 0.02)
+        checkEqual(band(SnapshotSlots.bandCorrelation, 3), -1, accuracy: 0.01)
+        checkEqual(band(SnapshotSlots.bandWidth, 3), 1, accuracy: 0.01)
+        checkEqual(band(SnapshotSlots.bandCorrelation, 4), MeterSnapshot.noCorrelation)
+        // Merged groups: three bands (20 Hz, 120 Hz–2 kHz, 2 kHz up) and overall read from the five bands' sums.
+        let three = StereoBands.Resolution.three.offset, overall = StereoBands.Resolution.overall.offset
+        checkEqual(StereoBands.groups.count, 9)
+        checkEqual(band(SnapshotSlots.bandCorrelation, three), band(SnapshotSlots.bandCorrelation, 0), accuracy: 1e-6)
+        checkEqual(band(SnapshotSlots.bandBalance, three + 1), -1, accuracy: 0.02)
+        checkEqual(band(SnapshotSlots.bandCorrelation, three + 2), -1, accuracy: 0.01)
+        // Overall: energy-weighted, so the loud in-phase bass outweighs the inverted 4 kHz; L carries the 1 kHz extra.
+        checkTrue(band(SnapshotSlots.bandCorrelation, overall) > 0.3 && band(SnapshotSlots.bandCorrelation, overall) < 0.9)
+        checkTrue(band(SnapshotSlots.bandBalance, overall) < 0)
+        checkGreater(band(SnapshotSlots.bandLevel, overall), band(SnapshotSlots.bandLevel, 0))
+        // Stereometer points: each band carries only its own tone, with its own L/R relation.
+        func points(_ band: Int) -> [(Float, Float)] {
+            (0..<StereoBands.scopePoints).map { point in
+                let index = SnapshotSlots.bandPoints + (band * StereoBands.scopePoints + point) * 2
+                return (values[index], values[index + 1])
+            }
+        }
+        checkGreater(points(0).map { abs($0.0) }.max()!, 0.2)
+        checkTrue(points(0).allSatisfy { abs($0.0 - $0.1) < 1e-4 })
+        checkTrue(points(2).allSatisfy { abs($0.1) < 0.01 })
+        checkGreater(points(2).map { abs($0.0) }.max()!, 0.1)
+        // The 1 kHz on L leaks about −24 dB through the 2 kHz crossover: L ≈ −R to within that.
+        checkTrue(points(3).allSatisfy { abs($0.0 + $0.1) < 0.03 })
+        checkGreater(points(3).map { abs($0.1) }.max()!, 0.05)
+        checkTrue(points(4).allSatisfy { abs($0.0) < 0.02 })
+        // Silence rests every band.
+        for tick in 61...(60 + MeterPipeline.staleTicks) {
+            values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+        }
+        for index in 0..<StereoBands.groups.count { checkEqual(band(SnapshotSlots.bandCorrelation, index), MeterSnapshot.noCorrelation) }
     }
 
     func testSpeakerLayouts() throws {
@@ -616,6 +749,63 @@ final class CoreTests {
             // Within 3 cents of the true pitch even where one bin is ~1.8 semitones wide (55 Hz).
             checkEqual(1200 * log2(Double(snapshot.peakFrequency) / frequency), 0, accuracy: 3)
             checkEqual(snapshot.peakLevel, 20 * log10(0.25), accuracy: 0.6)
+        }
+    }
+
+    func testChordNotesAndHolds() throws {
+        // A major triad (A3, C#4, E4), each with its 2nd and 3rd harmonics: three notes, no overtones.
+        let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: 48_000))
+        let chord: [(Double, Float)] = [(220, 0.12), (277.18, 0.1), (329.63, 0.09)]
+        let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+            let t = Double(index) / 48_000
+            var sample: Float = 0
+            for (frequency, amplitude) in chord {
+                for (harmonic, share) in [(1.0, Float(1)), (2, 0.5), (3, 0.3)] {
+                    sample += amplitude * share * Float(sin(2 * Double.pi * frequency * harmonic * t))
+                }
+            }
+            return StereoFrame(left: sample, right: sample)
+        }
+        frames.withUnsafeBufferPointer { analyzer.consume($0) }
+        let snapshot = analyzer.snapshot()
+        let midis = stride(from: 0, to: snapshot.notes.count, by: 2).compactMap { index -> Int? in
+            snapshot.notes[index] > 0 ? Int((69 + 12 * log2(Double(snapshot.notes[index]) / 440)).rounded()) : nil
+        }
+        checkEqual(Set(midis), [57, 61, 64])
+
+        var holds = NoteHolds()
+        holds.update(snapshot.notes, deltaTime: 0.1)
+        checkEqual(Set(holds.notes.map(\.midi)), [57, 61, 64])
+        // A note missing from one readout stays lit through the hold, then goes out.
+        holds.update([Float(220), -20] + [Float](repeating: 0, count: 10), deltaTime: 0.1)
+        checkEqual(holds.notes.count, 3)
+        for _ in 0..<4 { holds.update([Float(220), -20] + [Float](repeating: 0, count: 10), deltaTime: 0.1) }
+        checkEqual(holds.notes.map(\.midi), [57])
+        // Under the gate is not a note.
+        holds.update([Float(440), -75] + [Float](repeating: 0, count: 10), deltaTime: 0.1)
+        checkTrue(!holds.notes.contains { $0.midi == 69 })
+    }
+
+    func testBassNotesAcrossSampleRates() throws {
+        // The old eight-bin margin excluded ordinary bass notes, especially at 96 kHz.
+        for rate in [44_100.0, 48_000, 96_000] {
+            for frequency in [32.7032, 41.2034, 55.0, 110.0] {
+                let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+                let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                    let value = Float(0.2 * sin(2 * Double.pi * frequency * Double(index) / rate))
+                    return StereoFrame(left: value, right: value)
+                }
+                frames.withUnsafeBufferPointer { analyzer.consume($0) }
+                let notes = analyzer.snapshot().notes
+                let detected = stride(from: 0, to: notes.count, by: 2).compactMap { notes[$0] > 0 ? notes[$0] : nil }
+                checkEqual(detected.count, 1)
+                let peak = try unwrap(detected.first)
+                checkEqual(1200 * log2(Double(peak) / frequency), 0, accuracy: 35)
+                let silence = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: SpectrumAnalyzer.fftSize)
+                silence.withUnsafeBufferPointer { analyzer.consume($0) }
+                let cleared = analyzer.snapshot().notes
+                checkTrue(stride(from: 0, to: cleared.count, by: 2).allSatisfy { cleared[$0] == 0 })
+            }
         }
     }
 
@@ -833,28 +1023,22 @@ final class CoreTests {
         checkEqual(MeterScale.tenths(-19.06), "−19.1")
         checkEqual(MeterScale.tenths(-120), "−∞")
         checkEqual(Double(MeterScale.frequencyFraction(20_000, sampleRate: 48_000)), 1, accuracy: 0.000001)
-        // Drag-to-resize: panels always fill the column, keep their minimums, and a divider only moves its pair.
+        // Drag-to-resize: the two panels always fill the column and keep their minimums.
         for height in [560, 700, 1_200] as [CGFloat] {
             for fraction in [-1, 0, 0.1, 0.3, 0.6, 0.95, .nan] as [CGFloat] {
-                let panels = PanelLayout(height: height, spectrum: fraction, spectrogram: fraction)
-                checkEqual(Double(panels.panels + 2 * PanelLayout.divider), Double(height), accuracy: 0.001)
+                let panels = PanelLayout(height: height, spectrum: fraction)
+                checkEqual(Double(panels.panels + PanelLayout.divider), Double(height), accuracy: 0.001)
                 checkGreaterOrEqual(panels.spectrum, PanelLayout.minSpectrum)
-                checkGreaterOrEqual(panels.spectrogram, PanelLayout.minSpectrogram)
                 checkGreaterOrEqual(panels.waveform, PanelLayout.minWaveform)
             }
-            let base = PanelLayout(height: height, spectrum: PanelLayout.defaultSpectrum, spectrogram: PanelLayout.defaultSpectrogram)
+            let base = PanelLayout(height: height, spectrum: PanelLayout.defaultSpectrum)
             for target in [0, base.spectrum + 40, 5_000] as [CGFloat] {
-                let dragged = base.draggingSpectrum(to: target)
-                let after = PanelLayout(height: height, spectrum: dragged.spectrum, spectrogram: dragged.spectrogram)
-                checkEqual(Double(after.waveform), Double(base.waveform), accuracy: 1.001)
-                checkGreaterOrEqual(after.spectrogram, PanelLayout.minSpectrogram)
-            }
-            for target in [0, base.spectrogram + 30, 5_000] as [CGFloat] {
-                let after = PanelLayout(height: height, spectrum: base.spectrum / base.panels,
-                                        spectrogram: base.draggingSpectrogram(to: target))
-                checkEqual(Double(after.spectrum), Double(base.spectrum), accuracy: 1.001)
+                let after = PanelLayout(height: height, spectrum: base.draggingSpectrum(to: target))
+                checkGreaterOrEqual(after.spectrum, PanelLayout.minSpectrum)
                 checkGreaterOrEqual(after.waveform, PanelLayout.minWaveform)
             }
+            let dragged = PanelLayout(height: height, spectrum: base.draggingSpectrum(to: base.spectrum + 40))
+            checkEqual(Double(dragged.spectrum), Double(min(base.spectrum + 40, base.panels - PanelLayout.minWaveform)), accuracy: 1.001)
         }
         // The Soundstage column keeps its limits and always leaves the analyzers their minimum width.
         for total in [1_000, 1_400, 2_400] as [CGFloat] {
@@ -865,70 +1049,167 @@ final class CoreTests {
                 checkGreaterOrEqual(total - stage - PanelLayout.divider, ColumnLayout.minAnalyzers - 0.001)
             }
         }
-        for size in [CGSize(width: 300, height: 720), CGSize(width: 380, height: 980), CGSize(width: 560, height: 1_300)] {
-            for format in [SpeakerLayout.lcr, .s512, .s916] {
-                let stage = SoundstageLayout(size: size, layout: format)
-                let stereo = SoundstageLayout(size: size, presence: 0, layout: format)
-                let halfway = SoundstageLayout(size: size, presence: 0.5, layout: format)
-                for layout in [stage, halfway, stereo] {
-                    checkEqual(layout.rows.count, format.channelCount)
-                    // Headers and rows stack top to bottom without overlapping, under the room, above the axis.
-                    var slots = layout.headers.map(\.rect) + layout.rows
-                    slots.sort { $0.minY < $1.minY }
-                    for (upper, lower) in zip(slots, slots.dropFirst()) { checkTrue(upper.maxY <= lower.minY + 0.001) }
-                    checkTrue(layout.stageWell.contains(layout.block))
-                    checkTrue(layout.radar.maxY <= layout.block.minY)
-                    checkTrue(layout.stageWell.contains(layout.radar))
-                    checkTrue(layout.axisY < layout.correlationArea.minY)
-                    checkTrue(layout.stageWell.contains(layout.correlationArea))
-                    checkTrue(layout.correlationArea.contains(layout.correlationTrack))
-                    checkTrue(layout.clipX < layout.readoutMaxX - SoundstageLayout.readoutColumn / 2)
-                    checkTrue(layout.nameX < layout.scale.minX)
-                    for index in layout.rows.indices { checkTrue(layout.rows[index].contains(layout.bar(index)) || layout.rows[index].height == 0) }
-                    // The stereo stage and its labels stay inside the well at every point of the zoom.
-                    for speaker in layout.speakers where speaker.role < 2 {
-                        checkTrue(layout.stageWell.contains(layout.label(speaker)))
-                        checkTrue(layout.label(speaker).y < layout.block.minY)
-                    }
-                }
-                checkEqual(stage.x(decibels: -70), stage.scale.minX)
-                checkEqual(stage.x(decibels: 0), stage.scale.maxX)
-                checkEqual(Double(stage.correlationInset(0)), Double(stage.correlationTrack.width / 4), accuracy: 0.001)
-                checkEqual(Double(stage.correlationInset(1)), Double(stage.correlationTrack.width / 2), accuracy: 0.001)
-                checkEqual(Double(stage.correlationInset(-1)), 0, accuracy: 0.001)
-                // Stereo: extended rows collapse, L and R grow, the room takes the freed height and zooms in.
-                checkTrue(stereo.rows.enumerated().allSatisfy { stereo.speakers[$0.offset].role < 2 || $0.element.height == 0 })
-                checkGreaterOrEqual(layout(stereo, "L").height, layout(stage, "L").height)
-                checkGreaterOrEqual(stereo.radar.width, stage.radar.width)
-                checkGreater(stereo.bedRadius, stage.bedRadius)
+        // The right-hand column: the room's share is clamped so both panels keep their minimum.
+        for total in [500, 800, 1_200] as [CGFloat] {
+            for share in [0, 0.1, 0.42, 0.9, .nan] as [CGFloat] {
+                let room = ColumnLayout.roomHeight(share: share, total: total)
+                checkGreaterOrEqual(room, ColumnLayout.minRoom)
+                checkTrue(room <= max(ColumnLayout.minRoom, total - PanelLayout.divider - ColumnLayout.minLevels))
             }
         }
-        // Rows stretch for small layouts and settle at 30 pt from 14 channels up.
+        checkEqual(ColumnLayout.roomHeight(share: 0, total: 1_000), ColumnLayout.roomHeight(share: ColumnLayout.defaultRoomShare, total: 1_000))
+        for size in [CGSize(width: 300, height: 300), CGSize(width: 380, height: 420), CGSize(width: 560, height: 800)] {
+            for format in [SpeakerLayout.lcr, .s512, .s916] {
+                let stage = SoundstageLayout(size: size, layout: format, part: .levels)
+                let stereo = SoundstageLayout(size: size, presence: 0, layout: format, part: .levels)
+                let halfway = SoundstageLayout(size: size, presence: 0.5, layout: format, part: .levels)
+                for layout in [stage, halfway, stereo] {
+                    checkEqual(layout.columns.count, format.channelCount)
+                    // Columns sit side by side without overlapping, right of the dB scale, inside the meter block.
+                    let slots = layout.columns.sorted { $0.minX < $1.minX }
+                    for (left, right) in zip(slots, slots.dropFirst()) { checkTrue(left.maxX <= right.minX + 0.001) }
+                    for column in layout.columns where column.width > 0 {
+                        checkTrue(column.minX >= layout.scale.minX - 0.001 && column.maxX <= layout.block.maxX + 0.001)
+                    }
+                    for header in layout.headers where header.rect.width > 0 {
+                        checkTrue(header.rect.maxY <= layout.scale.minY)
+                    }
+                    checkTrue(layout.stageWell.contains(layout.block))
+                    checkTrue(layout.block.contains(layout.scale))
+                    checkTrue(layout.axisMaxX < layout.scale.minX)
+                    for index in layout.columns.indices where layout.columns[index].width > 0 {
+                        checkTrue(layout.columns[index].insetBy(dx: -0.001, dy: -0.001).contains(layout.bar(index)))
+                        checkTrue(layout.readoutPoint(index).y < layout.cap(index).minY)
+                        checkTrue(layout.cap(index).maxY <= layout.scale.minY)
+                        checkEqual(Double(layout.cap(index).midX), Double(layout.bar(index).midX), accuracy: 0.001)
+                        checkEqual(layout.overTrack(index).minY, layout.bar(index).minY)
+                        checkEqual(Double(layout.overTrack(index).maxY), Double(layout.y(decibels: 0)), accuracy: 0.001)
+                        checkTrue(layout.namePoint(index).y > layout.scale.maxY)
+                    }
+                }
+                // Correlation only in Stereo: the section folds away in Atmos and the meters take the height.
+                checkEqual(stage.correlationWeight, 0)
+                checkEqual(stereo.correlationWeight, 1)
+                checkEqual(Double(halfway.correlationWeight), 0.5, accuracy: 1e-9)
+                checkGreater(stage.block.height, stereo.block.height)
+                checkTrue(stereo.block.maxY <= stereo.correlationArea.minY)
+                checkTrue(stereo.stageWell.contains(stereo.correlationArea))
+                checkTrue(stereo.correlationArea.contains(stereo.correlationTrack))
+                // Bars read up from −70 dBFS at the foot, 0 dB below the over zone, +3 dB at the top.
+                checkEqual(stage.y(decibels: -70), stage.scale.maxY)
+                checkEqual(Double(stage.y(decibels: 3)), Double(stage.scale.minY), accuracy: 0.001)
+                checkEqual(Double(stage.y(decibels: 9)), Double(stage.scale.minY), accuracy: 0.001)
+                checkGreater(stage.y(decibels: 0), stage.y(decibels: 1))
+                checkGreater(stage.y(decibels: -6), stage.y(decibels: 0))
+                // Correlation reads left to right, −1 … 0 … +1, inside the track's rounded ends.
+                let track = stereo.correlationTrack
+                checkEqual(Double(stereo.correlationX(0)), Double(track.midX), accuracy: 0.001)
+                checkEqual(Double(stereo.correlationX(-1)), Double(track.minX + SoundstageLayout.laneCap), accuracy: 0.001)
+                checkEqual(Double(stereo.correlationX(1)), Double(track.maxX - SoundstageLayout.laneCap), accuracy: 0.001)
+                // Five lanes, top band on top, inside the track and apart.
+                checkEqual(stereo.correlationLane(StereoBands.count - 1, of: 5).minY, track.minY)
+                checkEqual(Double(stereo.correlationLane(0, of: 5).maxY), Double(track.maxY), accuracy: 0.001)
+                for band in 1..<StereoBands.count { checkTrue(stereo.correlationLane(band, of: 5).maxY < stereo.correlationLane(band - 1, of: 5).minY) }
+                // One overall lane or three: the section shrinks and the meters take the height back.
+                for resolution in StereoBands.Resolution.allCases {
+                    let fewer = SoundstageLayout(size: size, presence: 0, layout: format, part: .levels, lanes: CGFloat(resolution.count))
+                    checkTrue(fewer.correlationArea.contains(fewer.correlationTrack))
+                    checkEqual(Double(fewer.correlationLane(0, of: resolution.count).maxY), Double(fewer.correlationTrack.maxY), accuracy: 0.001)
+                    checkEqual(Double(fewer.correlationTrack.height), Double(SoundstageLayout.trackHeight(count: resolution.count)), accuracy: 0.001)
+                    checkGreaterOrEqual(fewer.block.height, stereo.block.height)
+                    checkTrue(fewer.stageWell.contains(fewer.correlationArea))
+                }
+                // Mid-switch the bar sits between the two heights, and both lane sets fit inside it.
+                let between = SoundstageLayout(size: size, presence: 0, layout: format, part: .levels, lanes: 2)
+                checkTrue(between.correlationTrack.height > SoundstageLayout.trackHeight(count: 1)
+                          && between.correlationTrack.height < SoundstageLayout.trackHeight(count: 3))
+                checkEqual(between.correlationLane(2, of: 3).minY, between.correlationTrack.minY)
+                checkEqual(Double(stereo.correlationX(-3)), Double(stereo.correlationX(-1)))
+                checkGreater(stereo.correlationX(0.5), stereo.correlationX(0.25))
+                // Stereo: extended columns narrow to nothing, L and R widen.
+                checkTrue(stereo.columns.enumerated().allSatisfy { stereo.speakers[$0.offset].role < 2 || $0.element.width == 0 })
+                checkGreaterOrEqual(layout(stereo, "L").width, layout(stage, "L").width)
+                // Room: the largest centred square; the stereo stage and its labels stay inside at every zoom.
+                let room = SoundstageLayout(size: size, layout: format, part: .room)
+                let stereoRoom = SoundstageLayout(size: size, presence: 0, layout: format, part: .room)
+                for layout in [room, SoundstageLayout(size: size, presence: 0.5, layout: format, part: .room), stereoRoom] {
+                    checkTrue(layout.stageWell.contains(layout.radar))
+                    checkEqual(layout.radar.width, min(size.width - 24, size.height - 20))
+                    for speaker in layout.speakers where speaker.role < 2 {
+                        checkTrue(layout.stageWell.contains(layout.label(speaker)))
+                    }
+                }
+                // Stereometer: the half disc, its rims and labels stay in the well, above the band legend.
+                checkTrue(stereoRoom.stageWell.contains(stereoRoom.scopeLabel(angle: 0)))
+                checkTrue(stereoRoom.stageWell.contains(stereoRoom.scopeLabel(angle: -45)))
+                checkTrue(stereoRoom.stageWell.contains(stereoRoom.scopeLabel(angle: 45)))
+                checkTrue(stereoRoom.scopeCenter.y < stereoRoom.scopeLegend.minY)
+                checkTrue(stereoRoom.scopeCenter.x - stereoRoom.rimRadius(StereoBands.count - 1) >= stereoRoom.stageWell.minX)
+                checkEqual(Double(stereoRoom.scopePoint(angle: 0, fraction: 1).y),
+                           Double(stereoRoom.scopeCenter.y - stereoRoom.scopeRadius), accuracy: 0.001)
+                for band in 1..<StereoBands.count { checkGreater(stereoRoom.rimRadius(band), stereoRoom.rimRadius(band - 1)) }
+            }
+        }
+        // Immersive room, drawn flat: every speaker name, the floor ring and the axis stay inside the well; the
+        // front of the room sits higher and smaller than the rear, the upper layer above the bed, and the fit holds
+        // still through a mode change.
+        for size in [CGSize(width: 360, height: 170), CGSize(width: 480, height: 240), CGSize(width: 300, height: 420)] {
+            for format in SpeakerLayout.allCases {
+                typealias P3 = SoundstageLayout.Point3
+                let room = SoundstageLayout(size: size, layout: format, part: .room)
+                for speaker in room.speakers {
+                    checkTrue(room.stageWell.insetBy(dx: 4, dy: 2).contains(room.label(speaker)))
+                }
+                for azimuth in stride(from: 0.0, to: 360, by: 30) {
+                    checkTrue(room.stageWell.contains(room.point(SoundstageLayout.roomPoint(azimuth: azimuth, height: false))))
+                }
+                checkTrue(room.stageWell.contains(room.point(P3(x: 0, y: SoundstageLayout.axisTop, z: 0))))
+                let front = room.project(P3(x: 0, y: 0, z: 1)), rear = room.project(P3(x: 0, y: 0, z: -1))
+                checkTrue(front.point.y < rear.point.y && front.scale < rear.scale)
+                for speaker in room.speakers where speaker.group == .height {
+                    let bed = room.point(SoundstageLayout.roomPoint(azimuth: speaker.azimuth!, height: false))
+                    checkTrue(room.point(room.position(speaker)).y < bed.y)
+                }
+                let stereo = SoundstageLayout(size: size, presence: 0, layout: format, part: .room)
+                checkEqual(stereo.stageScale, room.stageScale)
+            }
+        }
+        // Columns widen for small layouts and settle at 30 pt from 14 channels up.
         checkEqual(SoundstageLayout.spatialPitch(channels: 3), 41)
         checkEqual(SoundstageLayout.spatialPitch(channels: 8), 36)
         checkEqual(SoundstageLayout.spatialPitch(channels: 16), 30)
-        let roomy = CGSize(width: 380, height: 1_600)
-        checkGreater(layout(SoundstageLayout(size: roomy, layout: .lcr), "L").height,
-                     layout(SoundstageLayout(size: roomy, layout: .s916), "L").height)
-        // Mono: L alone at full weight, R collapsed, L/R slide to front centre, the correlation footer folds.
-        for size in [CGSize(width: 300, height: 720), CGSize(width: 380, height: 980)] {
+        let roomy = CGSize(width: 900, height: 600)
+        checkGreater(layout(SoundstageLayout(size: roomy, layout: .lcr, part: .levels), "L").width,
+                     layout(SoundstageLayout(size: roomy, layout: .s916, part: .levels), "L").width)
+        // Mono: L alone at full weight, R collapsed, L/R slide to front centre, no correlation section.
+        for size in [CGSize(width: 300, height: 360), CGSize(width: 380, height: 480)] {
             for format in [SpeakerLayout.lcr, .s512, .s916] {
-                let stereo = SoundstageLayout(size: size, presence: 0, layout: format)
-                let mono = SoundstageLayout(size: size, presence: 0, mono: 1, layout: format)
+                let stereo = SoundstageLayout(size: size, presence: 0, layout: format, part: .levels)
+                let mono = SoundstageLayout(size: size, presence: 0, mono: 1, layout: format, part: .levels)
+                let monoRoom = SoundstageLayout(size: size, presence: 0, mono: 1, layout: format, part: .room)
                 let left = format.speakers.firstIndex { $0.role == Role.left }!
                 let right = format.speakers.firstIndex { $0.role == Role.right }!
-                checkEqual(mono.rows[right].height, 0)
-                checkTrue(mono.rows.enumerated().allSatisfy { $0.offset == left || $0.element.height == 0 })
-                checkGreaterOrEqual(mono.rows[left].height, stereo.rows[left].height)
-                checkEqual(mono.azimuth(format.speakers[left]), 0)
-                checkTrue(mono.stageWell.contains(mono.label(format.speakers[left])))
-                checkTrue(mono.label(format.speakers[left]).y < mono.block.minY)
-                checkTrue(mono.radar.maxY <= mono.block.minY)
+                checkEqual(mono.columns[right].width, 0)
+                checkTrue(mono.columns.enumerated().allSatisfy { $0.offset == left || $0.element.width == 0 })
+                checkGreaterOrEqual(mono.columns[left].width, stereo.columns[left].width)
+                checkEqual(mono.correlationWeight, 0)
+                checkEqual(monoRoom.azimuth(format.speakers[left]), 0)
+                checkTrue(monoRoom.stageWell.contains(monoRoom.label(format.speakers[left])))
                 checkTrue(mono.stageWell.contains(mono.block))
                 checkEqual(format.speakers[left].displayName(mono: 1), "M")
                 checkEqual(format.speakers[left].displayName(mono: 0), "L")
             }
         }
+        // Mono fold-down: identical sides keep their level, unrelated ones lose 3 dB, inverted ones cancel.
+        checkEqual(Double(MeterScale.monoFoldDown(correlation: 1, left: 0.5, right: 0.5)!), 0, accuracy: 0.001)
+        checkEqual(Double(MeterScale.monoFoldDown(correlation: 0, left: 0.5, right: 0.5)!), -3.01, accuracy: 0.01)
+        checkEqual(Double(MeterScale.monoFoldDown(correlation: -1, left: 0.5, right: 0.5)!), -40, accuracy: 0.001)
+        checkEqual(Double(MeterScale.monoFoldDown(correlation: 0, left: 0.5, right: 0)!), -3.01, accuracy: 0.01)
+        checkTrue(MeterScale.monoFoldDown(correlation: 0.5, left: 0, right: 0) == nil)
+        checkTrue(MeterScale.monoFoldDown(correlation: MeterSnapshot.noCorrelation, left: 0.5, right: 0.5) == nil)
+        checkEqual(MeterScale.signedTenths(0.84), "+0.8")
+        checkEqual(MeterScale.signedTenths(-0.84), "−0.8")
+        checkEqual(MeterScale.signedTenths(0.02), "0.0")
         // VU: 0 VU at −18 dBFS, voltage-linear arc, power sum without LFE, IEC 300 ms ballistics.
         checkEqual(VUScale.vu(fromDecibels: -18), 0)
         checkEqual(VUScale.fraction(vu: 3), 1, accuracy: 1e-9)
@@ -971,13 +1252,24 @@ final class CoreTests {
             let stereoWave = WaveformLayout(size: size)
             checkEqual(stereoWave.lanes.count, 2)
             checkEqual(Double(stereoWave.lanes[0].height), Double(stereoWave.lanes[1].height), accuracy: 0.001)
-            // Stacked at one width, Spectrum and Spectrogram share the exact same frequency axis.
-            let spectrum = SpectrumLayout(size: CGSize(width: size.width, height: 160))
+            // One well: the live spectrum continues the waterfall from "now" on the same frequency rows.
             let spectrogram = SpectrogramLayout(size: CGSize(width: size.width, height: 240))
-            checkEqual(spectrum.x(frequency: 20, sampleRate: 48_000), spectrum.plot.minX)
+            checkTrue(spectrogram.spectrum.minX > spectrogram.plot.maxX)
+            checkEqual(spectrogram.spectrum.minY, spectrogram.plot.minY)
+            checkEqual(spectrogram.spectrum.height, spectrogram.plot.height)
+            checkTrue(spectrogram.spectrum.maxX <= size.width)
+            checkEqual(spectrogram.x(decibels: MeterScale.spectrumFloor), spectrogram.spectrum.minX)
+            checkEqual(spectrogram.x(decibels: 0), spectrogram.spectrum.maxX)
             // Horizontal spectrogram: newest at the right, 20 Hz at the bottom, keys on the plot's frequency axis.
             checkEqual(spectrogram.x(secondsAgo: 0), spectrogram.plot.maxX)
-            checkEqual(Double(spectrogram.x(secondsAgo: SpectrogramLayout.historySeconds)), Double(spectrogram.plot.minX), accuracy: 0.001)
+            checkEqual(Double(spectrogram.x(secondsAgo: spectrogram.seconds)), Double(spectrogram.plot.minX), accuracy: 0.001)
+            // The span follows the waterfall's width: 8 s when wide, down to 3 s when the spectrum takes the room.
+            checkTrue(spectrogram.seconds >= SpectrogramLayout.minSeconds && spectrogram.seconds <= SpectrogramLayout.maxSeconds)
+            let wide = SpectrogramLayout(size: CGSize(width: 1_300, height: 300))
+            let narrow = SpectrogramLayout(size: CGSize(width: 1_300, height: 300), strip: 5_000)
+            checkEqual(wide.seconds, SpectrogramLayout.maxSeconds)
+            checkEqual(SpectrogramLayout(size: CGSize(width: 400, height: 300)).seconds, SpectrogramLayout.minSeconds)
+            checkTrue(narrow.seconds < wide.seconds)
             checkEqual(Double(spectrogram.y(frequency: 20, sampleRate: 48_000)), Double(spectrogram.plot.maxY), accuracy: 0.001)
             checkEqual(Double(spectrogram.y(midi: 69, sampleRate: 48_000)), Double(spectrogram.y(frequency: 440, sampleRate: 48_000)), accuracy: 0.001)
             checkTrue(spectrogram.keyboard.maxX < spectrogram.plot.minX && spectrogram.keyboard.minY == spectrogram.plot.minY)
@@ -995,7 +1287,7 @@ final class CoreTests {
 }
 
 private func layout(_ layout: SoundstageLayout, _ name: String) -> CGRect {
-    layout.rows[layout.speakers.firstIndex { $0.name == name }!]
+    layout.columns[layout.speakers.firstIndex { $0.name == name }!]
 }
 private func checkTrue(_ condition: Bool, file: StaticString = #filePath, line: UInt = #line) {
     if !condition { fputs("FAILED \(file):\(line)\n", stderr); exit(1) }
@@ -1032,7 +1324,9 @@ struct TestRunner {
             ("BS.1770-5 997 Hz reference and LFE exclusion", suite.testLUFSReferenceAndLFEExclusion),
             ("BS.1770-5 channel weights up to 9.1.6 and unrouted roles", suite.testSurroundAndHeightWeights),
             ("4× true peak and EBU loudness range", suite.testTruePeakAndLoudnessRange),
-            ("packed L/R FFT and phase correlation", suite.testCorrelationAndPackedTransform),
+            ("packed L/R FFT, phase correlation and its zones", suite.testCorrelationAndPackedTransform),
+            ("energy-weighted correlation integrator with silence reset", suite.testCorrelationIntegrator),
+            ("five stereo bands: correlation, width, balance and level from the L/R cross spectrum", suite.testStereoBands),
             ("speaker layouts 3.0 to 9.1.6", suite.testSpeakerLayouts),
             ("chunk boundaries and stereo energy", suite.testChunkBoundariesAndStereoEnergy),
             ("8192 FFT and 512-row fixed spectrogram history", suite.testFullRangeSpectrogramHistory),
@@ -1043,6 +1337,8 @@ struct TestRunner {
             ("multi-level min/max waveform pyramid, dirty uploads and 32-bit wrap", suite.testMinMaxPyramid),
             ("interpolated low-frequency spectrogram rows", suite.testLowFrequencyRowsInterpolate),
             ("pitch naming and interpolated dominant peak", suite.testPitchAndDominantPeak),
+            ("chord notes without overtones, and their keyboard holds", suite.testChordNotesAndHolds),
+            ("bass notes at 44.1, 48 and 96 kHz, and silence clearing", suite.testBassNotesAcrossSampleRates),
             ("peak readout gate, hold and attack", suite.testPeakTrackerGateHoldAndAttack),
             ("channel ring wrap and unrouted roles", suite.testChannelRingWrapsAndClearsUnroutedRoles),
             ("resizable loudness summary and its stretching column", suite.testSummaryHeightAndStretch),

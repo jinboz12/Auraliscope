@@ -15,7 +15,7 @@ enum AppVersion {
     }
 }
 
-/// Release essentials, main features and bundled license notices.
+/// Release essentials, what the app measures and bundled license notices, set as plain text: no icons or cards.
 struct AboutView: View {
     @ObservedObject private var l10n = Localizer.shared
 
@@ -27,46 +27,48 @@ struct AboutView: View {
         return contents
     }
 
+    private var features: [(title: String, detail: String)] {
+        [(L("Loudness"), L("LUFS, loudness range and True Peak against your target.")),
+         (L("Spectrogram & Spectrum"), L("Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard.")),
+         (L("Waveform"), L("Real-time waveforms for each monitored channel.")),
+         (L("Soundstage"), L("The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive.")),
+         (L("Channel Levels"), L("Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo."))]
+    }
+
+    // Sized to its content, like a system About window: no empty space below a short page, and the window grows
+    // when the third-party notices open.
     var body: some View {
-        ScrollView {
+        Group {
             VStack(alignment: .leading, spacing: 0) {
                 AboutBanner()
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 20) {
                     AboutGroup(title: L("What it measures")) {
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                            AboutFeature(symbol: "waveform.path.ecg", color: Theme.sage, title: L("Spectrum & Spectrogram"),
-                                         detail: L("Live frequency analysis, pitch detection and spectral history."))
-                            AboutFeature(symbol: "chart.xyaxis.line", color: Theme.ochre, title: L("Loudness"),
-                                         detail: L("LUFS, loudness range and True Peak against your target."))
-                            AboutFeature(symbol: "waveform", color: Theme.sand, title: L("Waveform"),
-                                         detail: L("Real-time waveforms for each monitored channel."))
-                            AboutFeature(symbol: "hifispeaker.2", color: Theme.heather, title: L("Soundstage"),
-                                         detail: L("Channel levels, clipping and correlation, from Mono to 9.1.6."))
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
+                                if index > 0 { Divider().opacity(0.5) }
+                                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                                    Text(feature.title)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Theme.ink)
+                                        .frame(width: 170, alignment: .leading)
+                                    Text(feature.detail)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.secondary)
+                                        .lineSpacing(Localizer.shared.paragraphSpacing)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(.vertical, 8)
+                                .accessibilityElement(children: .combine)
+                            }
                         }
                     }
                     AboutGroup(title: L("Privacy")) {
-                        HStack(alignment: .top, spacing: 12) {
-                            Image(systemName: "lock.shield")
-                                .font(.system(size: 18, weight: .medium))
-                                .foregroundStyle(Theme.sage)
-                                .frame(width: 26)
-                            Text(L("Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded."))
-                                .font(.system(size: 12))
-                                .lineSpacing(Localizer.shared.paragraphSpacing)
-                                .foregroundStyle(Theme.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background { CardSurface(radius: 14) }
+                        paragraph(L("Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded."))
                     }
                     AboutGroup(title: L("Acknowledgements")) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text(L("Spectrogram inspired by AudioSpectrogram. MIT license included."))
-                                .font(.system(size: 12))
-                                .lineSpacing(Localizer.shared.paragraphSpacing)
-                                .foregroundStyle(Theme.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            paragraph(L("Spectrogram inspired by AudioSpectrogram. MIT license included."))
                             DisclosureGroup(L("Third-party notices")) {
                                 ScrollView {
                                     Text(verbatim: notices)
@@ -84,15 +86,25 @@ struct AboutView: View {
                     }
                     AboutFooter()
                 }
-                .padding(.horizontal, 26)
+                .padding(.horizontal, 28)
                 .padding(.top, 22)
                 .padding(.bottom, 24)
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(minWidth: 620, minHeight: 580)
+        .frame(width: 660, alignment: .top)
         .background(Theme.windowBottom)
         .background(UtilityWindowProbe(title: L("About Auraliscope"), capture: Diagnostics.showAbout))
         .tint(Theme.action)
+    }
+
+    private func paragraph(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .lineSpacing(Localizer.shared.paragraphSpacing)
+            .foregroundStyle(Theme.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -103,31 +115,21 @@ private struct AboutBanner: View {
         ZStack(alignment: .bottomLeading) {
             LinearGradient(colors: [Theme.bannerAccent.opacity(0.85), Theme.bannerAccent.opacity(0.45), Theme.windowBottom],
                            startPoint: .topLeading, endPoint: .bottomTrailing)
-            HStack(alignment: .center, spacing: 18) {
-                VStack(alignment: .leading, spacing: 6) {
-                    BrandMark(size: 22, color: Theme.ink)
-                    Text(L("Native audio metering for macOS"))
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.ink.opacity(0.86))
-                    HStack(spacing: 8) {
-                        Text(L("Version %@", AppVersion.label))
-                            .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                            .foregroundStyle(Theme.ink)
-                            .padding(.horizontal, 9).padding(.vertical, 3)
-                            .glassSurface(Capsule(), tint: Theme.sage.opacity(0.08), fallback: Theme.chipFill)
-                        Text(L("Build %@", AppVersion.build))
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(Theme.ink.opacity(0.78))
-                    }
+            VStack(alignment: .leading, spacing: 6) {
+                BrandMark(size: 22, color: Theme.ink)
+                Text(L("Native audio metering for macOS"))
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.ink.opacity(0.86))
+                Text(verbatim: L("Version %@", AppVersion.label) + "  ·  " + L("Build %@", AppVersion.build))
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(Theme.ink.opacity(0.78))
                     .padding(.top, 2)
-                }
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 26)
+            .padding(.horizontal, 28)
             .padding(.top, 24)
             .padding(.bottom, 22)
         }
-        .frame(minHeight: 138)
+        .frame(minHeight: 132)
     }
 }
 
@@ -136,44 +138,12 @@ private struct AboutGroup<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased(with: Localizer.shared.locale))
                 .font(.eyebrow).tracking(Localizer.shared.tracking(Tracking.eyebrow))
                 .foregroundStyle(Theme.tertiary)
-                .padding(.leading, 2)
             content
         }
-    }
-}
-
-private struct AboutFeature: View {
-    let symbol: String
-    let color: Color
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: symbol)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(color)
-                .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Theme.ink)
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.secondary)
-                    .lineSpacing(Localizer.shared.paragraphSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(13)
-        .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
-        .background { CardSurface(radius: 12) }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -181,23 +151,23 @@ private struct AboutFooter: View {
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(verbatim: "© 2026 JINBOZ")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Theme.secondary)
-            }
+        HStack(alignment: .center, spacing: 10) {
+            Text(verbatim: "© 2026 JINBOZ")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Theme.secondary)
             Spacer()
-            Button {
+            Button(L("Show Diagnostic Logs")) {
+                NSWorkspace.shared.activateFileViewerSelecting([DiagnosticLog.folder])
+            }
+            .glassButton()
+            Button(L("Copy Version Info")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(AppVersion.summary, forType: .string)
-            } label: {
-                Label(L("Copy Version Info"), systemImage: "doc.on.doc")
-                    .font(.system(size: 11, weight: .medium))
             }
             .glassButton()
             .help(AppVersion.summary)
         }
+        .font(.system(size: 11, weight: .medium))
         .padding(.top, 4)
     }
 }
