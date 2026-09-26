@@ -1,135 +1,130 @@
 # Auraliscope
 
-**Auraliscope 是一款为 macOS 打造的实时音频分析与可视化工具。**
+**Auraliscope is a real-time audio analysis and visualization tool designed for macOS.**
 
-Auraliscope 将响度、电平、频谱、频谱图、波形、声场和立体声相关性整合在一个窗口中，帮助你在聆听的同时观察声音的动态、频率分布与空间关系。
+Auraliscope integrates loudness, level, spectrum, spectrogram, waveform, sound field, and stereo correlation into a single window, allowing you to observe sound dynamics, frequency distribution, and spatial relationships while you listen.
 
-适用于音乐制作、混音、音频后期，以及日常播放与监听中的音频观察。
+It is suitable for music production, mixing, and audio post-production, as well as for monitoring audio during everyday playback.
 
-[下载应用](https://github.com/jinboz12/Auraliscope/releases)
-[查看更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1rc2)
-[反馈问题](https://github.com/jinboz12/Auraliscope/issues)
+[Download App](https://github.com/jinboz12/Auraliscope/releases)
+[View Changelog](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1rc2)
+[Report Issues](https://github.com/jinboz12/Auraliscope/issues)
 
-## 主要功能
+## Key Features
 
-### 响度与动态
+### Loudness and Dynamics
 
-集中查看 LUFS、响度范围（LRA）、真峰值（True Peak）与 VU 等读数，观察音频的整体响度和动态变化。主响度读数可选瞬时、短期或积分响度。
+View readings such as LUFS, Loudness Range (LRA), True Peak, and VU in one place to monitor overall loudness and dynamic changes. The main loudness reading supports Momentary, Short-term, or Integrated modes.
 
-真峰值超过 0 dBTP 时，界面会显示超限情况及具体数值，方便定位需要关注的峰值。
+When True Peak exceeds 0 dBTP, the interface displays the clipping status and specific value, making it easy to identify peaks that require attention.
 
-### 声道电平
+### Channel Levels
 
-独立显示各声道的 Peak 与 RMS 电平，并提供峰值保持与真峰值超限提示，便于比较声道之间的电平关系。点按红色超限提示可以清除保持的超限警告。
+Independently displays Peak and RMS levels for each channel, featuring peak hold and True Peak clipping alerts to facilitate level comparison between channels. Click the red clipping indicator to clear the held warning.
 
-### 频谱、频谱图与波形
+### Spectrum, Spectrogram, and Waveform
 
-- **频谱图与频谱**：共用对数频率轴和钢琴键盘，显示实时能量与历史；键盘会点亮估计的主要音高。可在设置中镜像面板，把频谱移到左侧。
-- **声道波形**：观察振幅与瞬态，可选 2、4 或 8 秒的范围。
+- **Spectrogram and Spectrum**: Share a logarithmic frequency axis and a piano keyboard display, showing real-time energy alongside historical data; the keyboard highlights the estimated fundamental pitch. The panel layout can be mirrored in the settings to move the spectrum to the left side.
+- **Channel Waveform**: Observe amplitude and transients with selectable time ranges of 2, 4, or 8 seconds.
 
-### 声场与相关性
+### Sound Field and Correlation
 
-支持立体声与沉浸声显示模式，以动态可视化呈现声道能量的空间分布。立体声声场可选点、轮廓或填充显示，并可查看全频段、3 频段或 5 频段。沉浸声声场使用轻量二维房间视图，支持从 3.0 到 9.1.6 的声道布局。
+Supports stereo and immersive audio display modes, visualizing the spatial distribution of channel energy dynamically. The stereo sound field display offers point, outline, or filled modes, with views available for full-band, 3-band, or 5-band analysis. The immersive sound field utilizes a lightweight 2D room view and supports channel layouts ranging from 3.0 to 9.1.6.
 
-立体声模式下提供按频段划分的相关性显示，辅助观察左右声道关系及合并为单声道时可能出现的抵消问题。
+In stereo mode, a band-specific correlation display helps visualize the relationship between left and right channels and identify potential phase cancellation issues when downmixing to mono.
 
-Mono 模式默认隐藏，可在设置中启用。
+Mono mode is hidden by default but can be enabled in the settings.
 
-> “沉浸声”是本应用的多声道可视化模式，不代表 Dolby Atmos 编码、解码或认证功能。
+> "Immersive sound" refers to the app's multi-channel visualization mode; it does not imply Dolby Atmos encoding, decoding, or certification capabilities.
 
-### 输入与输出音频分析
+### Input and Output Audio Analysis
 
-支持 Core Audio 输入设备；在 macOS 14.2 或更高版本中，可通过 Core Audio Process Tap 捕获输出音频进行分析。
+Supports Core Audio input devices; on macOS 14.2 or later, output audio can be captured for analysis via the Core Audio Process Tap.
 
-应用启动时会自动选择当前 macOS 默认输出设备，也可手动切换音频源。
+The app automatically selects the current macOS default output device upon launch, though the audio source can also be switched manually.
 
-支持最高 9.1.6 的声道布局，并可将最多 64 个物理声道自定义映射至不同的扬声器角色。
+Supports channel layouts up to 9.1.6 and allows custom mapping of up to 64 physical channels to specific speaker roles.
 
-### 外观与语言
+### Appearance and Language
 
-- 支持跟随系统、浅色和深色外观。
-- 支持普通窗口与全屏使用。
-- 在系统支持时使用原生 Liquid Glass 控件。
-- 支持简体中文、英语和韩语。
-- 设置更改会即时预览；点按“应用”保留，或点按“还原”恢复。切换语言无需重启，菜单栏也会更新。
+- Supports system-matching, light, and dark appearances.
+- Supports both standard windowed and full-screen modes.
+- Uses native Liquid Glass controls where supported by the system.
+- Supports Simplified Chinese, English, and Korean.
+- Settings changes provide an instant preview; click "Apply" to save or "Revert" to discard. Language switching does not require a restart, and the menu bar updates immediately.
 
-## 系统要求
+## System Requirements
 
-| 项目 | 要求 |
+| Item | Requirement |
 | --- | --- |
-| 处理器 | Apple Silicon Mac |
-| 系统 | macOS 13 或更高版本 |
-| 输出音频捕获 | macOS 14.2 或更高版本 |
-| 已测试系统 | macOS 27.0（26A428）, M1 Max Macbook Pro |
+| Processor | Apple Silicon Mac |
+| OS | macOS 13 or later |
+| Output Audio Capture | macOS 14.2 or later |
+| Tested System | macOS 27.0 (26A428), M1 Max MacBook Pro |
 
-系统部署目标不等于所有版本均已完成兼容性验证。目前其他 macOS 版本的实际运行情况仍待测试。
+The target system deployment does not imply that compatibility has been verified for every version. Actual performance on other macOS versions remains to be tested. ## Download and Installation
 
-## 下载与安装
+1. Visit the [Releases page](https://github.com/jinboz12/Auraliscope/releases) to download the DMG file.
+2. Open the DMG and drag Auraliscope into the Applications folder.
+3. Launch the app from the Applications folder.
+4. Grant audio capture permissions as needed and select the audio source to analyze.
 
-1. 前往 [Releases 页面](https://github.com/jinboz12/Auraliscope/releases)下载 DMG 文件。
-2. 打开 DMG，将 Auraliscope 拖入 Applications 文件夹。
-3. 从 Applications 文件夹启动应用。
-4. 根据需要授予音频捕获权限，并选择要分析的音频源。
+The current version, **1.1 rc 2 (build 50)**, is a release candidate; it uses ad-hoc signing and has not yet been notarized by Apple. The downloaded file is `Auraliscope.dmg`, containing the application `Auraliscope.app`.
 
-当前 **1.1 rc 2（build 50）** 为候选测试版本，使用 ad hoc 签名，尚未经过 Apple 公证。下载文件为 `Auraliscope.dmg`，其中的应用为 `Auraliscope.app`。
+If macOS prevents the app from launching, please verify that the installation package comes from this project's official Releases, then go to:
 
-如果 macOS 阻止启动，请在确认安装包来自本项目官方 Releases 后，前往：
+**System Settings → Privacy & Security**
 
-**系统设置 → 隐私与安全性**
+Check if the system offers an "Open Anyway" option.
 
-查看系统是否提供“仍要打开”选项。
+## Permissions and Privacy
 
-## 权限与隐私
+Auraliscope uses the following permissions based on the selected audio source:
 
-Auraliscope 根据所选音频源使用以下权限：
-
-| 音频源 | 所需权限 |
+| Audio Source | Required Permission |
 | --- | --- |
-| 输入设备 | 麦克风权限 |
-| 输出音频 | 系统音频录制权限 |
+| Input Device | Microphone permission |
+| Output Audio | System audio recording permission |
 
-系统权限的具体名称和显示方式可能随 macOS 版本而变化。
+The specific names and display of system permissions may vary depending on the macOS version.
 
-**音频仅在本机内存中进行实时分析，应用不会将捕获的音频保存为文件或上传。**
+**Audio is analyzed in real-time solely within the device's memory; the app does not save captured audio to a file or upload it.**
 
-## 使用提示
+## Usage Tips
 
-- 开始分析前，请确认所选设备、声道布局与实际音频路由一致。
-- 分析多声道音频时，请检查物理声道与扬声器角色的映射。
-- 相关性读数可辅助判断立体声兼容性，建议结合实际单声道试听理解。
-- 声场可视化反映输入信号的声道能量关系，不等同于对房间声学或实际扬声器声场的测量。
+- Before starting analysis, ensure that the selected device and channel layout match the actual audio routing.
+- When analyzing multi-channel audio, check the mapping between physical channels and speaker roles.
+- Correlation readings help assess stereo compatibility; it is recommended to interpret them alongside actual mono listening tests.
+- Sound field visualization reflects the channel energy relationships of the input signal; it is not equivalent to a measurement of room acoustics or the actual speaker sound field.
 
-## 问题反馈
+## Feedback
 
-欢迎通过 [GitHub Issues](https://github.com/jinboz12/Auraliscope/issues)提交问题或建议。
+Feel free to submit issues or suggestions via [GitHub Issues](https://github.com/jinboz12/Auraliscope/issues). To facilitate reproduction, please provide the following information whenever possible:
 
-为便于复现，请尽量提供：
+- Auraliscope version and build numbers;
+- macOS version and Mac model;
+- Audio devices used and input/output modes;
+- Channel layout and relevant routing settings;
+- Steps to reproduce the issue, expected behavior, and actual behavior;
+- Relevant screenshots or screen recordings.
 
-- Auraliscope 版本号与 build 编号；
-- macOS 版本及 Mac 型号；
-- 使用的音频设备和输入／输出模式；
-- 声道布局及相关路由设置；
-- 问题的复现步骤、预期行为与实际表现；
-- 必要的截图或录屏。
+Before submitting materials, please check for any information that should not be made public.
 
-提交材料前，请检查其中是否包含不宜公开的信息。
-
-## 许可与使用范围
+## License and Scope of Use
 
 Copyright © 2026 JINBOZ.
 
-任何人均可免费下载、安装并运行 Auraliscope 应用，用于自己的工作或私人用途。
-依据 CC BY-NC-ND 4.0，你可以在遵守许可证条款的前提下，出于非商业目的分享本项目的未修改副本。
+Anyone may download, install, and run the Auraliscope application free of charge for professional or personal use.
+Subject to the terms of the CC BY-NC-ND 4.0 license, you may share unmodified copies of this project for non-commercial purposes.
 
-### 免责声明
+### Disclaimer
 
-本软件按“现状”提供，不作任何明示或默示担保。在适用法律允许的范围内，作者不对因使用本软件而产生的损失承担责任。
-Auraliscope 所包含的第三方组件及材料适用各自的许可证。
+This software is provided "as is," without any express or implied warranties. To the extent permitted by applicable law, the author assumes no liability for any damages arising from the use of this software.
+Third-party components and materials included in Auraliscope are subject to their respective licenses.
 
-
-Auraliscope 的频谱图展示参考了
+The spectrogram visualization in Auraliscope draws inspiration from the
 [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram)
-中的 dB 图例及时间、频率标记设计思路。
+project regarding the design of the dB legend and the time/frequency markers.
 
-Auraliscope 的实时分析与渲染采用独立的 Swift、Accelerate 和 Metal
-实现，未链接该项目的 Rust 库。
+Auraliscope's real-time analysis and rendering are implemented independently using Swift, Accelerate, and Metal;
+it does not link to that project's Rust libraries.
