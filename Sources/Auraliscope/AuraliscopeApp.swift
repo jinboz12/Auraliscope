@@ -28,8 +28,10 @@ struct AuraliscopeApp: App {
                     guard !welcome.launchHandled else { return }
                     welcome.launchHandled = true
                     let inputNeedsPermission = !Diagnostics.demo && model.selectedDevice?.output != true
+                        && model.selectedDevice?.isBridge != true && model.selectedID.bridge == nil
                         && AVCaptureDevice.authorizationStatus(for: .audio) != .authorized
-                    if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && (showWelcomeOnLaunch || inputNeedsPermission)) {
+                    if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && !launchedByBridge
+                                                   && (showWelcomeOnLaunch || inputNeedsPermission)) {
                         welcome.presented = true
                     } else {
                         model.resume()

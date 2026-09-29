@@ -339,3 +339,19 @@
 "Start Dictation…" = "开始听写…";
 "View" = "显示";
 "AutoFill" = "自动填充";
+
+/* DAW Bridge prototype */
+"%@ (waiting)" = "%@（等待中）";
+"%@ · DAW plugin disconnected · waiting for it to return" = "%@ · DAW 插件已断开 · 等待其重新连接";
+"%@ · DAW plugin · %d ch → %@" = "%@ · DAW 插件 · %d ch → %@";
+"%@ · DAW plugin · bypassed in the DAW" = "%@ · DAW 插件 · 已在 DAW 中旁通";
+"%@ · DAW plugin · inactive in the DAW" = "%@ · DAW 插件 · 在 DAW 中未激活";
+"%@ · DAW plugin · no audio: the DAW is not processing it" = "%@ · DAW 插件 · 无音频：DAW 未在处理它";
+"%@ · DAW plugin · not responding" = "%@ · DAW 插件 · 无响应";
+"%@ · DAW plugin · offline render, not metered" = "%@ · DAW 插件 · 离线渲染，不计量";
+"%@ · DAW plugin · only mono and stereo are supported" = "%@ · DAW 插件 · 仅支持单声道和立体声";
+"DAW plugin" = "DAW 插件";
+"DAW plugin receiver unavailable: %@" = "DAW 插件接收器不可用：%@";
+"DAW plugins · Auraliscope Bridge" = "DAW 插件 · Auraliscope Bridge";
+"DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported." = "DAW 插件：在 DAW 的轨道、总线或主输出上插入 Auraliscope Bridge（VST3 或 AU），每个实例都会以其名称显示在这里。支持单声道和立体声插入。";
+"Waiting for the DAW plugin to connect…" = "正在等待 DAW 插件连接…";

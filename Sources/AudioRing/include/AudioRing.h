@@ -35,6 +35,15 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *interleaved, uint32_
 uint32_t channel_ring_read(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames);
 uint64_t channel_ring_dropped(const ChannelRing *ring);
 
+// A ring plus the routing that maps a source's interleaved channels onto roles, for producers that deliver
+// through a callback (the DAW Bridge receiver): `channel_ring_sink_write` has the signature of such a callback,
+// with a `ChannelRingSink *` as its context. It runs on the producer's thread and is its only writer.
+typedef struct {
+    ChannelRing *ring;
+    int32_t source_for_role[CHANNEL_ROLE_COUNT];
+} ChannelRingSink;
+void channel_ring_sink_write(void *context, const float *interleaved, uint32_t frames, uint32_t channels);
+
 typedef struct MeterExchange MeterExchange;
 // 64 spectrum bins, 16 peaks, 16 RMS, 16 true peaks, 16 held peaks, 16 held true peaks, 12 scalars (3 LUFS,
 // loudness range, frame sequence, stream identity, dominant peak (2), detected format, waveform serial,

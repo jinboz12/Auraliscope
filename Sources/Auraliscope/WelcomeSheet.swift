@@ -136,7 +136,8 @@ struct WelcomeSheet: View {
                         .font(.system(size: 13, weight: .semibold))
                         .padding(.horizontal, 8)
                 }
-                .disabled(!permission.granted && model.selectedDevice?.output != true && !Diagnostics.demo)
+                .disabled(!permission.granted && model.selectedDevice?.output != true && model.selectedDevice?.isBridge != true
+                          && !Diagnostics.demo)
                 .keyboardShortcut(.defaultAction)
                 .glassButton(prominent: true)
                 .controlSize(.large)

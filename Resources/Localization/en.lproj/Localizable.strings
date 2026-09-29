@@ -339,3 +339,19 @@
 "Start Dictation…" = "Start Dictation…";
 "View" = "View";
 "AutoFill" = "AutoFill";
+
+/* DAW Bridge prototype */
+"%@ (waiting)" = "%@ (waiting)";
+"%@ · DAW plugin disconnected · waiting for it to return" = "%@ · DAW plugin disconnected · waiting for it to return";
+"%@ · DAW plugin · %d ch → %@" = "%@ · DAW plugin · %d ch → %@";
+"%@ · DAW plugin · bypassed in the DAW" = "%@ · DAW plugin · bypassed in the DAW";
+"%@ · DAW plugin · inactive in the DAW" = "%@ · DAW plugin · inactive in the DAW";
+"%@ · DAW plugin · no audio: the DAW is not processing it" = "%@ · DAW plugin · no audio: the DAW is not processing it";
+"%@ · DAW plugin · not responding" = "%@ · DAW plugin · not responding";
+"%@ · DAW plugin · offline render, not metered" = "%@ · DAW plugin · offline render, not metered";
+"%@ · DAW plugin · only mono and stereo are supported" = "%@ · DAW plugin · only mono and stereo are supported";
+"DAW plugin" = "DAW plugin";
+"DAW plugin receiver unavailable: %@" = "DAW plugin receiver unavailable: %@";
+"DAW plugins · Auraliscope Bridge" = "DAW plugins · Auraliscope Bridge";
+"DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported." = "DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported.";
+"Waiting for the DAW plugin to connect…" = "Waiting for the DAW plugin to connect…";

@@ -207,3 +207,8 @@ uint32_t channel_ring_read(ChannelRing *ring, ChannelFrame *destination, uint32_
 uint64_t channel_ring_dropped(const ChannelRing *ring) {
     return ring ? atomic_load_explicit(&ring->dropped, memory_order_relaxed) : 0;
 }
+
+void channel_ring_sink_write(void *context, const float *interleaved, uint32_t frames, uint32_t channels) {
+    ChannelRingSink *sink = context;
+    if (sink) channel_ring_write(sink->ring, interleaved, frames, channels, sink->source_for_role);
+}

@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import AudioRing
 import Combine
 import CoreAudio
@@ -161,6 +162,8 @@ final class HardwareObserver {
 enum MeterStatus: Equatable {
     case chooseInput, waitingForPermission, permissionDenied, paused, ringFailed, noDevice, noSelection, dspFailed, demo
     case capturing(device: String, output: Bool, channels: Int, layout: String)
+    /// A DAW plugin source: its name and what it is doing.
+    case bridge(name: String, condition: BridgeCondition, channels: Int, layout: String)
     case failure(StatusMessage)
 
     /// Rendered on demand so a language switch also updates the current message.
@@ -177,6 +180,18 @@ enum MeterStatus: Equatable {
         case .demo: return L("Demo signal · no audio device open")
         case let .capturing(device, output, channels, layout):
             return "\(output ? L("%@ (output)", device) : device) · \(channels) ch → \(layout)"
+        case let .bridge(name, condition, channels, layout):
+            switch condition {
+            case .streaming: return L("%@ · DAW plugin · %d ch → %@", name, channels, layout)
+            case .noAudio: return L("%@ · DAW plugin · no audio: the DAW is not processing it", name)
+            case .bypassed: return L("%@ · DAW plugin · bypassed in the DAW", name)
+            case .offline: return L("%@ · DAW plugin · offline render, not metered", name)
+            case .inactive: return L("%@ · DAW plugin · inactive in the DAW", name)
+            case .unsupported: return L("%@ · DAW plugin · only mono and stereo are supported", name)
+            case .notResponding: return L("%@ · DAW plugin · not responding", name)
+            case .disconnected: return L("%@ · DAW plugin disconnected · waiting for it to return", name)
+            case .connecting: return L("Waiting for the DAW plugin to connect…")
+            }
         case let .failure(message): return message.text
         }
     }
@@ -186,8 +201,35 @@ enum MeterStatus: Equatable {
         switch self {
         case let .capturing(device, output, channels, layout):
             return "Capturing \(output ? "output" : "input") \"\(device)\" · \(channels) ch → \(layout)"
+        case let .bridge(name, condition, channels, layout):
+            return "DAW plugin \"\(name)\": \(condition) · \(channels) ch → \(layout)"
         case let .failure(message): return "Error: \(message.text)"
         default: return "Status: \(self)"
+        }
+    }
+}
+
+/// What a selected DAW plugin source is doing, as the status line reports it.
+enum BridgeCondition: Equatable {
+    case streaming, noAudio, bypassed, offline, inactive, unsupported, notResponding, disconnected
+    /// Launched by a plugin, before it has connected.
+    case connecting
+
+    /// Live audio older than this reads as "no audio" (the DAW stopped calling the plugin).
+    static let staleAudio = 0.5
+    /// A connection silent for this long (no status either) reads as "not responding".
+    static let staleMessages = 2.0
+
+    init(_ source: BridgeSource) {
+        if source.secondsSinceMessage > Self.staleMessages { self = .notResponding; return }
+        switch source.state {
+        case .bypassed: self = .bypassed
+        case .offline: self = .offline
+        case .inactive: self = .inactive
+        case .live:
+            if !source.hasUsableFormat { self = .unsupported }
+            else if let age = source.secondsSinceAudio, age < Self.staleAudio { self = .streaming }
+            else { self = .noAudio }
         }
     }
 }
@@ -353,6 +395,23 @@ final class MeterModel: ObservableObject {
     private var permissionPending = false
     private var wantsCapture = true
 
+    // DAW Bridge: plugin instances are listed with the devices and selected like one.
+    private let bridge: BridgeReceiver?
+    /// Why the receiver could not start (nil while it runs).
+    let bridgeError: String?
+    /// Newest report of every connected plugin instance (polled, not published: counters change constantly).
+    private(set) var bridgeSources: [BridgeSource] = []
+    /// The instance and format the ring is attached to, while a DAW source runs.
+    private var attachedBridge: (session: String, epoch: UInt32, channels: Int)?
+    /// Frames lost before the current attachment, so the status bar counts this stream only.
+    private var bridgeLostBase: UInt64 = 0
+    private var bridgeTimer: Timer?
+    /// Focus requests already acted on, per session.
+    private var focusHandled: [String: UInt32] = [:]
+    /// When the ring was attached: the first audio needs a moment to arrive before "no audio" is shown.
+    private var bridgeAttachedAt = Date.distantPast
+    private static let bridgeNameKey = "bridgeSourceName"
+
     deinit {
         worker?.stop()
         capture?.stop()
@@ -366,6 +425,10 @@ final class MeterModel: ObservableObject {
         // 2.0 stored the pinned multichannel mode as "surround". A pinned Mono needs Mono enabled.
         let mode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
         formatMode = mode == .mono && !showMono ? .stereo : mode
+        switch BridgeReceiver.start() {
+        case let .success(receiver): bridge = receiver; bridgeError = nil
+        case let .failure(error): bridge = nil; bridgeError = error.reason
+        }
         devices = AudioDevices.availableSources()
         let savedUID = UserDefaults.standard.string(forKey: "inputDeviceUID")
         let savedOutput = UserDefaults.standard.bool(forKey: "inputDeviceIsOutput")
@@ -379,6 +442,12 @@ final class MeterModel: ObservableObject {
         let saved = devices.first { !$0.uid.isEmpty && $0.uid == savedUID && $0.output == savedOutput }
         if let requested {
             selectedID = requested.id
+        } else if launchedByBridge {
+            // A plugin's button launched the app: it connects and asks to be shown within a moment.
+            selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix)
+        } else if let savedUID, savedUID.hasPrefix(bridgeUIDPrefix) {
+            // A DAW plugin chosen last time: wait for that insert to connect rather than fall back to a device.
+            selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix + savedUID.dropFirst(bridgeUIDPrefix.count))
         } else if savedUID == "" {
             // An explicit empty UID means the person chose "no device"; that choice is kept.
             selectedID = savedOutput ? .noOutput : .none
@@ -413,6 +482,18 @@ final class MeterModel: ObservableObject {
                 if wasRunning && self.selectedID == previousID && self.selectedDevice != nil { self.restart() }
             }
         })
+        if bridge != nil {
+            let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.pollBridge() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            bridgeTimer = timer
+        }
+        // From the model rather than a view: it must run even when no window is built (a release binary launched
+        // from a shell).
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { if let self { BridgeSelfTest.runIfRequested(model: self) } }
+        }
     }
 
     /// Latest analysis; canvases and readouts share it, so polling from either is idempotent.
@@ -467,7 +548,11 @@ final class MeterModel: ObservableObject {
 
     /// Called at the readout rate rather than per frame.
     func refreshDroppedFrames() {
-        let dropped = capture.map { channel_ring_dropped($0.ring) } ?? 0
+        var dropped = capture.map { channel_ring_dropped($0.ring) } ?? 0
+        if let session = attachedBridge?.session, let source = bridgeSources.first(where: { $0.sessionKey == session }) {
+            // Audio a DAW plugin could not deliver (receiver or sender overload), counted from stream positions.
+            dropped += source.framesLost &- bridgeLostBase
+        }
         if dropped != droppedFrames {
             droppedFrames = dropped
             // At most one line every 10 s, however often the count grows.
@@ -521,7 +606,16 @@ final class MeterModel: ObservableObject {
     }
 
     func refreshDevices() {
-        refreshDevices(using: AudioDevices.availableSources())
+        refreshDevices(using: AudioDevices.availableSources() + bridgeDevices)
+    }
+
+    /// Connected DAW plugin instances as sources, in connection order.
+    private var bridgeDevices: [InputDevice] {
+        bridgeSources.map { source in
+            InputDevice(device: 0, name: source.displayName, channels: UInt32(max(source.channels, 0)),
+                        uid: bridgeUIDPrefix + source.persistentKey, bridgeSession: source.sessionKey,
+                        detail: "\(source.host) · \(source.plugin)")
+        }
     }
 
     /// Accepts an injected list so a disappearing input or output can be checked without unplugging hardware.
@@ -535,7 +629,8 @@ final class MeterModel: ObservableObject {
         let restored = savedUID.flatMap { uid in
             uid.isEmpty ? nil : devices.first { !$0.uid.isEmpty && $0.uid == uid && $0.output == savedOutput }
         }
-        if !selectedID.isNone && !devices.contains(where: { $0.id == selectedID }) {
+        // A DAW plugin that went away stays selected: `pollBridge` waits for it to return.
+        if !selectedID.isNone && selectedID.bridge == nil && !devices.contains(where: { $0.id == selectedID }) {
             selectedID = selectedID.output ? .noOutput : .none
             loadAssignment()
             if wantsCapture { requestPermissionAndStart() }
@@ -562,6 +657,7 @@ final class MeterModel: ObservableObject {
         if let device = devices.first(where: { $0.id == id }), !device.uid.isEmpty {
             UserDefaults.standard.set(device.uid, forKey: "inputDeviceUID")
             UserDefaults.standard.set(device.output, forKey: "inputDeviceIsOutput")
+            if device.isBridge { UserDefaults.standard.set(device.name, forKey: Self.bridgeNameKey) }
         }
         loadAssignment()
         if wantsCapture { requestPermissionAndStart() }
@@ -658,6 +754,7 @@ final class MeterModel: ObservableObject {
         if running {
             wantsCapture = false
             stop()
+            bridge?.select(nil)
             snapshot = MeterSnapshot()
             status = .paused
         } else { resume() }
@@ -666,6 +763,9 @@ final class MeterModel: ObservableObject {
     func stop() {
         demoStart = nil
         hardwareObserver?.watch(nil)
+        // The ring's producer goes first (the bridge thread or the device), then its consumer.
+        bridge?.detach()
+        attachedBridge = nil
         worker?.stop()
         worker = nil
         capture?.stop()
@@ -677,12 +777,19 @@ final class MeterModel: ObservableObject {
             stop()
             snapshot = MeterSnapshot()
             clearMeasurements()
+            if selectedID.bridge != nil {
+                // A DAW plugin that is not connected (yet): `pollBridge` starts it when it appears.
+                status = .bridge(name: waitingBridgeName, condition: waitingForLaunch ? .connecting : .disconnected,
+                             channels: 0, layout: speakerLayout.name)
+                return
+            }
+            bridge?.select(nil)
             status = UserDefaults.standard.string(forKey: "inputDeviceUID") == "" ? .noSelection : .noDevice
             return
         }
-        // Core Audio taps ask for System Audio Recording when the output aggregate begins capture.
-        // Microphone authorization is only needed for a physical or virtual input source.
-        if selectedDevice.output { restart(); return }
+        // Core Audio taps ask for System Audio Recording when the output aggregate begins capture. A DAW plugin
+        // needs no permission at all. Microphone authorization is only needed for a physical or virtual input.
+        if selectedDevice.output || selectedDevice.isBridge { restart(); return }
         guard !permissionPending else { return }
         Diagnostics.log("Microphone authorization: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -705,12 +812,15 @@ final class MeterModel: ObservableObject {
     }
 
     private func restart() {
-        guard selectedDevice?.output == true || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        guard selectedDevice?.output == true || selectedDevice?.isBridge == true
+                || AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
         stop()
         snapshot = MeterSnapshot()
         clearMeasurements()
         guard let capture else { status = .ringFailed; return }
         guard let device = devices.first(where: { $0.id == selectedID }) else { status = .noDevice; return }
+        if device.isBridge { startBridge(device, capture: capture); return }
+        bridge?.select(nil)
         do {
             try capture.start(device: device, sourceForRole: capturedSources)
             streamID = streamID == 1_000_000 ? 1 : streamID + 1
@@ -740,5 +850,139 @@ final class MeterModel: ObservableObject {
             status = .failure(StatusMessage { error.localizedDescription })
             Diagnostics.log("Capture error: \(status.text)")
         }
+    }
+
+    // MARK: DAW Bridge
+
+    /// Name shown while the selected DAW plugin is away: the name it had when chosen.
+    private var waitingBridgeName: String {
+        UserDefaults.standard.string(forKey: Self.bridgeNameKey) ?? L("DAW plugin")
+    }
+
+    /// Launched by a plugin and still waiting for it (no insert known yet).
+    private var waitingForLaunch: Bool { selectedID.bridge == SourceID.waitingPrefix }
+
+    /// One click in a plugin window ("Show in / Open Auraliscope Labs"): select that insert, resume if paused, and
+    /// bring the meter window forward.
+    private func followFocusRequests() {
+        for source in bridgeSources where source.focusRequests > focusHandled[source.sessionKey, default: 0] {
+            focusHandled[source.sessionKey] = source.focusRequests
+            DiagnosticLog.event("DAW plugin \"\(source.displayName)\" asked to be shown")
+            let id = SourceID(device: 0, bridge: source.sessionKey)
+            if !wantsCapture { wantsCapture = true }
+            if selectedID != id { select(id) } else if !running { restart() }
+            NSApp.activate(ignoringOtherApps: true)
+            MainWindow.window?.makeKeyAndOrderFront(nil)
+        }
+        let live = Set(bridgeSources.map(\.sessionKey))
+        focusHandled = focusHandled.filter { live.contains($0.key) }
+    }
+
+    /// The condition for the status line; just after attaching, a live source counts as streaming until its first
+    /// audio has had time to arrive.
+    private func shownCondition(_ source: BridgeSource) -> BridgeCondition {
+        let condition = BridgeCondition(source)
+        let settling = Date().timeIntervalSince(bridgeAttachedAt) < BridgeCondition.staleAudio
+        return condition == .noAudio && settling && source.secondsSinceAudio == nil ? .streaming : condition
+    }
+
+    /// Starts analysis of a DAW plugin instance: a new pipeline at the plugin's own sample rate, then the
+    /// receiver writes that instance's audio into the ring. Every format change comes back through here, so the
+    /// analyzers are always configured for exactly the audio they receive.
+    private func startBridge(_ device: InputDevice, capture: AudioCapture) {
+        guard let bridge else {
+            status = .failure(StatusMessage { L("DAW plugin receiver unavailable: %@", self.bridgeError ?? "") })
+            return
+        }
+        guard let source = bridgeSources.first(where: { $0.sessionKey == device.bridgeSession }) else {
+            status = .bridge(name: device.name, condition: .disconnected, channels: 0, layout: speakerLayout.name)
+            return
+        }
+        bridge.select(source.session)
+        guard source.hasUsableFormat else {
+            // Subscribed, so it streams as soon as it has a format; `pollBridge` restarts then.
+            status = .bridge(name: source.displayName, condition: BridgeCondition(source), channels: source.channels,
+                             layout: speakerLayout.name)
+            return
+        }
+        streamID = streamID == 1_000_000 ? 1 : streamID + 1
+        guard let worker = DSPWorker(ring: capture.ring, sampleRate: source.sampleRate, streamID: streamID,
+                                     activeRoles: routedRoles, detector: makeDetector()) else {
+            status = .dspFailed
+            return
+        }
+        worker.setSpatialSpectrum(format == .spatial)
+        self.worker = worker
+        channel_ring_clear(capture.ring)
+        bridge.attach(epoch: source.formatEpoch, ring: capture.ring, sourceForRole: capturedSources)
+        attachedBridge = (source.sessionKey, source.formatEpoch, source.channels)
+        bridgeAttachedAt = Date()
+        bridgeLostBase = source.framesLost
+        sampleRate = source.sampleRate
+        captureChannels = source.channels
+        captureStarted = Date()
+        droppedFrames = 0
+        running = true
+        UserDefaults.standard.set(device.uid, forKey: "inputDeviceUID")
+        UserDefaults.standard.set(false, forKey: "inputDeviceIsOutput")
+        UserDefaults.standard.set(source.displayName, forKey: Self.bridgeNameKey)
+        DiagnosticLog.event(String(format: "DAW plugin stream: %.0f Hz, %d ch, %@ %@ in %@", source.sampleRate,
+                                   source.channels, source.plugin, source.pluginVersion, source.host))
+        status = .bridge(name: source.displayName, condition: shownCondition(source), channels: source.channels,
+                         layout: speakerLayout.name)
+        Diagnostics.log("DAW plugin capture started: \(status.text)")
+    }
+
+    /// Five times a second: picks up plugin instances that came or went, follows the selected one through
+    /// format changes, disconnection and return, and keeps its status current.
+    private func pollBridge() {
+        guard let bridge else { return }
+        bridgeSources = bridge.sources()
+        let listed = devices.filter(\.isBridge)
+        if listed != bridgeDevices {
+            if listed.map(\.id) != bridgeDevices.map(\.id) {
+                DiagnosticLog.event("DAW plugins: \(bridgeSources.map { "\($0.displayName) (\($0.host) \($0.plugin))" }.joined(separator: ", "))")
+            }
+            devices = devices.filter { !$0.isBridge } + bridgeDevices
+        }
+        followFocusRequests()
+        guard let selected = selectedID.bridge, wantsCapture, demoStart == nil else { return }
+
+        guard let source = bridgeSources.first(where: { $0.sessionKey == selected }) else {
+            // Gone, or not yet back: the same insert may return under a new session (the plugin was reloaded or
+            // the project reopened). Its saved project ID finds it.
+            let saved = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
+            let persistent = saved.hasPrefix(bridgeUIDPrefix) ? String(saved.dropFirst(bridgeUIDPrefix.count)) : ""
+            if let back = bridgeSources.first(where: { $0.persistentKey == persistent }) {
+                DiagnosticLog.event("DAW plugin \"\(back.displayName)\" connected; resuming")
+                selectedID = SourceID(device: 0, bridge: back.sessionKey)
+                loadAssignment()
+                restart()
+            } else {
+                if running || attachedBridge != nil { stop(); snapshot = MeterSnapshot() }
+                let waiting = MeterStatus.bridge(name: waitingBridgeName,
+                                                 condition: waitingForLaunch ? .connecting : .disconnected, channels: 0,
+                                                 layout: speakerLayout.name)
+                if status != waiting { status = waiting }
+            }
+            return
+        }
+        // Reconfigure whenever the audio the receiver would deliver no longer matches the pipeline.
+        if let attached = attachedBridge {
+            if attached.epoch != source.formatEpoch || attached.channels != source.channels {
+                DiagnosticLog.event(String(format: "DAW plugin format changed: %.0f Hz, %d ch; analysis restarted",
+                                           source.sampleRate, source.channels))
+                if attached.channels != source.channels { loadAssignment() }
+                restart()
+                return
+            }
+        } else if source.hasUsableFormat {
+            if selectedDevice?.channels != UInt32(source.channels) { loadAssignment() }
+            restart()
+            return
+        }
+        let next = MeterStatus.bridge(name: source.displayName, condition: shownCondition(source),
+                                      channels: source.channels, layout: speakerLayout.name)
+        if status != next { status = next }
     }
 }

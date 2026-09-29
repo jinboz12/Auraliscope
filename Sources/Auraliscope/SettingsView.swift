@@ -586,6 +586,20 @@ private struct AudioPane: View {
                                 Text(verbatim: "\(L("%@ (output)", device.name)) · \(device.channels) ch").tag(device.id)
                             }
                         }
+                        let plugins = model.devices.filter(\.isBridge)
+                        let waiting = model.selectedID.bridge != nil && !plugins.contains { $0.id == model.selectedID }
+                        if !plugins.isEmpty || waiting {
+                            Section(L("DAW plugins · Auraliscope Bridge")) {
+                                ForEach(plugins) { device in
+                                    Text(verbatim: "\(device.name) · \(device.detail) · \(device.channels) ch").tag(device.id)
+                                }
+                                if waiting {
+                                    Text(L("%@ (waiting)", model.selectedDevice?.name
+                                           ?? UserDefaults.standard.string(forKey: "bridgeSourceName") ?? L("DAW plugin")))
+                                        .tag(model.selectedID)
+                                }
+                            }
+                        }
                     }
                     .labelsHidden()
                     .frame(maxWidth: 280)
@@ -603,6 +617,8 @@ private struct AudioPane: View {
             }
             SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
             SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
+            SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
+                ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported."))
         }
         SettingsSection(title: L("PRIVACY")) {
             SettingsRow(title: L("Microphone access")) { PermissionControl() }

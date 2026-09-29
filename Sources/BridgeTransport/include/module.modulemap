@@ -1,0 +1,6 @@
+module BridgeTransport {
+    header "BridgeProtocol.h"
+    header "BridgeServer.h"
+    header "BridgeDiscovery.h"
+    export *
+}

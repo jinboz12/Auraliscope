@@ -3,13 +3,18 @@ import CoreAudio
 import Foundation
 import AudioRing
 
-/// A capture source: a device's input channels, or what apps play to a device's output channels.
+/// A capture source: a device's input channels, what apps play to a device's output channels, or the audio an
+/// Auraliscope Bridge plugin instance receives in a DAW.
 struct SourceID: Hashable {
     var device: AudioDeviceID
     var output = false
+    /// A DAW plugin instance's session ID (see `BridgeSource`), or `waitingPrefix` + its persistent ID while a
+    /// saved or disconnected instance has not (re)connected.
+    var bridge: String? = nil
     static let none = SourceID(device: 0)
     static let noOutput = SourceID(device: 0, output: true)
-    var isNone: Bool { device == 0 }
+    static let waitingPrefix = "waiting:"
+    var isNone: Bool { device == 0 && bridge == nil }
 }
 
 struct InputDevice: Identifiable, Hashable {
@@ -20,11 +25,19 @@ struct InputDevice: Identifiable, Hashable {
     let uid: String
     /// Captures the device's output (macOS 14.2+ process tap) instead of its input.
     var output = false
+    /// A DAW plugin instance (`device` is 0 and `uid` is `bridgeUIDPrefix` + its persistent ID).
+    var bridgeSession: String? = nil
+    /// For a DAW plugin: the host and plugin format, e.g. "REAPER · VST3".
+    var detail = ""
 
-    var id: SourceID { SourceID(device: device, output: output) }
+    var id: SourceID { SourceID(device: device, output: output, bridge: bridgeSession) }
+    var isBridge: Bool { bridgeSession != nil }
     /// Routing, saved selection and the like are kept apart for the two sides of one device.
     var key: String { output ? "out.\(uid)" : uid }
 }
+
+/// Saved-selection and routing key prefix of DAW plugin sources.
+let bridgeUIDPrefix = "daw."
 
 enum AudioCaptureError: LocalizedError {
     case operation(String, OSStatus)
