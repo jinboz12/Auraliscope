@@ -5,7 +5,7 @@
 //   bypass     kAudioUnitProperty_BypassEffect: AUEffectBase passes audio without calling ProcessBufferLists;
 //              the core is told, and stops transmitting
 //   offline    kAudioUnitProperty_OfflineRender: audio passes, nothing is transmitted
-//   transport  the host's transport-state callback is forwarded as metadata only
+//   transport  the host's transport-state callback (playing, timeline position) is forwarded as metadata only
 //   state      ClassInfo carries the core's text (name, persistent ID) under kStateKey
 //   track name kAudioUnitProperty_ContextName, when the host sets it
 
@@ -83,11 +83,13 @@ public:
             if (source && destination && source != destination) std::memcpy(destination, source, frames * sizeof(float));
             planar[c] = source;
         }
-        uint32_t transport = 0;
+        // The host's callback runs on this thread; hosts implement it for the render thread.
+        abr::HostTransport transport;
         Boolean playing = false, changed = false, cycling = false;
         Float64 sample = 0, cycleStart = 0, cycleEnd = 0;
         if (CallHostTransportState(&playing, &changed, &sample, &cycling, &cycleStart, &cycleEnd) == noErr) {
-            transport = ABR_TRANSPORT_KNOWN | (playing ? uint32_t(ABR_TRANSPORT_PLAYING) : 0u);
+            transport.flags = ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_POSITION | (playing ? uint32_t(ABR_TRANSPORT_PLAYING) : 0u);
+            transport.position = int64_t(sample);
         }
         core_->process(planar, channels, frames, transport);
         return noErr;
@@ -99,7 +101,7 @@ public:
             switch (id) {
             case kAudioUnitProperty_OfflineRender: size = sizeof(UInt32); writable = true; return noErr;
             case kAudioUnitProperty_CocoaUI: size = sizeof(AudioUnitCocoaViewInfo); writable = false; return noErr;
-            case abr::kCoreProperty: size = sizeof(void *); writable = false; return noErr;
+            case abr::kCoreProperty: size = sizeof(abr::CoreReference); writable = false; return noErr;
             case abr::kNameEditedProperty: size = sizeof(UInt32); writable = true; return noErr;
             default: break;
             }
@@ -122,10 +124,13 @@ public:
                                                                         kCFStringEncodingUTF8);
                 return noErr;
             }
-            case abr::kCoreProperty:
-                // The view factory runs in this process and copies the shared pointer while this unit is alive.
-                *static_cast<void **>(data) = &core_;
+            case abr::kCoreProperty: {
+                // The view factory copies the shared pointer while this unit is alive, and only in this process:
+                // a unit hosted in another process (AUHostingService) hands over bytes, not a usable address.
+                abr::CoreReference reference{abr::kCoreReferenceMagic, getpid(), &core_};
+                std::memcpy(data, &reference, sizeof reference);
                 return noErr;
+            }
             default: break;
             }
         }
@@ -169,8 +174,11 @@ public:
         if (CFGetTypeID(data) != CFDictionaryGetTypeID()) return noErr;
         auto bytes = static_cast<CFDataRef>(CFDictionaryGetValue(static_cast<CFDictionaryRef>(data), kStateKey));
         if (bytes && CFGetTypeID(bytes) == CFDataGetTypeID()) {
+            bool reassigned = false;
             core_->restoreState(std::string(reinterpret_cast<const char *>(CFDataGetBytePtr(bytes)),
-                                            size_t(CFDataGetLength(bytes))));
+                                            size_t(CFDataGetLength(bytes))), &reassigned);
+            // A copy of another live insert took an identity of its own: its saved state changed.
+            if (reassigned) PropertyChanged(kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0);
         }
         return noErr;
     }

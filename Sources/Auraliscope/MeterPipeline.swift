@@ -30,7 +30,9 @@ enum SnapshotSlots {
     static let roleBandPower = bandPoints + StereoBands.scopeFloats
     static let notes = roleBandPower + StereoBands.roleFloats
     static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
-    static let total = waveform + WaveformEnvelope.publishedFloats
+    static let breaks = waveform + WaveformEnvelope.publishedFloats
+    static let missing = breaks + 1
+    static let total = missing + 1
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -47,6 +49,15 @@ enum SnapshotSlots {
 /// In Spatial monitoring the spectrum and waterfall sum every routed role instead of showing L and R.
 /// Device buffers longer than a tick (a DAW at 2048 frames delivers every 43 ms) no longer publish false
 /// silence between deliveries: an empty window repeats the newest audio for up to 100 ms before reading silent.
+///
+/// A break in the audio (`interrupt`: frames lost, the source stopped delivering, a bypass or an offline render in
+/// between) ends one stretch of signal and starts the next. No analysis window spans a break: the filters, the
+/// 100 ms loudness segment, the momentary (400 ms) and short-term (3 s) windows, the FFT window, the true-peak
+/// interpolator and the correlation integrators start again after it, and momentary and short-term read "no
+/// value" until their windows refill. What is made of complete windows carries on: integrated loudness and
+/// loudness range keep their blocks, the held peaks keep their maxima, the waterfall and the waveform keep their
+/// history (with a notch at the break). Every break is counted in the snapshot, with the time known missing, so
+/// a reading that spans breaks never passes for one continuous measurement.
 final class MeterPipeline {
     static let tickRate = 60.0
     /// Ticks per level window and per waterfall column: 1/30 s.
@@ -63,6 +74,10 @@ final class MeterPipeline {
     let splitter: StereoBandSplitter
     private var detector: FormatDetector
     private let streamID: Float
+    private let sampleRate: Double
+    /// Breaks since the analysis started, and the seconds of audio known to be missing at them.
+    private(set) var breaks = 0
+    private(set) var missingSeconds = 0.0
     /// Spatial monitoring: spectrum and waterfall sum every routed role; otherwise they show L and R.
     /// Set by the owner; takes effect once every routed role has a full FFT window (≤ 170 ms).
     var spatialSpectrum = false {
@@ -109,6 +124,7 @@ final class MeterPipeline {
         self.detector = detector
         format = detector.format
         self.streamID = Float(streamID)
+        self.sampleRate = sampleRate
         planarRoles = (0..<Role.count).filter { $0 == Role.left || $0 == Role.right || ($0 < activeRoles.count && activeRoles[$0]) }
     }
 
@@ -124,6 +140,20 @@ final class MeterPipeline {
                 splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
             }
         }
+    }
+
+    /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing
+    /// and the source did not deliver for `idleMilliseconds`, where the producer knows.
+    func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
+        loudness.interrupt()
+        spectrum.interrupt()
+        splitter.interrupt()
+        correlationSums = (0, 0, 0)
+        integrateBands(fresh: nil)
+        let missing = Double(lostFrames) / sampleRate + Double(idleMilliseconds) / 1000
+        waveform.interrupt(missingFrames: Int(min(missing, 60) * sampleRate))
+        breaks += 1
+        missingSeconds += missing
     }
 
     private func slice(_ age: Int) -> Int { (head - age + Self.staleTicks) % Self.staleTicks }
@@ -309,5 +339,7 @@ final class MeterPipeline {
         v[SnapshotSlots.stream] = streamID
         v[SnapshotSlots.waveSerial] = Float(waveform.serial)
         waveform.write(into: v + SnapshotSlots.waveform)
+        v[SnapshotSlots.breaks] = Float(breaks)
+        v[SnapshotSlots.missing] = Float(missingSeconds)
     }
 }

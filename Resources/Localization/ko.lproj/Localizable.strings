@@ -362,3 +362,12 @@
 "DAW plugins · Auraliscope Bridge" = "DAW 플러그인 · Auraliscope Bridge";
 "DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported." = "DAW 플러그인: DAW의 트랙, 버스 또는 마스터에 Auraliscope Bridge(VST3 또는 AU)를 삽입하면 각 인스턴스가 이름으로 여기에 표시됩니다. 모노와 스테레오 삽입을 지원합니다.";
 "Waiting for the DAW plugin to connect…" = "DAW 플러그인 연결을 기다리는 중…";
+"%@ (choose one of the ◆ inserts)" = "%@ (◆ 표시된 인서트 중 하나를 선택하세요)";
+"%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 연결된 인서트 %d개가 저장된 인서트일 수 있음 · 설정에서 선택하거나 해당 플러그인 창의 버튼을 누르세요";
+"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW 플러그인 연결 끊김 · 같은 인서트가 돌아올 때까지 측정 유지";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "다른 버전의 Auraliscope Bridge가 연결되어 있습니다(%@). 이 Auraliscope Labs와 함께 제공되는 Bridge를 설치한 다음 프로젝트를 다시 여세요.";
+"Interrupted %d×" = "%d회 중단";
+"Interrupted %d× · %@ s missing" = "%d회 중단 · %@ s 누락";
+"The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "분석 중인 오디오가 끊겼다가 다시 이어졌습니다. 통합 라우드니스, 라우드니스 범위와 피크 홀드는 중단 구간에 걸쳐 이어지고, 순간·단기 값과 스펙트럼, 모든 필터는 중단될 때마다 다시 시작됩니다. 한 구간을 연속으로 측정하려면 측정을 재설정하세요.";
+"copy of #%@" = "#%@의 사본";
+"track %@" = "트랙 %@";

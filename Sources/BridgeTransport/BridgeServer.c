@@ -19,12 +19,13 @@ typedef struct {
     int fd;
     uint8_t *buffer;
     size_t used, capacity;
-    bool greeted;
+    bool greeted;                 // a HELLO of this protocol version arrived (written under AbrServer.lock)
+    bool incompatible;            // a HELLO of another version: listed, otherwise ignored (ditto)
     bool subscribed;              // what the server last told the plugin
+    uint64_t subscribed_selection; // the selection generation that SUBSCRIBE belongs to
+    uint32_t subscription;        // the number sent with that SUBSCRIBE (0: none); other audio is stale
     uint32_t send_sequence;
-    uint64_t expected_position;   // end of the last delivered block
-    uint64_t delivery_generation; // attach generation the expectation belongs to
-    uint64_t last_message_ns, last_audio_ns;
+    _Atomic uint64_t last_message_ns, last_audio_ns;  // read by abr_server_sources on another thread
     AbrSourceInfo info;           // guarded by AbrServer.lock
 } Client;
 
@@ -40,11 +41,18 @@ struct AbrServer {
     uint32_t next_serial;
     uint8_t selected[16];
     bool has_selection;
-    pthread_mutex_t sink_lock;    // held while the sink runs
+    uint64_t selection;           // bumped by every abr_server_select, even of the same instance
+    uint32_t next_subscription;   // server thread only
+    pthread_mutex_t sink_lock;    // held while the sink runs; guards the delivery state below
     AbrSink sink;
+    AbrBoundary boundary;
     void *sink_context;
     uint32_t sink_epoch;
+    bool mark_start;
     uint64_t attach_generation;
+    uint64_t delivery_generation; // attach generation of the newest delivered block
+    bool have_expectation;        // the selected instance delivered since it was selected
+    uint64_t expected_position;   // end of its newest delivered block
 };
 
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
@@ -116,29 +124,43 @@ static void copy_string(char *destination, const char *source, size_t size) {
     destination[size - 1] = 0;
 }
 
+// Hands one block to the sink, telling the boundary callback first when it does not continue the audio before
+// it: the plugin said so (ABR_AUDIO_DISCONTINUITY and its reasons), or its stream position skipped frames.
 static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *audio, const float *samples) {
     pthread_mutex_lock(&server->lock);
     bool selected = client->info.selected;
     uint32_t channels = client->info.channels;
     uint32_t epoch = client->info.format_epoch;
     client->info.frames_received += audio->frames;
+    bool current = client->subscription != 0 && audio->subscription == client->subscription;
+    if (!current) client->info.frames_stale += audio->frames;
     pthread_mutex_unlock(&server->lock);
-    client->last_audio_ns = now_ns();
-    if (!selected) return;  // in flight when the selection changed
+    atomic_store_explicit(&client->last_audio_ns, now_ns(), memory_order_relaxed);
+    // Queued before an unsubscribe, or for a selection that has since changed: never replayed.
+    if (!selected || !current) return;
 
     uint64_t delivered = 0, discarded = 0, lost = 0, gaps = 0;
+    uint32_t reasons = 0;
     pthread_mutex_lock(&server->sink_lock);
     if (server->sink && server->sink_epoch == audio->format_epoch && epoch == audio->format_epoch
         && channels == audio->channels) {
-        if (client->delivery_generation != server->attach_generation) {
-            client->delivery_generation = server->attach_generation;
-        } else if (audio->position > client->expected_position) {
-            lost = audio->position - client->expected_position;
-            gaps = 1;
-        } else if (audio->flags & ABR_AUDIO_DISCONTINUITY) {
-            gaps = 1;
+        const bool first = server->delivery_generation != server->attach_generation;
+        server->delivery_generation = server->attach_generation;
+        if (audio->flags & ABR_AUDIO_DISCONTINUITY) reasons = audio->flags & ABR_AUDIO_REASONS;
+        if (server->have_expectation && audio->position > server->expected_position) {
+            lost = audio->position - server->expected_position;
+            reasons |= ABR_AUDIO_AFTER_DROP;
         }
-        client->expected_position = audio->position + audio->frames;
+        // The first block after an attach without `mark_start` opens a fresh or deliberately continued analysis.
+        if (first && !server->mark_start) reasons = 0, lost = 0;
+        if (reasons) {
+            gaps = 1;
+            if (server->boundary)
+                server->boundary(server->sink_context, reasons, lost,
+                                 (audio->flags & ABR_AUDIO_AFTER_IDLE) ? audio->idle_ms : 0);
+        }
+        server->have_expectation = true;
+        server->expected_position = audio->position + audio->frames;
         server->sink(server->sink_context, samples, audio->frames, audio->channels);
         delivered = audio->frames;
     } else if (server->sink) {
@@ -151,14 +173,34 @@ static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *aud
     client->info.frames_discarded += discarded;
     client->info.frames_lost += lost;
     client->info.discontinuities += gaps;
+    if (gaps) client->info.last_reasons = reasons;
     pthread_mutex_unlock(&server->lock);
 }
 
 // Returns false on a protocol violation.
 static bool handle_message(AbrServer *server, Client *client, const AbrHeader *header, const uint8_t *payload) {
-    client->last_message_ns = now_ns();
+    atomic_store_explicit(&client->last_message_ns, now_ns(), memory_order_relaxed);
+    if (client->incompatible) return true;  // listed as needing an update; nothing it says can be read
     switch (header->type) {
     case ABR_MSG_HELLO: {
+        if (client->greeted || header->length < ABR_HELLO_MIN_BYTES) return false;
+        uint32_t words[2];
+        memcpy(words, payload, sizeof words);
+        if (words[0] != ABR_PROTOCOL_VERSION) {
+            // Another version: listed, so Auraliscope can say which plugin needs an update, but never selected.
+            // A newer plugin hears this receiver's version and says so itself; an older one (version 1) does not
+            // wait for a reply, so none is sent and it stays connected instead of reconnecting every second.
+            pthread_mutex_lock(&server->lock);
+            client->info.protocol_version = words[0];
+            client->info.plugin_format = words[1];
+            client->incompatible = true;
+            pthread_mutex_unlock(&server->lock);
+            if (words[0] > ABR_PROTOCOL_VERSION) {
+                AbrWelcome welcome = {ABR_PROTOCOL_VERSION, 0};
+                if (!send_message(client, ABR_MSG_WELCOME, &welcome, sizeof welcome)) return false;
+            }
+            return true;
+        }
         if (header->length < sizeof(AbrHello)) return false;
         AbrHello hello;
         memcpy(&hello, payload, sizeof hello);
@@ -166,17 +208,21 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
         AbrSourceInfo *info = &client->info;
         memcpy(info->session_id, hello.session_id, 16);
         memcpy(info->persistent_id, hello.persistent_id, 16);
+        memcpy(info->restored_id, hello.restored_id, 16);
+        info->identity_flags = hello.identity_flags;
         info->protocol_version = hello.protocol_version;
+        info->compatible = 1;
         info->plugin_format = hello.plugin_format;
         info->host_pid = hello.host_pid;
         copy_string(info->host_name, hello.host_name, sizeof info->host_name);
+        copy_string(info->host_bundle_id, hello.host_bundle_id, sizeof info->host_bundle_id);
         copy_string(info->plugin_version, hello.plugin_version, sizeof info->plugin_version);
         pthread_mutex_unlock(&server->lock);
         AbrWelcome welcome = {ABR_PROTOCOL_VERSION, 0};
         if (!send_message(client, ABR_MSG_WELCOME, &welcome, sizeof welcome)) return false;
-        // A different major version cannot be interpreted; it stays listed long enough to be seen, then goes.
-        if (hello.protocol_version != ABR_PROTOCOL_VERSION) return false;
+        pthread_mutex_lock(&server->lock);
         client->greeted = true;
+        pthread_mutex_unlock(&server->lock);
         return true;
     }
     case ABR_MSG_STATUS: {
@@ -198,8 +244,11 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
         info->max_block_frames = status.max_block_frames;
         info->frames_processed = status.frames_processed;
         info->frames_dropped_by_plugin = status.frames_dropped;
+        info->plugin_interruptions = status.interruptions;
+        info->transport_jumps = status.transport_jumps;
         copy_string(info->source_name, status.source_name, sizeof info->source_name);
         copy_string(info->track_name, status.track_name, sizeof info->track_name);
+        copy_string(info->channel_id, status.channel_id, sizeof info->channel_id);
         pthread_mutex_unlock(&server->lock);
         return true;
     }
@@ -285,7 +334,7 @@ static void accept_clients(AbrServer *server) {
         Client *client = calloc(1, sizeof(Client));
         if (!client) { close(fd); continue; }
         client->fd = fd;
-        client->last_message_ns = now_ns();
+        atomic_store_explicit(&client->last_message_ns, now_ns(), memory_order_relaxed);
         pthread_mutex_lock(&server->lock);
         client->info.connection_serial = ++server->next_serial;
         server->clients[server->count++] = client;
@@ -293,20 +342,40 @@ static void accept_clients(AbrServer *server) {
     }
 }
 
-// Tells each greeted plugin whether it is the selected one, when that changed.
+// Tells each greeted plugin whether it is the selected one, when that changed. Every subscription gets a new
+// number; from here on only audio carrying it is delivered.
 static void reconcile_subscriptions(AbrServer *server) {
     for (uint32_t i = 0; i < server->count;) {
         Client *client = server->clients[i];
         pthread_mutex_lock(&server->lock);
         bool wanted = client->greeted && server->has_selection && memcmp(server->selected, client->info.session_id, 16) == 0;
         client->info.selected = wanted;
+        const uint64_t selection = server->selection;
         pthread_mutex_unlock(&server->lock);
-        if (client->greeted && wanted != client->subscribed) {
-            if (!send_message(client, wanted ? ABR_MSG_SUBSCRIBE : ABR_MSG_UNSUBSCRIBE, NULL, 0)) {
+        // Selected again (A → B → A): a fresh subscription, so nothing captured for the earlier one is delivered.
+        const bool renew = wanted && client->subscribed && client->subscribed_selection != selection;
+        if (client->greeted && (wanted != client->subscribed || renew)) {
+            bool sent;
+            uint32_t subscription = 0;
+            if (wanted) {
+                if (++server->next_subscription == 0) server->next_subscription = 1;
+                subscription = server->next_subscription;
+                AbrSubscribe subscribe = {subscription, 0};
+                sent = send_message(client, ABR_MSG_SUBSCRIBE, &subscribe, sizeof subscribe);
+            } else {
+                sent = send_message(client, ABR_MSG_UNSUBSCRIBE, NULL, 0);
+            }
+            if (!sent) {
                 close_client(server, i);
                 continue;
             }
+            // A selection made meanwhile has already invalidated this subscription: keep it invalid, and the
+            // next pass subscribes afresh.
+            pthread_mutex_lock(&server->lock);
+            client->subscription = server->selection == selection ? subscription : 0;
+            pthread_mutex_unlock(&server->lock);
             client->subscribed = wanted;
+            client->subscribed_selection = selection;
         }
         ++i;
     }
@@ -410,12 +479,14 @@ uint32_t abr_server_sources(AbrServer *server, AbrSourceInfo *out, uint32_t capa
     uint32_t listed = 0;
     for (uint32_t i = 0; i < server->count; ++i) {
         Client *client = server->clients[i];
-        if (!client->greeted) continue;
+        if (!client->greeted && !client->incompatible) continue;
         if (out && listed < capacity) {
             AbrSourceInfo *info = &out[listed];
             *info = client->info;
-            info->seconds_since_message = (double)(now - client->last_message_ns) / 1e9;
-            info->seconds_since_audio = client->last_audio_ns ? (double)(now - client->last_audio_ns) / 1e9 : -1;
+            const uint64_t message = atomic_load_explicit(&client->last_message_ns, memory_order_relaxed);
+            const uint64_t audio = atomic_load_explicit(&client->last_audio_ns, memory_order_relaxed);
+            info->seconds_since_message = message && now > message ? (double)(now - message) / 1e9 : 0;
+            info->seconds_since_audio = audio ? (now > audio ? (double)(now - audio) / 1e9 : 0) : -1;
             info->delivering = info->selected && server->sink != NULL && server->sink_epoch == info->format_epoch;
             info->delivered_epoch = info->selected && server->sink ? server->sink_epoch : 0;
         }
@@ -437,24 +508,33 @@ uint32_t abr_server_sources(AbrServer *server, AbrSourceInfo *out, uint32_t capa
 
 void abr_server_select(AbrServer *server, const uint8_t *session_id) {
     abr_server_detach(server);
+    pthread_mutex_lock(&server->sink_lock);
+    server->have_expectation = false;  // a new selection: its positions have nothing to continue
+    pthread_mutex_unlock(&server->sink_lock);
     pthread_mutex_lock(&server->lock);
     server->has_selection = session_id != NULL;
     if (session_id) memcpy(server->selected, session_id, 16);
-    // Mark it now, so audio already in flight for the new selection is not dropped as unselected.
+    server->selection++;
     for (uint32_t i = 0; i < server->count; ++i) {
         Client *client = server->clients[i];
         client->info.selected = client->greeted && session_id && memcmp(session_id, client->info.session_id, 16) == 0;
+        // Whatever is in flight now was captured for the previous selection: stale from this moment, until the
+        // server thread sends the new subscription.
+        client->subscription = 0;
     }
     pthread_mutex_unlock(&server->lock);
     wake(server);
 }
 
-void abr_server_attach(AbrServer *server, uint32_t format_epoch, AbrSink sink, void *context) {
+void abr_server_attach(AbrServer *server, uint32_t format_epoch, AbrSink sink, AbrBoundary boundary, void *context,
+                       int mark_start) {
     pthread_mutex_lock(&server->sink_lock);
     pthread_mutex_lock(&server->lock);
     server->sink = sink;
+    server->boundary = boundary;
     server->sink_context = context;
     server->sink_epoch = format_epoch;
+    server->mark_start = mark_start != 0;
     server->attach_generation++;
     pthread_mutex_unlock(&server->lock);
     pthread_mutex_unlock(&server->sink_lock);
@@ -464,6 +544,7 @@ void abr_server_detach(AbrServer *server) {
     pthread_mutex_lock(&server->sink_lock);
     pthread_mutex_lock(&server->lock);
     server->sink = NULL;
+    server->boundary = NULL;
     server->sink_context = NULL;
     pthread_mutex_unlock(&server->lock);
     pthread_mutex_unlock(&server->sink_lock);

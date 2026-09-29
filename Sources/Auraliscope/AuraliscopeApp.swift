@@ -1035,7 +1035,8 @@ private struct MeterView: View {
                         .frame(width: stage)
                 }
                 StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames,
-                          silentOutput: model.silentOutput)
+                          silentOutput: model.silentOutput, breaks: model.measurementBreaks,
+                          missingSeconds: model.missingSeconds)
             }
             .padding(.horizontal, gutter)
             .padding(.top, tall ? 8 : 2)
@@ -1154,6 +1155,9 @@ private struct StatusBar: View {
     let running: Bool
     let droppedFrames: UInt64
     let silentOutput: Bool
+    /// Breaks in the analysed audio since the analysis started, and the seconds known missing at them.
+    let breaks: Int
+    let missingSeconds: Double
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
@@ -1166,6 +1170,14 @@ private struct StatusBar: View {
                     .help(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
             }
             Spacer(minLength: 8)
+            if breaks > 0 {
+                Label(missingSeconds >= 0.05 ? L("Interrupted %d× · %@ s missing", breaks, String(format: "%.1f", missingSeconds))
+                                             : L("Interrupted %d×", breaks),
+                      systemImage: "waveform.path.badge.minus")
+                    .lineLimit(1)
+                    .foregroundStyle(Theme.ochre)
+                    .help(L("The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch."))
+            }
             if droppedFrames > 0 {
                 Label(L("Dropped %d", Int(droppedFrames)), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.ochre)

@@ -23,11 +23,13 @@
 - (NSString *)description { return @"Auraliscope Bridge"; }
 
 - (NSView *)uiViewForAudioUnit:(AudioUnit)unit withSize:(NSSize)size {
-    void *pointer = nullptr;
-    UInt32 bytes = sizeof pointer;
-    if (AudioUnitGetProperty(unit, abr::kCoreProperty, kAudioUnitScope_Global, 0, &pointer, &bytes) != noErr || !pointer)
-        return nil;
-    std::shared_ptr<abr::BridgeCore> core = *static_cast<std::shared_ptr<abr::BridgeCore> *>(pointer);
+    abr::CoreReference reference{};
+    UInt32 bytes = sizeof reference;
+    if (AudioUnitGetProperty(unit, abr::kCoreProperty, kAudioUnitScope_Global, 0, &reference, &bytes) != noErr
+        || bytes != sizeof reference || reference.magic != abr::kCoreReferenceMagic || reference.process != getpid()
+        || !reference.core)
+        return nil;  // the unit runs in another process: no window rather than a crash
+    std::shared_ptr<abr::BridgeCore> core = *static_cast<std::shared_ptr<abr::BridgeCore> *>(reference.core);
     void *view = abr::createEditorView(core, [unit] {
         UInt32 edited = 1;
         AudioUnitSetProperty(unit, abr::kNameEditedProperty, kAudioUnitScope_Global, 0, &edited, sizeof edited);

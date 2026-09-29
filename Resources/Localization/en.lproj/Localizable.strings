@@ -362,3 +362,12 @@
 "DAW plugins · Auraliscope Bridge" = "DAW plugins · Auraliscope Bridge";
 "DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported." = "DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported.";
 "Waiting for the DAW plugin to connect…" = "Waiting for the DAW plugin to connect…";
+"%@ (choose one of the ◆ inserts)" = "%@ (choose one of the ◆ inserts)";
+"%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button";
+"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW plugin disconnected · measurement held until the same insert returns";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project.";
+"Interrupted %d×" = "Interrupted %d×";
+"Interrupted %d× · %@ s missing" = "Interrupted %d× · %@ s missing";
+"The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch.";
+"copy of #%@" = "copy of #%@";
+"track %@" = "track %@";

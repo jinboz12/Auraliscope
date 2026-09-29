@@ -34,6 +34,21 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *interleaved, uint32_
                             uint32_t input_channels, const int32_t *source_for_role);
 uint32_t channel_ring_read(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames);
 uint64_t channel_ring_dropped(const ChannelRing *ring);
+// A break in the audio: the frames after it do not continue the frames before it. The producer marks one where
+// it happens (channel_ring_mark, before writing the frames after it); the ring marks one itself where it had to
+// drop frames because it was full (CHANNEL_RING_OVERFLOW). `reasons` is the producer's own set of bits.
+#define CHANNEL_RING_OVERFLOW (1u << 31)
+typedef struct {
+    uint32_t reasons;
+    uint32_t idle_ms;       // how long the source did not deliver, when the producer knows
+    uint64_t lost_frames;   // frames missing at the break, when known
+} ChannelRingMark;
+// Producer only; no allocation, no lock. Marks beyond a small queue merge into one (the consumer is stalled).
+void channel_ring_mark(ChannelRing *ring, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms);
+// Consumer: as channel_ring_read, but stops at the next break. When the read position has reached one, returns 0
+// with *has_mark set and the break in *mark; reading again continues after it.
+uint32_t channel_ring_read_marked(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames,
+                                  ChannelRingMark *mark, int *has_mark);
 // Copies every `stride`-th float of `source` into `count` contiguous floats: one channel out of interleaved
 // frames. vDSP_mmov with a one-float row calls memmove once per sample, which cost the DSP queue a third of its
 // time with sixteen roles; this plain loop compiles to a few instructions per sample.
@@ -109,14 +124,17 @@ typedef struct {
     int32_t source_for_role[CHANNEL_ROLE_COUNT];
 } ChannelRingSink;
 void channel_ring_sink_write(void *context, const float *interleaved, uint32_t frames, uint32_t channels);
+// The matching break callback: marks the ring (channel_ring_mark).
+void channel_ring_sink_boundary(void *context, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms);
 
 typedef struct MeterExchange MeterExchange;
 // 64 spectrum bins, 16 peaks, 16 RMS, 16 true peaks, 16 held peaks, 16 held true peaks, 12 scalars (3 LUFS,
 // loudness range, frame sequence, stream identity, dominant peak (2), detected format, waveform serial,
 // L/R correlation, spectrogram serial), 512 spectrogram rows, 9 band groups (5 bands, 3, overall) ×
-// (correlation, width, balance, level), 5 stereo bands × 128 (L, R) stereometer points, 16 roles × 5 band mean squares, then 64 waveform
-// columns × 16 roles × (min, max).
-#define METER_SNAPSHOT_FLOATS 4124
+// (correlation, width, balance, level), 5 stereo bands × 128 (L, R) stereometer points, 16 roles × 5 band mean squares, 64 waveform
+// columns × 16 roles × (min, max), then the analysis' continuity: breaks since it started, and seconds of audio
+// known to be missing at them.
+#define METER_SNAPSHOT_FLOATS 4126
 MeterExchange *meter_exchange_create(void);
 void meter_exchange_destroy(MeterExchange *exchange);
 void meter_exchange_publish(MeterExchange *exchange, const float *values);

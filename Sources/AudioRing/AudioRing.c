@@ -125,12 +125,24 @@ int meter_exchange_read(MeterExchange *exchange, float *values) {
     return 1;
 }
 
+#define CHANNEL_RING_MARKS 32
+typedef struct {
+    uint64_t position;      // write index of the first frame after the break
+    ChannelRingMark mark;
+} PositionedMark;
+
 struct ChannelRing {
     uint32_t capacity;
     ChannelFrame *data;
     _Atomic uint64_t write_index;
     _Atomic uint64_t read_index;
     _Atomic uint64_t dropped;
+    // Breaks, in write order: the producer appends at mark_write, the consumer takes at mark_read.
+    PositionedMark marks[CHANNEL_RING_MARKS];
+    _Atomic uint64_t mark_write;
+    _Atomic uint64_t mark_read;
+    _Atomic uint32_t mark_overflow;   // reasons of marks that found the queue full, reported at the read position
+    uint64_t overflow_frames;         // producer: frames the ring dropped since its last write, marked at the next
 };
 
 ChannelRing *channel_ring_create(uint32_t capacity) {
@@ -143,6 +155,9 @@ ChannelRing *channel_ring_create(uint32_t capacity) {
     atomic_init(&ring->write_index, 0);
     atomic_init(&ring->read_index, 0);
     atomic_init(&ring->dropped, 0);
+    atomic_init(&ring->mark_write, 0);
+    atomic_init(&ring->mark_read, 0);
+    atomic_init(&ring->mark_overflow, 0);
     return ring;
 }
 
@@ -152,11 +167,33 @@ void channel_ring_destroy(ChannelRing *ring) {
     free(ring);
 }
 
+// With no producer running: nothing is left to read, and no break is pending.
 void channel_ring_clear(ChannelRing *ring) {
     if (!ring) return;
     uint64_t write = atomic_load_explicit(&ring->write_index, memory_order_acquire);
     atomic_store_explicit(&ring->read_index, write, memory_order_release);
     atomic_store_explicit(&ring->dropped, 0, memory_order_relaxed);
+    uint64_t marks = atomic_load_explicit(&ring->mark_write, memory_order_acquire);
+    atomic_store_explicit(&ring->mark_read, marks, memory_order_release);
+    atomic_store_explicit(&ring->mark_overflow, 0, memory_order_relaxed);
+    ring->overflow_frames = 0;
+}
+
+void channel_ring_mark(ChannelRing *ring, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms) {
+    if (!ring || reasons == 0) return;
+    uint64_t marks = atomic_load_explicit(&ring->mark_write, memory_order_relaxed);
+    uint64_t taken = atomic_load_explicit(&ring->mark_read, memory_order_acquire);
+    if (marks - taken >= CHANNEL_RING_MARKS) {
+        // The consumer has not read for a long time; it learns of a break at wherever it reads next.
+        atomic_fetch_or_explicit(&ring->mark_overflow, reasons, memory_order_relaxed);
+        return;
+    }
+    PositionedMark *slot = &ring->marks[marks % CHANNEL_RING_MARKS];
+    slot->position = atomic_load_explicit(&ring->write_index, memory_order_relaxed);
+    slot->mark = (ChannelRingMark){reasons, idle_ms, lost_frames};
+    // Published before the frames after it (their write_index store is also a release), so a consumer that sees
+    // those frames sees the mark.
+    atomic_store_explicit(&ring->mark_write, marks + 1, memory_order_release);
 }
 
 // Runs on the Core Audio IO thread: no allocation, no locks, one modulo per call. Only routed roles are
@@ -168,6 +205,11 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *input, uint32_t fram
     uint64_t read = atomic_load_explicit(&ring->read_index, memory_order_acquire);
     uint32_t available = ring->capacity - (uint32_t)(write - read);
     uint32_t count = frames < available ? frames : available;
+    if (count > 0 && ring->overflow_frames > 0) {
+        // Frames were dropped after the last ones written: these do not continue them.
+        channel_ring_mark(ring, CHANNEL_RING_OVERFLOW, ring->overflow_frames, 0);
+        ring->overflow_frames = 0;
+    }
     uint32_t roles[CHANNEL_ROLE_COUNT], sources[CHANNEL_ROLE_COUNT], routed = 0;
     for (uint32_t role = 0; role < CHANNEL_ROLE_COUNT; ++role) {
         int32_t channel = map[role];
@@ -191,7 +233,10 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *input, uint32_t fram
         if (++slot == ring->capacity) slot = 0;
     }
     atomic_store_explicit(&ring->write_index, write + count, memory_order_release);
-    if (count < frames) atomic_fetch_add_explicit(&ring->dropped, frames - count, memory_order_relaxed);
+    if (count < frames) {
+        atomic_fetch_add_explicit(&ring->dropped, frames - count, memory_order_relaxed);
+        ring->overflow_frames += frames - count;
+    }
     return count;
 }
 
@@ -210,6 +255,42 @@ uint32_t channel_ring_read(ChannelRing *ring, ChannelFrame *destination, uint32_
     return count;
 }
 
+uint32_t channel_ring_read_marked(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames,
+                                  ChannelRingMark *mark, int *has_mark) {
+    *has_mark = 0;
+    if (!ring || !destination) return 0;
+    uint64_t read = atomic_load_explicit(&ring->read_index, memory_order_relaxed);
+    // write_index before mark_write: every mark ahead of a visible frame is then visible too.
+    uint64_t write = atomic_load_explicit(&ring->write_index, memory_order_acquire);
+    uint32_t merged = atomic_exchange_explicit(&ring->mark_overflow, 0, memory_order_relaxed);
+    if (merged) {
+        *mark = (ChannelRingMark){merged, 0, 0};
+        *has_mark = 1;
+        return 0;
+    }
+    uint64_t marks = atomic_load_explicit(&ring->mark_write, memory_order_acquire);
+    uint64_t taken = atomic_load_explicit(&ring->mark_read, memory_order_relaxed);
+    uint64_t limit = write;
+    if (taken < marks) {
+        const PositionedMark *next = &ring->marks[taken % CHANNEL_RING_MARKS];
+        if (next->position <= read) {
+            *mark = next->mark;
+            *has_mark = 1;
+            atomic_store_explicit(&ring->mark_read, taken + 1, memory_order_release);
+            return 0;
+        }
+        if (next->position < limit) limit = next->position;
+    }
+    uint32_t available = (uint32_t)(limit - read);
+    uint32_t count = max_frames < available ? max_frames : available;
+    uint32_t slot = (uint32_t)(read % ring->capacity);
+    uint32_t first = ring->capacity - slot < count ? ring->capacity - slot : count;
+    memcpy(destination, ring->data + slot, (size_t)first * sizeof(ChannelFrame));
+    memcpy(destination + first, ring->data, (size_t)(count - first) * sizeof(ChannelFrame));
+    atomic_store_explicit(&ring->read_index, read + count, memory_order_release);
+    return count;
+}
+
 uint64_t channel_ring_dropped(const ChannelRing *ring) {
     return ring ? atomic_load_explicit(&ring->dropped, memory_order_relaxed) : 0;
 }
@@ -217,6 +298,11 @@ uint64_t channel_ring_dropped(const ChannelRing *ring) {
 void channel_ring_sink_write(void *context, const float *interleaved, uint32_t frames, uint32_t channels) {
     ChannelRingSink *sink = context;
     if (sink) channel_ring_write(sink->ring, interleaved, frames, channels, sink->source_for_role);
+}
+
+void channel_ring_sink_boundary(void *context, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms) {
+    ChannelRingSink *sink = context;
+    if (sink) channel_ring_mark(sink->ring, reasons, lost_frames, idle_ms);
 }
 
 void audio_gather_strided(const float *restrict source, uint32_t stride, float *restrict destination, uint32_t count) {

@@ -222,6 +222,21 @@ final class LoudnessAnalyzer {
         }
     }
 
+    /// A break in the audio (see `MeterPipeline`): the K-weighting filters start from rest, the unfinished 100 ms
+    /// segment is dropped, and momentary and short-term start over (reading no value until 400 ms and 3 s of new
+    /// audio are in), so no block spans the break. Integrated loudness and loudness range keep every block
+    /// completed so far and go on adding new ones. The true-peak interpolator does not reach across the break.
+    func interrupt() {
+        filterState.update(repeating: 0, count: Role.count * 4)
+        for role in filterSettled.indices { filterSettled[role] = true }
+        segmentFrames = 0
+        segmentSum = 0
+        recent.removeAll(keepingCapacity: true)
+        momentary = -100
+        shortTerm = -100
+        truePeak.interrupt()
+    }
+
     /// Moves the per-role peak, energy and true peak gathered since the previous call into `slice` and restarts
     /// them. Roles that are not routed read zero.
     func take(into slice: inout LevelSlice) {
@@ -462,6 +477,8 @@ final class TruePeakDetector {
     private var pending = [Int](repeating: 0, count: Role.count)
     /// Samples received per role, silent ones included: the clock the segments are counted on.
     private var received = [Int](repeating: 0, count: Role.count)
+    /// Samples still to go into the filter window, unmeasured, after a break (see `interrupt`).
+    private var priming = [Int](repeating: 0, count: Role.count)
     /// Each role's refinement state (see `true_peak_scan`).
     private var segments = [TruePeakSegment](repeating: TruePeakSegment(), count: Role.count)
     private var kernel: TruePeakKernel
@@ -511,7 +528,36 @@ final class TruePeakDetector {
         }
     }
 
+    /// A break in the audio. Interpolating across it would join two unrelated signals, and padding either side
+    /// with silence would invent an overshoot at a cut that never reached a converter, so neither is measured:
+    /// what was found before the break is refined now; the last half window before it, whose interpolation needs
+    /// samples that never come, is left out; and the first window after it only refills the filter. About 2 ms
+    /// around each break is measured by sample peak alone.
+    func interrupt() {
+        for role in 0..<Role.count {
+            true_peak_finish(&segments[role], &kernel, -1, &held[role])
+            pending[role] = 0
+            priming[role] = history
+        }
+    }
+
     func process(role: Int, signal: UnsafePointer<Float>, count: Int, samplePeak: Float) {
+        var signal = signal, count = count
+        if priming[role] > 0 {
+            // After a break: these samples fill the filter window and are not measured themselves.
+            let fill = min(count, priming[role])
+            scratch.withUnsafeMutableBufferPointer { buffer in
+                let base = buffer.baseAddress! + role * (capacity + Self.fineTaps + 2)
+                memmove(base, base + fill, (history - fill) * MemoryLayout<Float>.stride)
+                (base + history - fill).update(from: signal, count: fill)
+            }
+            priming[role] -= fill
+            received[role] += fill
+            signal += fill
+            count -= fill
+            held[role] = max(held[role], samplePeak)
+            guard count > 0 else { return }
+        }
         var peak = samplePeak
         // A burst can reach its interpolated maximum after its last nonzero input sample. Process the tail,
         // including across several short silent buffers, before taking the settled-silence fast path.

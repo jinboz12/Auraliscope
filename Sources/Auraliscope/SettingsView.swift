@@ -591,11 +591,15 @@ private struct AudioPane: View {
                         if !plugins.isEmpty || waiting {
                             Section(L("DAW plugins · Auraliscope Bridge")) {
                                 ForEach(plugins) { device in
-                                    Text(verbatim: "\(device.name) · \(device.detail) · \(device.channels) ch").tag(device.id)
+                                    // Inserts that could be the saved one, while that is ambiguous, are marked.
+                                    let candidate = device.bridgeSession.map(model.bridgeCandidates.contains) ?? false
+                                    Text(verbatim: "\(candidate ? "◆ " : "")\(device.detail) · \(device.channels) ch").tag(device.id)
                                 }
                                 if waiting {
-                                    Text(L("%@ (waiting)", model.selectedDevice?.name
-                                           ?? UserDefaults.standard.string(forKey: "bridgeSourceName") ?? L("DAW plugin")))
+                                    let name = model.selectedDevice?.name
+                                        ?? UserDefaults.standard.string(forKey: "bridgeSourceName") ?? L("DAW plugin")
+                                    Text(model.bridgeCandidates.isEmpty ? L("%@ (waiting)", name)
+                                         : L("%@ (choose one of the ◆ inserts)", name))
                                         .tag(model.selectedID)
                                 }
                             }
@@ -618,6 +622,13 @@ private struct AudioPane: View {
             if model.silentOutput {
                 Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
                       systemImage: "speaker.slash")
+                    .font(.system(size: 11)).foregroundStyle(Theme.ochre)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !model.incompatibleBridgePlugins.isEmpty {
+                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project.",
+                        model.incompatibleBridgePlugins.map { $0.hostName }.joined(separator: ", ")),
+                      systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
                     .fixedSize(horizontal: false, vertical: true)
             }

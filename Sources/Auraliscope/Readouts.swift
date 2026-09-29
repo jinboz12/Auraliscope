@@ -99,6 +99,7 @@ final class Readouts: ObservableObject {
         }
         let snapshot = model.pollSnapshot()
         model.refreshFormat(from: snapshot)
+        model.refreshContinuity(from: snapshot)
         var next = latest
         next.momentary = snapshot.momentaryLUFS
         next.shortTerm = snapshot.shortLUFS

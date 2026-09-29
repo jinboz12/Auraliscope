@@ -362,3 +362,12 @@
 "DAW plugins · Auraliscope Bridge" = "DAW 插件 · Auraliscope Bridge";
 "DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported." = "DAW 插件：在 DAW 的轨道、总线或主输出上插入 Auraliscope Bridge（VST3 或 AU），每个实例都会以其名称显示在这里。支持单声道和立体声插入。";
 "Waiting for the DAW plugin to connect…" = "正在等待 DAW 插件连接…";
+"%@ (choose one of the ◆ inserts)" = "%@（请从标有 ◆ 的插入中选择一个）";
+"%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 有 %d 个已连接的插入可能是已保存的那一个 · 请在设置中选择，或点击相应插件窗口中的按钮";
+"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW 插件已断开 · 测量保持，直至同一插入重新连接";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "已连接另一版本的 Auraliscope Bridge（%@）。请安装本 Auraliscope Labs 附带的 Bridge，然后重新打开工程。";
+"Interrupted %d×" = "中断 %d 次";
+"Interrupted %d× · %@ s missing" = "中断 %d 次 · 缺失 %@ s";
+"The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "所分析的音频曾中断后又恢复。积分响度、响度范围和峰值保持跨越这些中断；瞬时、短期、频谱以及所有滤波器在每次中断后都重新开始。如需测量一段连续的音频，请重置测量。";
+"copy of #%@" = "#%@ 的副本";
+"track %@" = "轨道 %@";

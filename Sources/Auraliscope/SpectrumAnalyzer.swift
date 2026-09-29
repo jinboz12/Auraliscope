@@ -142,6 +142,13 @@ final class StereoBandSplitter {
         }
     }
 
+    /// A break in the audio: the band filters and their history start from silence.
+    func interrupt() {
+        state.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        history.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        cursor = 0
+    }
+
     /// Filters `count` contiguous samples of L and R straight into the band rings.
     func consume(left: UnsafePointer<Float>, right: UnsafePointer<Float>, count: Int) {
         let length = Self.historyLength
@@ -242,6 +249,10 @@ struct MeterSnapshot: Equatable {
     var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
     var waveSerial: Float = 0
     var waveform: [Float] = Array(repeating: 0, count: WaveformEnvelope.publishedFloats)
+    /// Breaks in the analysed audio since the analysis started (`MeterPipeline.interrupt`), and the seconds of
+    /// audio known to be missing at them: integrated loudness, loudness range and the held peaks span them.
+    var breaks: Float = 0
+    var missingSeconds: Float = 0
 }
 
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
@@ -434,6 +445,16 @@ final class SpectrumAnalyzer {
 
     /// A full FFT window has been captured, so spectra are meaningful.
     var ready: Bool { historyCount == Self.fftSize }
+
+    /// A break in the audio: the FFT window starts empty, so no transform mixes audio from both sides of it.
+    /// Until it has refilled (`ready`), the spectrum reads as it does when a stream starts.
+    func interrupt() {
+        history.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        for role in silentFrames.indices { silentFrames[role] = Self.fftSize }
+        cursor = 0
+        historyCount = 0
+        spatialHistoryCount = 0
+    }
 
     /// L², R² and L·R sums since the previous call, for the phase correlation, and the frames they cover.
     func takeStereoSums() -> (left: Double, right: Double, product: Double, frames: Int) {

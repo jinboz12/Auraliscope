@@ -66,6 +66,20 @@ final class WaveformEnvelope {
         }
     }
 
+    /// Columns of the notch that marks a break (see `interrupt`): at least 50 ms, and no more than one snapshot
+    /// carries alongside fresh audio.
+    static let notchColumns = 12...48
+
+    /// A break in the audio: the column in progress closes, and a flat notch stands for the time known missing
+    /// (`missingFrames`, within `notchColumns`), so the history shows where one stretch of audio ends and the next
+    /// begins. The notch marks the break; it is not measured silence.
+    func interrupt(missingFrames: Int) {
+        if filled > 0 { emit() }
+        for i in column.indices { column[i] = 0 }
+        let columns = min(Self.notchColumns.upperBound, max(Self.notchColumns.lowerBound, missingFrames / framesPerColumn))
+        for _ in 0..<columns { emit() }
+    }
+
     /// Newest columns oldest-first, each `valuesPerColumn` floats of (min, max) per role.
     func write(into destination: UnsafeMutablePointer<Float>) {
         let tail = Self.publishedFloats - head

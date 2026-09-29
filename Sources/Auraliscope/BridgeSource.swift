@@ -9,11 +9,22 @@ struct BridgeSource: Equatable {
 
     /// Random per plugin instance lifetime: identifies this live insert.
     let session: [UInt8]
-    /// Saved in the DAW project: the same insert after the project is reopened (copies of it share the ID).
+    /// Saved in the DAW project: the same insert after the project is reopened.
     let persistent: [UInt8]
+    /// A copy (duplicated track, pasted settings, a second project with the same inserts): the identity its saved
+    /// state carried, which another live insert in the same DAW already had. nil otherwise.
+    let copiedFrom: [UInt8]?
+    /// The persistent ID came from saved state (a project or undo), not from creating the insert.
+    let restored: Bool
+    /// Speaks this app's protocol; an older or newer plugin is listed so it can be named, never selected.
+    let compatible: Bool
+    let protocolVersion: UInt32
     let name: String
     let trackName: String
+    /// The host's own unique ID for the channel, when it gives one (VST3 hosts may).
+    let channelID: String
     let host: String
+    let hostBundleID: String
     let hostPID: Int32
     /// "VST3", "AU" or "Test".
     let plugin: String
@@ -28,17 +39,52 @@ struct BridgeSource: Equatable {
     let secondsSinceAudio: Double?
     let framesDelivered: UInt64
     let framesLost: UInt64
+    /// Breaks reported to the analysis while delivering (`AbrSourceInfo.discontinuities`), and the newest one's
+    /// reasons (ABR_AUDIO_AFTER_*).
     let discontinuities: UInt64
+    let lastBreakReasons: UInt32
     let framesDroppedByPlugin: UInt64
+    /// Breaks in the live stream the plugin saw (bypass, offline render, the host idle, a restart), and timeline
+    /// jumps while playing.
+    let pluginInterruptions: UInt32
+    let transportJumps: UInt32
     let delivering: Bool
     /// Grows each time the user clicks "Show in Auraliscope Labs" in this instance's window.
     let focusRequests: UInt32
 
     var sessionKey: String { Self.hex(session) }
     var persistentKey: String { Self.hex(persistent) }
+    var copiedFromKey: String? { copiedFrom.map(Self.hex) }
     /// Short form of the persistent ID, the plugin window shows the same.
     var tag: String { String(persistentKey.prefix(6)) }
     var displayName: String { name.isEmpty ? "Auraliscope Bridge \(tag)" : name }
+    /// The host as people know it: the application's name for its bundle, else its process name.
+    var hostName: String {
+        switch hostBundleID {
+        case "com.cockos.reaper": return "REAPER"
+        case "com.apple.logic10": return "Logic Pro"
+        case "com.apple.garageband10": return "GarageBand"
+        case "com.ableton.live": return "Live"
+        case let id where id.hasPrefix("com.steinberg.cubase"): return "Cubase"
+        case let id where id.hasPrefix("com.image-line.flstudio"): return "FL Studio"
+        default: return host.isEmpty ? "DAW" : host
+        }
+    }
+    var candidate: BridgeCandidate {
+        BridgeCandidate(session: sessionKey, persistent: persistentKey, copiedFrom: copiedFromKey, name: displayName,
+                        trackName: trackName, channelID: channelID, hostBundleID: hostBundleID, plugin: plugin)
+    }
+
+    /// How this insert is named in lists and the status line: its name, its host and format, the track when it
+    /// says more than the name, and the short identity when another connected insert has the same name.
+    func label(among others: [BridgeSource]) -> String {
+        var parts = [displayName, "\(hostName) \(plugin)"]
+        if !trackName.isEmpty && trackName != displayName { parts.append(L("track %@", trackName)) }
+        if others.contains(where: { $0.sessionKey != sessionKey && $0.displayName == displayName }) { parts.append("#\(tag)") }
+        if let copied = copiedFromKey { parts.append(L("copy of #%@", String(copied.prefix(6)))) }
+        return parts.joined(separator: " · ")
+    }
+
     /// A format the analysis can be configured for: mono or stereo at a real sample rate.
     var hasUsableFormat: Bool { formatEpoch > 0 && (1...2).contains(channels) && sampleRate >= 8_000 }
 
@@ -47,9 +93,16 @@ struct BridgeSource: Equatable {
     init(_ info: AbrSourceInfo) {
         session = withUnsafeBytes(of: info.session_id) { Array($0) }
         persistent = withUnsafeBytes(of: info.persistent_id) { Array($0) }
+        copiedFrom = info.identity_flags & UInt32(ABR_IDENTITY_COPY) != 0
+            ? withUnsafeBytes(of: info.restored_id) { Array($0) } : nil
+        restored = info.identity_flags & UInt32(ABR_IDENTITY_RESTORED) != 0
+        compatible = info.compatible != 0
+        protocolVersion = info.protocol_version
         name = Self.string(info.source_name)
         trackName = Self.string(info.track_name)
+        channelID = Self.string(info.channel_id)
         host = Self.string(info.host_name)
+        hostBundleID = Self.string(info.host_bundle_id)
         hostPID = info.host_pid
         switch Int(info.plugin_format) {
         case Int(ABR_FORMAT_VST3): plugin = "VST3"
@@ -73,7 +126,10 @@ struct BridgeSource: Equatable {
         framesDelivered = info.frames_delivered
         framesLost = info.frames_lost
         discontinuities = info.discontinuities
+        lastBreakReasons = info.last_reasons
         framesDroppedByPlugin = info.frames_dropped_by_plugin
+        pluginInterruptions = info.plugin_interruptions
+        transportJumps = info.transport_jumps
         delivering = info.delivering != 0
         focusRequests = info.focus_requests
     }
@@ -131,8 +187,11 @@ final class BridgeReceiver {
     }
 
     /// Delivers the selected instance's audio of `epoch` into `ring`, its channel n going to every role routed
-    /// to input n. The server thread is the ring's only producer until `detach`.
-    func attach(epoch: UInt32, ring: OpaquePointer, sourceForRole: [Int32]) {
+    /// to input n, and marks every break in it in the ring (`channel_ring_mark`). The server thread is the ring's
+    /// only producer until `detach`. `markStart`: whether a break just before the first delivered block counts
+    /// (true when this continues an analysis that the break interrupted; false for a fresh one, or one the user
+    /// paused and resumed).
+    func attach(epoch: UInt32, ring: OpaquePointer, sourceForRole: [Int32], markStart: Bool) {
         abr_server_detach(server)
         sink.pointee.ring = ring
         withUnsafeMutableBytes(of: &sink.pointee.source_for_role) { raw in
@@ -141,7 +200,9 @@ final class BridgeReceiver {
         }
         abr_server_attach(server, epoch, { context, samples, frames, channels in
             channel_ring_sink_write(context, samples, frames, channels)
-        }, UnsafeMutableRawPointer(sink))
+        }, { context, reasons, lost, idle in
+            channel_ring_sink_boundary(context, reasons, lost, idle)
+        }, UnsafeMutableRawPointer(sink), markStart ? 1 : 0)
     }
 
     /// After return the server no longer writes to the ring.

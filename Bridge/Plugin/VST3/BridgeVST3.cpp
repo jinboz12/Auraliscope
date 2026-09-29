@@ -5,7 +5,10 @@
 //
 //   bypass     kIsBypass parameter: audio still passes (the plugin is transparent), transmission stops
 //   offline    ProcessSetup::processMode == kOffline: audio passes, nothing is transmitted
-//   transport  ProcessContext kPlaying is forwarded as metadata; it does not start or stop transmission
+//   suspend    setProcessing(false): the host stops calling process; the next live block marks the gap
+//   transport  ProcessContext kPlaying and projectTimeSamples are forwarded as metadata; they do not start or
+//              stop transmission
+//   channel    IInfoListener: the track name, and the host's unique channel ID when it gives one
 
 #include <cstring>
 #include <memory>
@@ -38,6 +41,9 @@ namespace {
 constexpr ParamID kBypassID = 0;
 const FUID kBridgeUID(0x03A87F06, 0x69544B23, 0xB85B74F8, 0x248F8E42);
 
+// The view keeps the core alive through its own reference, and reaches the component only through `nameEdited`,
+// which holds a counted reference too: a host that releases the component before the view cannot leave either
+// pointing at freed memory.
 class BridgeView : public CPluginView {
 public:
     BridgeView(std::shared_ptr<abr::BridgeCore> core, std::function<void()> nameEdited)
@@ -70,7 +76,14 @@ class BridgeVST3 : public SingleComponentEffect, public ChannelContext::IInfoLis
 public:
     BridgeVST3() : core_(std::make_shared<abr::BridgeCore>(ABR_FORMAT_VST3)) {}
 
-    static FUnknown *createInstance(void *) { return static_cast<IAudioProcessor *>(new BridgeVST3); }
+    // No exception may reach the host: without memory for the ring the factory reports failure instead.
+    static FUnknown *createInstance(void *) {
+        try {
+            return static_cast<IAudioProcessor *>(new BridgeVST3);
+        } catch (...) {
+            return nullptr;
+        }
+    }
 
     tresult PLUGIN_API initialize(FUnknown *context) override {
         const tresult result = SingleComponentEffect::initialize(context);
@@ -114,7 +127,10 @@ public:
         return kResultOk;
     }
 
-    tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
+    tresult PLUGIN_API setProcessing(TBool state) override {
+        if (!state) core_->hostSuspended();
+        return kResultOk;
+    }
 
     tresult PLUGIN_API process(ProcessData &data) override {
         if (IParameterChanges *changes = data.inputParameterChanges) {
@@ -137,10 +153,12 @@ public:
                 std::memcpy(out.channelBuffers32[c], in.channelBuffers32[c], size_t(data.numSamples) * sizeof(float));
         }
         out.silenceFlags = in.silenceFlags;
-        uint32 transport = 0;
+        abr::HostTransport transport;
         if (data.processContext) {
-            transport = ABR_TRANSPORT_KNOWN;
-            if (data.processContext->state & ProcessContext::kPlaying) transport |= ABR_TRANSPORT_PLAYING;
+            // projectTimeSamples is always valid (ivstprocesscontext.h).
+            transport.flags = ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_POSITION;
+            if (data.processContext->state & ProcessContext::kPlaying) transport.flags |= ABR_TRANSPORT_PLAYING;
+            transport.position = data.processContext->projectTimeSamples;
         }
         core_->process(in.channelBuffers32, uint32(channels), uint32(data.numSamples), transport);
         return kResultOk;
@@ -163,29 +181,38 @@ public:
             text.append(buffer, size_t(read));
             if (text.size() > 64 * 1024) return kResultFalse;
         }
-        if (!core_->restoreState(text)) return kResultFalse;
+        bool reassigned = false;
+        if (!core_->restoreState(text, &reassigned)) return kResultFalse;
         const bool bypass = text.find("\nbypass=1") != std::string::npos;
         core_->setBypassed(bypass);
         setParamNormalized(kBypassID, bypass ? 1 : 0);
+        // A copy of another live insert took an identity of its own: the project must save it.
+        if (reassigned) markDirty();
         return kResultOk;
     }
 
     IPlugView *PLUGIN_API createView(FIDString name) override {
         if (!name || std::strcmp(name, ViewType::kEditor) != 0) return nullptr;
-        return new BridgeView(core_, [this] {
-            // The name is saved with the project: tell the host it changed.
-            FUnknownPtr<IComponentHandler2> handler(componentHandler);
-            if (handler) handler->setDirty(true);
-        });
+        IPtr<BridgeVST3> self(this);  // counted: see BridgeView
+        return new BridgeView(core_, [self] { self->markDirty(); });  // the name is saved with the project
     }
 
-    // The host's channel or track name, used when the user has not named the source.
+    // The host's channel or track name, used when the user has not named the source, and its unique channel ID,
+    // which tells duplicated tracks apart when they carry the same name.
     tresult PLUGIN_API setChannelContextInfos(IAttributeList *list) override {
         if (!list) return kResultFalse;
-        String128 name{};
-        if (list->getString(ChannelContext::kChannelNameKey, name, sizeof name) == kResultTrue)
-            core_->setTrackName(VST3::StringConvert::convert(reinterpret_cast<const char16_t *>(name)));
+        String128 value{};
+        if (list->getString(ChannelContext::kChannelNameKey, value, sizeof value) == kResultTrue)
+            core_->setTrackName(VST3::StringConvert::convert(reinterpret_cast<const char16_t *>(value)));
+        String128 id{};
+        if (list->getString(ChannelContext::kChannelUIDKey, id, sizeof id) == kResultTrue)
+            core_->setChannelID(VST3::StringConvert::convert(reinterpret_cast<const char16_t *>(id)));
         return kResultOk;
+    }
+
+    void markDirty() {
+        FUnknownPtr<IComponentHandler2> handler(componentHandler);
+        if (handler) handler->setDirty(true);
     }
 
     OBJ_METHODS(BridgeVST3, SingleComponentEffect)
