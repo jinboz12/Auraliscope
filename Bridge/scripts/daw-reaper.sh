@@ -5,6 +5,8 @@
 #
 #   daw-reaper.sh vst3|au live      play/editor/bypass/stop script (Bridge/Tools/reaper-bridge-test.lua)
 #   daw-reaper.sh vst3|au render    offline render of the project saved by the live run
+#   daw-reaper.sh vst3|au identity  duplicate, loop, seek, rate change, unload/reload (reaper-identity-test.lua)
+#   daw-reaper.sh vst3|au reopen    reopen the project saved by the identity run and play it
 #
 # Run Auraliscope Lab alongside to see the stream (e2e-daw.sh does both). Logs: .build/bridge/validation/.
 set -euo pipefail
@@ -52,9 +54,22 @@ run_reaper() {
     while kill -0 $pid 2>/dev/null && (( waited < 100 )); do sleep 1; (( waited++ )); done
     kill $pid 2>/dev/null && echo "REAPER did not quit within 100 s; stopped it"
     wait $pid 2>/dev/null
+    # REAPER can outlive the process it was launched as (it may relaunch itself): wait for every REAPER to be
+    # gone, so the project is saved and the next run starts clean. None was running when this one started.
+    while pgrep -xq REAPER && (( waited < 110 )); do sleep 1; (( waited++ )); done
+    local left=($(pgrep -x REAPER))
+    (( ${#left} )) && { kill $left 2>/dev/null; echo "REAPER still running after 110 s; stopped it"; }
     true
 }
-if [[ "$mode" == render ]]; then
+if [[ "$mode" == identity || "$mode" == reopen ]]; then
+    project="$root/bridge-identity-$format.rpp"
+    if [[ "$mode" == identity ]]; then
+        printf '<REAPER_PROJECT 0.1 "7.80" 0\n  SAMPLERATE 48000 0 0\n>\n' > "$project"
+    else
+        [[ -f "$project" ]] || { echo "run the identity test first (it saves $project)" >&2; exit 1; }
+    fi
+    run_reaper "$project" "Bridge/Tools/reaper-$mode-test.lua" > "$logs/reaper-$format-$mode.stdout" 2>&1
+elif [[ "$mode" == render ]]; then
     [[ -f "$project" ]] || { echo "run the live test first (it saves $project)" >&2; exit 1; }
     rm -f "$root/render/"*(N)
     start=$(date +%s)

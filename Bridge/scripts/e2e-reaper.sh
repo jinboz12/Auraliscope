@@ -8,9 +8,15 @@ source Bridge/scripts/prototype-version.sh
 app="$ABR_DIST/Auraliscope Labs.app/Contents/MacOS/Auraliscope"
 logs=.build/bridge/validation
 failed=0
-watch_app() {  # watch_app <log> <self-test arguments…>: runs the app in the background
+watch_app() {  # watch_app <log> <self-test arguments…>: runs the app in the background, no DAW source chosen
     app_log="$1"; shift
     "$app" --diagnostic "$@" -inputDeviceUID daw.00 -showWelcomeOnLaunch NO > "$app_log.tmp" 2>&1 &
+    app_pid=$!
+    sleep 1
+}
+watch_saved() {  # watch_saved <log> <self-test arguments…>: as watch_app, with the DAW source the last run chose
+    app_log="$1"; shift
+    "$app" --diagnostic "$@" -showWelcomeOnLaunch NO > "$app_log.tmp" 2>&1 &
     app_pid=$!
     sleep 1
 }
@@ -49,6 +55,22 @@ for format in vst3 au; do
         grep -q ' live' "$trace" && echo "   (the host created the insert as live and flagged offline before rendering)"
     else echo "   live audio during the render: FAIL"; failed=1; fi
     python3 Bridge/Tools/check-render.py .build/bridge/reaper-profile/render/bridge-render.wav | sed 's/^/   /' || failed=1
+
+    # Identity and transport, then the project reopened: the analysed insert is duplicated (its copy turned down
+    # 6 dB), looped, seeked, taken to 44.1 kHz and back, unloaded and reloaded; Labs must stay on (or come back to)
+    # the original, and after the project is reopened find the original by itself, never the copy.
+    watch_app "$logs/app-reaper-$format-identity.txt" --bridge-selftest Vox --expect-peak-db -6.02,-12.04 --expect-channels 2 \
+        --expect-rate 48000 --watch 34 --log-sources --measure-at-end
+    Bridge/scripts/daw-reaper.sh $format identity > /dev/null 2>&1
+    await_app
+    echo "== REAPER $format identity and transport: $(tail -1 "$logs/app-reaper-$format-identity.txt")"
+    grep -hE 'status:|sources:|analysed insert|stream:|peak|FAIL' "$logs/app-reaper-$format-identity.txt" | sed 's/^/   /'
+    python3 Bridge/Tools/check-project-ids.py .build/bridge/reaper-profile/bridge-identity-$format.rpp | sed 's/^/   /' || failed=1
+    watch_saved "$logs/app-reaper-$format-reopen.txt" --restore --expect-peak-db -6.02,-12.04 --expect-rate 48000
+    Bridge/scripts/daw-reaper.sh $format reopen > /dev/null 2>&1
+    await_app
+    echo "== REAPER $format reopened: $(tail -1 "$logs/app-reaper-$format-reopen.txt")"
+    grep -hE 'restored:|listed:|peak|FAIL' "$logs/app-reaper-$format-reopen.txt" | sed 's/^/   /'
 done
 (( failed )) && echo "Some REAPER checks FAILED" || echo "All REAPER checks passed"
 exit $failed

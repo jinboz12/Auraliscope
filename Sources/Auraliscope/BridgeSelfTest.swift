@@ -20,6 +20,9 @@ import Foundation
 ///   --then-hold                     afterwards, wait for the same live insert to reconnect (a break in its audio),
 ///                                   and check the analysis carried on: same session, not restarted, integrated kept
 ///   --drop-connection               with --then-hold: break the connection first, so the held state shows
+///   --log-sources                   with --watch: print the plugin list whenever it changes
+///   --measure-at-end                with --watch: measure again afterwards, with the same expectations
+///   --restore                       do not select: Labs must find the saved insert by itself; then measure
 ///   --expect-ambiguous n            do not select: the saved insert must be ambiguous between n connected inserts,
 ///                                   with nothing analysed; then choose the copy (as a person would) and measure it
 ///   --list-bridge-sources           print the plugin instances seen within 1.5 s, then quit
@@ -70,6 +73,9 @@ enum BridgeSelfTest {
         let expectedBreaks = value(after: "--expect-breaks").flatMap(Int.init)
         let hold = arguments.contains("--then-hold")
         let dropConnection = arguments.contains("--drop-connection")
+        let logSources = arguments.contains("--log-sources")
+        let measureAtEnd = arguments.contains("--measure-at-end")
+        let restore = arguments.contains("--restore")
         let expectedAmbiguity = value(after: "--expect-ambiguous").flatMap(Int.init)
         /// Integrated loudness at the end of the first measurement, to check it carries on across breaks.
         var firstIntegrated: Float?
@@ -80,6 +86,7 @@ enum BridgeSelfTest {
 
         func start() {
             if let expectedAmbiguity { return awaitAmbiguity(expectedAmbiguity) }
+            if restore { return awaitRestore() }
             say("waiting for \(name.map { "\"\($0)\"" } ?? "a DAW plugin")")
             poll(timeout: 20, until: { self.target != nil }) {
                 guard let device = self.target else { return self.finish("no matching plugin instance appeared") }
@@ -165,6 +172,17 @@ enum BridgeSelfTest {
             }
         }
 
+        /// Labs finds the saved insert by itself (nothing is selected here), and analyses it.
+        func awaitRestore() {
+            say("waiting for the saved insert to be found and analysed")
+            poll(timeout: 30, until: { self.condition == .streaming }) {
+                guard self.condition == .streaming else { return self.finish("never restored: \(self.model.status.text)") }
+                say("restored: \(self.model.status.text)")
+                say("listed: \(self.model.devices.filter(\.isBridge).map(\.detail).joined(separator: " | "))")
+                self.measureWhenStreaming(then: { self.finish(nil) })
+            }
+        }
+
         /// The saved insert has copies nothing tells apart: Labs must not pick one. Then the person picks the copy.
         func awaitAmbiguity(_ count: Int) {
             say("waiting for the saved insert to be ambiguous between \(count) inserts")
@@ -237,6 +255,7 @@ enum BridgeSelfTest {
 
         func watch(_ seconds: Double) {
             var seen: [String] = []
+            var listed = ""
             let end = Date().addingTimeInterval(seconds)
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] timer in
                 MainActor.assumeIsolated {
@@ -244,11 +263,20 @@ enum BridgeSelfTest {
                         seen.append("\(condition)")
                         say("status: \(model.status.text)")
                     }
+                    if logSources {
+                        let now = model.devices.filter(\.isBridge).map { "\($0.detail) (\($0.bridgeSession == model.selectedID.bridge ? "analysed" : "listed"))" }
+                            .joined(separator: " | ")
+                        if now != listed { listed = now; say("sources: \(now.isEmpty ? "none" : now)") }
+                    }
                     guard Date() >= end else { return }
                     timer.invalidate()
                     say("conditions seen, in order: \(seen.joined(separator: " → "))")
                     for expected in expectedSeen where !seen.contains(expected) { fail("never showed \(expected)") }
+                    if let source = model.bridgeSources.first(where: { $0.sessionKey == model.selectedID.bridge }) {
+                        say("analysed insert: \(source.label(among: model.bridgeSources)); timeline jumps \(source.transportJumps), plugin breaks \(source.pluginInterruptions)")
+                    }
                     if expectedBreaks != nil { checkContinuity() }
+                    if measureAtEnd { return measureWhenStreaming(then: { self.finish(nil) }) }
                     finish(nil)
                 }
             }
