@@ -364,7 +364,7 @@
 "Waiting for the DAW plugin to connect…" = "正在等待 DAW 插件连接…";
 "%@ (choose one of the ◆ inserts)" = "%@（请从标有 ◆ 的插入中选择一个）";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 有 %d 个已连接的插入可能是已保存的那一个 · 请在设置中选择，或点击相应插件窗口中的按钮";
-"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW 插件已断开 · 测量保持，直至同一插入重新连接";
+"%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW 插件已断开 · 测量保持，以便此插件实例重新连接时继续";
 "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "已连接另一版本的 Auraliscope Bridge（%@）。请安装本 Auraliscope Labs 附带的 Bridge，然后重新打开工程。";
 "Interrupted %d×" = "中断 %d 次";
 "Interrupted %d× · %@ s missing" = "中断 %d 次 · 缺失 %@ s";

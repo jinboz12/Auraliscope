@@ -70,6 +70,11 @@ void abr_server_stop(AbrServer *_Nullable server);
 // protocol version are included with `compatible` 0.
 uint32_t abr_server_sources(AbrServer *_Nonnull server, AbrSourceInfo *_Nullable out, uint32_t capacity);
 
+// Closes the connection of one instance (as if it had broken) and turns it away for `refuse_ms`; the plugin
+// reconnects by itself after that. For diagnostics: it lets a test watch an analysis wait for, and carry on
+// with, the same live insert.
+void abr_server_disconnect(AbrServer *_Nonnull server, const uint8_t *_Nonnull session_id, uint32_t refuse_ms);
+
 // Subscribes to one instance (NULL: none); the previous one is unsubscribed. Also detaches the sink. Each
 // subscription gets a new number, and only audio captured for it is delivered.
 void abr_server_select(AbrServer *_Nonnull server, const uint8_t *_Nullable session_id);

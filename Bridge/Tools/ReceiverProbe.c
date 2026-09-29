@@ -20,7 +20,18 @@ typedef struct {
     float *samples;
     size_t count, capacity;
     uint32_t channels;
+    uint32_t breaks, reasons;
 } Capture;
+
+static void boundary(void *context, uint32_t reasons, uint64_t lost, uint32_t idle_ms) {
+    Capture *capture = context;
+    pthread_mutex_lock(&capture->lock);
+    capture->breaks++;
+    capture->reasons |= reasons;
+    pthread_mutex_unlock(&capture->lock);
+    printf("[probe] break before frame %zu: reasons 0x%x, %llu lost, idle %u ms\n",
+           capture->channels ? capture->count / capture->channels : 0, reasons, (unsigned long long)lost, idle_ms);
+}
 
 static void sink(void *context, const float *interleaved, uint32_t frames, uint32_t channels) {
     Capture *capture = context;
@@ -90,7 +101,7 @@ int main(int argc, char **argv) {
                 if (strcmp(sources[i].source_name, verify) == 0 && sources[i].format_epoch > 0) {
                     selected = (int)i;
                     abr_server_select(server, sources[i].session_id);
-                    abr_server_attach(server, sources[i].format_epoch, sink, &capture);
+                    abr_server_attach(server, sources[i].format_epoch, sink, boundary, &capture, 0);
                 }
             }
         }
@@ -99,10 +110,17 @@ int main(int argc, char **argv) {
     printf("[probe] %u instance(s)\n", count);
     for (uint32_t i = 0; i < count && i < 64; ++i) {
         AbrSourceInfo *s = &sources[i];
-        printf("[probe]   \"%s\" track \"%s\" · %s %s in %s (pid %d) · %s · %.0f Hz · %u ch · epoch %u · received %llu, lost %llu\n",
+        if (!s->compatible) {
+            printf("[probe]   (protocol %u plugin in pid %d: needs an update)\n", s->protocol_version, s->host_pid);
+            continue;
+        }
+        printf("[probe]   \"%s\" track \"%s\" · %s %s in %s [%s] (pid %d) · %s · %.0f Hz · %u ch · epoch %u · ID %02X%02X%02X%s%s"
+               " · received %llu, lost %llu, breaks %llu\n",
                s->source_name, s->track_name, s->plugin_format == ABR_FORMAT_VST3 ? "VST3" : s->plugin_format == ABR_FORMAT_AU ? "AU" : "test",
-               s->plugin_version, s->host_name, s->host_pid, state_name(s->state), s->sample_rate, s->channels,
-               s->format_epoch, (unsigned long long)s->frames_received, (unsigned long long)s->frames_lost);
+               s->plugin_version, s->host_name, s->host_bundle_id, s->host_pid, state_name(s->state), s->sample_rate, s->channels,
+               s->format_epoch, s->persistent_id[0], s->persistent_id[1], s->persistent_id[2],
+               (s->identity_flags & ABR_IDENTITY_COPY) ? " (copy)" : "", s->channel_id[0] ? " · channel ID set" : "",
+               (unsigned long long)s->frames_received, (unsigned long long)s->frames_lost, (unsigned long long)s->discontinuities);
     }
     int result = 0;
     if (verify) {

@@ -15,6 +15,13 @@ import Foundation
 ///                                   one (streaming, noAudio, bypassed, offline, inactive, disconnected) must appear
 ///   --no-measure                    with --watch: select and watch only (for sources that never stream, such as
 ///                                   an offline render)
+///   --expect-breaks n               with --watch or --then-hold: the analysis reports at least n breaks, and its
+///                                   integrated loudness carries on across them (not reset)
+///   --then-hold                     afterwards, wait for the same live insert to reconnect (a break in its audio),
+///                                   and check the analysis carried on: same session, not restarted, integrated kept
+///   --drop-connection               with --then-hold: break the connection first, so the held state shows
+///   --expect-ambiguous n            do not select: the saved insert must be ambiguous between n connected inserts,
+///                                   with nothing analysed; then choose the copy (as a person would) and measure it
 ///   --list-bridge-sources           print the plugin instances seen within 1.5 s, then quit
 ///
 /// Prints one line per step and exits 0 when every expectation holds.
@@ -60,12 +67,19 @@ enum BridgeSelfTest {
         let nextRate = value(after: "--then-rate").flatMap(Double.init)
         let watchSeconds = value(after: "--watch").flatMap(Double.init)
         let expectedSeen = value(after: "--expect-seen")?.split(separator: ",").map(String.init) ?? []
+        let expectedBreaks = value(after: "--expect-breaks").flatMap(Int.init)
+        let hold = arguments.contains("--then-hold")
+        let dropConnection = arguments.contains("--drop-connection")
+        let expectedAmbiguity = value(after: "--expect-ambiguous").flatMap(Int.init)
+        /// Integrated loudness at the end of the first measurement, to check it carries on across breaks.
+        var firstIntegrated: Float?
         var failures = 0
         var timer: Timer?
 
         init(model: MeterModel) { self.model = model }
 
         func start() {
+            if let expectedAmbiguity { return awaitAmbiguity(expectedAmbiguity) }
             say("waiting for \(name.map { "\"\($0)\"" } ?? "a DAW plugin")")
             poll(timeout: 20, until: { self.target != nil }) {
                 guard let device = self.target else { return self.finish("no matching plugin instance appeared") }
@@ -132,9 +146,80 @@ enum BridgeSelfTest {
             }
             // With one channel the analysis sees it on L only; R must stay silent (nothing invented).
             if channels == 1 && peaks[1] > 0 { fail("mono source produced signal on R") }
+            let snapshot = model.pollSnapshot()
+            say(String(format: "integrated %.2f LUFS · breaks %d · %.2f s missing", snapshot.integratedLUFS,
+                       model.measurementBreaks, model.missingSeconds))
+            if firstIntegrated == nil { firstIntegrated = snapshot.integratedLUFS }
+        }
+
+        /// Breaks counted and integrated loudness carried on (neither reset nor lost) since the first measurement.
+        func checkContinuity() {
+            let integrated = model.pollSnapshot().integratedLUFS
+            say(String(format: "after the breaks: integrated %.2f LUFS (first measurement %.2f) · breaks %d · %.2f s missing",
+                       integrated, firstIntegrated ?? -100, model.measurementBreaks, model.missingSeconds))
+            if let expectedBreaks, model.measurementBreaks < expectedBreaks {
+                fail("\(model.measurementBreaks) break(s) reported, expected at least \(expectedBreaks)")
+            }
+            if let first = firstIntegrated, first > -70, !(integrated > -70 && abs(integrated - first) < 0.5) {
+                fail(String(format: "integrated loudness did not carry on across the breaks (%.2f → %.2f LUFS)", first, integrated))
+            }
+        }
+
+        /// The saved insert has copies nothing tells apart: Labs must not pick one. Then the person picks the copy.
+        func awaitAmbiguity(_ count: Int) {
+            say("waiting for the saved insert to be ambiguous between \(count) inserts")
+            poll(timeout: 20, until: { self.condition == .ambiguous(count) }) {
+                guard self.condition == .ambiguous(count) else { return self.finish("never ambiguous: \(self.model.status.text)") }
+                say("ambiguous: \(self.model.status.text)")
+                // Give restoration time to (wrongly) pick one, then check it did not.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    if self.model.running || self.condition != .ambiguous(count) {
+                        return self.finish("analysis started without a choice: \(self.model.status.text)")
+                    }
+                    say("still ambiguous after 3 s, nothing analysed; listed: \(self.model.devices.filter(\.isBridge).map(\.detail).joined(separator: " | "))")
+                    let copies = Set(self.model.bridgeSources.filter { $0.copiedFrom != nil }.map(\.sessionKey))
+                    guard let copy = self.model.devices.first(where: { $0.bridgeSession.map(copies.contains) ?? false }) else {
+                        return self.finish("no copy listed")
+                    }
+                    say("choosing the copy: \(copy.detail)")
+                    self.model.select(copy.id)
+                    self.measureWhenStreaming(then: { self.finish(nil) })
+                }
+            }
+        }
+
+        /// The same live insert goes away and comes back: the analysis waits (held) and carries on with a break,
+        /// under the same session, without restarting.
+        func awaitHold() {
+            let session = model.selectedID.bridge, generation = model.captureGeneration
+            var held = false
+            if dropConnection {
+                say("breaking the connection")
+                model.dropBridgeConnection()
+            }
+            say("waiting for the same insert to reconnect")
+            poll(timeout: 20, until: {
+                if self.condition == .disconnectedHeld && !held {
+                    held = true
+                    say("held: \(self.model.status.text)")
+                    if !self.model.running { self.fail("the held analysis stopped") }
+                }
+                return self.model.measurementBreaks >= 1 && self.condition == .streaming
+            }) {
+                guard self.model.measurementBreaks >= 1 else { return self.finish("no break counted: \(self.model.status.text)") }
+                if self.dropConnection && !held { self.fail("the held state never showed") }
+                if self.model.selectedID.bridge != session { self.fail("returned under another session") }
+                if self.model.captureGeneration != generation { self.fail("the analysis restarted instead of carrying on") }
+                say("returned under the same session\(held ? " after being held" : ""), analysis carried on: \(self.model.status.text)")
+                self.measureWhenStreaming(then: {
+                    self.checkContinuity()
+                    self.finish(nil)
+                })
+            }
         }
 
         func afterFirstMeasurement() {
+            if hold { return awaitHold() }
             if reconnect { return awaitReturn() }
             if let nextRate { return awaitRate(nextRate) }
             if let watchSeconds { return watch(watchSeconds) }
@@ -163,6 +248,7 @@ enum BridgeSelfTest {
                     timer.invalidate()
                     say("conditions seen, in order: \(seen.joined(separator: " → "))")
                     for expected in expectedSeen where !seen.contains(expected) { fail("never showed \(expected)") }
+                    if expectedBreaks != nil { checkContinuity() }
                     finish(nil)
                 }
             }
@@ -170,8 +256,10 @@ enum BridgeSelfTest {
 
         func awaitReturn() {
             say("waiting for the source to disconnect")
-            poll(timeout: 30, until: { self.condition == .disconnected }) {
-                guard self.condition == .disconnected else { return self.finish("never reported disconnected") }
+            poll(timeout: 30, until: { self.condition == .disconnected || self.condition == .disconnectedHeld }) {
+                guard self.condition == .disconnected || self.condition == .disconnectedHeld else {
+                    return self.finish("never reported disconnected")
+                }
                 say("disconnected: \(self.model.status.text)")
                 say("waiting for it to return")
                 self.poll(timeout: 30, until: { self.condition == .streaming }) {

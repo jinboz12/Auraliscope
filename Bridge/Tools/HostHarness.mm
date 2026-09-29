@@ -6,10 +6,14 @@
 // so the receiving side (Auraliscope Labs or the probe) can be checked against a known sequence.
 //
 //   HostHarness --format vst3|au [--bundle <path.vst3>] [--channels 1|2] [--rate 48000] [--block 256]
-//               [--instances n] [--name <base>] [--id <32 hex>] [--phases live:4,bypass:2,live:2]
+//               [--instances n] [--copies n] [--name <base>] [--id <32 hex>] [--phases live:4,bypass:2,live:2]
 //               [--editor-snapshot <file.png>] [--editor-seconds s]
 //
-// Phases: live:s, bypass:s, offline:s, idle:s, rate=<hz>:s (reconfigure, then live), ch=<n>:s (likewise).
+// Phases: live:s, bypass:s, offline:s, idle:s, rate=<hz>:s (reconfigure, then live), ch=<n>:s (likewise),
+// reidentify:s (every instance is given its own state back with a new identity, as a host restoring a project
+// into already-running plugins does; each reconnects under the same session, then live).
+// --copies n: after the instances, n more restored from instance 1's saved state while it is live, as a host
+// duplicating a track does.
 // Instance i plays L = 0.5·2⁻ⁱ·sin(2π·997·n/fs) and R = 0.25·2⁻ⁱ·sin(2π·1499·n/fs), n counting live frames
 // only (bypassed, offline and idle blocks do not advance it), so its stream position equals n.
 
@@ -50,7 +54,7 @@ namespace {
 
 struct Options {
     std::string format = "vst3", bundle, name = "Harness", id, snapshot;
-    uint32_t channels = 2, block = 256, instances = 1;
+    uint32_t channels = 2, block = 256, instances = 1, copies = 0;
     double rate = 48000, editorSeconds = 2;
     std::string phases = "live:5";
     bool clickConnect = false;  // press the plugin window's connect button, as a user would
@@ -70,6 +74,7 @@ enum class Mode { live, bypass, offline, idle };
 
 struct Phase {
     Mode mode = Mode::live;
+    bool reidentify = false;
     double seconds = 1;
     double rate = 0;        // > 0: reconfigure to this rate first
     uint32_t channels = 0;  // > 0: reconfigure to this channel count first
@@ -99,7 +104,20 @@ public:
     virtual bool process(float *const *in, float *const *out, uint32_t channels, uint32_t frames, uint64_t sampleTime) = 0;
     virtual NSView *createEditor() = 0;
     virtual void closeEditor() = 0;
+    // The plugin's own project state (the text Auraliscope Bridge saves), and restoring one, as a host does.
+    virtual std::string saveState() = 0;
+    virtual void restoreState(const std::string &state) = 0;
 };
+
+// `state` with its identity replaced by a new random one.
+std::string reidentified(const std::string &state) {
+    uint8_t bytes[16];
+    arc4random_buf(bytes, sizeof bytes);
+    char id[33];
+    for (int i = 0; i < 16; ++i) std::snprintf(id + 2 * i, 3, "%02X", bytes[i]);
+    const size_t at = state.find("\nid=");
+    return at == std::string::npos ? state : state.substr(0, at + 4) + id + state.substr(at + 4 + 32);
+}
 
 // ---- VST3 -----------------------------------------------------------------------------------------------------
 
@@ -133,6 +151,20 @@ public:
     }
 
     bool ok() const { return processor_ != nullptr; }
+
+    std::string saveState() override {
+        MemoryStream stream;
+        component_->getState(&stream);
+        return std::string(stream.getData(), size_t(stream.getSize()));
+    }
+
+    void restoreState(const std::string &state) override {
+        MemoryStream stream;
+        int32 written = 0;
+        stream.write(const_cast<char *>(state.data()), int32(state.size()), &written);
+        stream.seek(0, IBStream::kIBSeekSet, nullptr);
+        component_->setState(&stream);
+    }
 
     bool configure(double rate, uint32_t channels, uint32_t block) override {
         if (active_) { processor_->setProcessing(false); component_->setActive(false); active_ = false; }
@@ -247,6 +279,32 @@ public:
 
     bool ok() const { return unit_ != nullptr; }
 
+    std::string saveState() override {
+        CFPropertyListRef info = nullptr;
+        UInt32 size = sizeof info;
+        std::string state;
+        if (AudioUnitGetProperty(unit_, kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0, &info, &size) == noErr && info) {
+            auto bytes = (CFDataRef)CFDictionaryGetValue((CFDictionaryRef)info, CFSTR("com.jinboz.AuraliscopeBridge.state"));
+            if (bytes) state.assign((const char *)CFDataGetBytePtr(bytes), size_t(CFDataGetLength(bytes)));
+            CFRelease(info);
+        }
+        return state;
+    }
+
+    void restoreState(const std::string &state) override {
+        CFPropertyListRef info = nullptr;
+        UInt32 size = sizeof info;
+        if (AudioUnitGetProperty(unit_, kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0, &info, &size) != noErr || !info) return;
+        CFMutableDictionaryRef dictionary = CFDictionaryCreateMutableCopy(nullptr, 0, (CFDictionaryRef)info);
+        CFDataRef bytes = CFDataCreate(nullptr, (const UInt8 *)state.data(), CFIndex(state.size()));
+        CFDictionarySetValue(dictionary, CFSTR("com.jinboz.AuraliscopeBridge.state"), bytes);
+        CFPropertyListRef updated = dictionary;
+        AudioUnitSetProperty(unit_, kAudioUnitProperty_ClassInfo, kAudioUnitScope_Global, 0, &updated, sizeof updated);
+        CFRelease(bytes);
+        CFRelease(dictionary);
+        CFRelease(info);
+    }
+
     bool configure(double rate, uint32_t channels, uint32_t block) override {
         AudioUnitUninitialize(unit_);
         AudioStreamBasicDescription format{rate, kAudioFormatLinearPCM,
@@ -290,7 +348,7 @@ public:
         Class factoryClass = [bundle classNamed:className] ?: NSClassFromString(className);
         if (!factoryClass) { std::fprintf(stderr, "[harness] view factory %s not found in %s\n", className.UTF8String, bundle.bundlePath.UTF8String); return nil; }
         id<AUCocoaUIBase> factory = [[factoryClass alloc] init];
-        editor_ = [factory uiViewForAudioUnit:unit_ withSize:NSMakeSize(440, 442)];
+        editor_ = [factory uiViewForAudioUnit:unit_ withSize:NSMakeSize(440, 466)];
         if (!editor_) std::fprintf(stderr, "[harness] the view factory returned no view\n");
         return editor_;
     }
@@ -351,6 +409,7 @@ std::vector<Phase> parsePhases(const std::string &text) {
         if (kind == "bypass") phase.mode = Mode::bypass;
         else if (kind == "offline") phase.mode = Mode::offline;
         else if (kind == "idle") phase.mode = Mode::idle;
+        else if (kind == "reidentify") phase.reidentify = true;
         else if (kind.rfind("rate=", 0) == 0) phase.rate = std::atof(kind.c_str() + 5);
         else if (kind.rfind("ch=", 0) == 0) phase.channels = uint32_t(std::atoi(kind.c_str() + 3));
         phases.push_back(phase);
@@ -372,6 +431,7 @@ int main(int argc, const char *argv[]) {
             else if (key == "--rate") options.rate = std::atof(value.c_str());
             else if (key == "--block") options.block = uint32_t(std::atoi(value.c_str()));
             else if (key == "--instances") options.instances = uint32_t(std::atoi(value.c_str()));
+            else if (key == "--copies") options.copies = uint32_t(std::atoi(value.c_str()));
             else if (key == "--name") options.name = value;
             else if (key == "--id") options.id = value;
             else if (key == "--phases") options.phases = value;
@@ -393,6 +453,15 @@ int main(int argc, const char *argv[]) {
                 if (!instance->ok()) return 1;
                 instances.push_back(std::move(instance));
             }
+        }
+        // Duplicated tracks: new instances given instance 1's saved state while it is live.
+        for (uint32_t i = 0; i < options.copies && !instances.empty(); ++i) {
+            const std::string state = instances[0]->saveState();
+            std::unique_ptr<Instance> copy;
+            if (options.format == "au") copy = std::make_unique<AUInstance>(options, options.instances + i);
+            else copy = std::make_unique<VST3Instance>(options, options.instances + i);
+            copy->restoreState(state);
+            instances.push_back(std::move(copy));
         }
         double rate = options.rate;
         uint32_t channels = options.channels;
@@ -417,6 +486,8 @@ int main(int argc, const char *argv[]) {
                     for (auto &instance : instances) instance->configure(rate, channels, options.block);
                     std::fill(position.begin(), position.end(), 0);  // a new format epoch: compare from its start
                 }
+                if (phase.reidentify)
+                    for (auto &instance : instances) instance->restoreState(reidentified(instance->saveState()));
                 for (auto &instance : instances) instance->setMode(phase.mode == Mode::idle ? Mode::live : phase.mode);
                 const uint64_t blocks = uint64_t(phase.seconds * rate / options.block);
                 int64_t worst = 0;

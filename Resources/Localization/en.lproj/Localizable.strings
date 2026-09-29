@@ -364,7 +364,7 @@
 "Waiting for the DAW plugin to connect…" = "Waiting for the DAW plugin to connect…";
 "%@ (choose one of the ◆ inserts)" = "%@ (choose one of the ◆ inserts)";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button";
-"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW plugin disconnected · measurement held until the same insert returns";
+"%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects";
 "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project.";
 "Interrupted %d×" = "Interrupted %d×";
 "Interrupted %d× · %@ s missing" = "Interrupted %d× · %@ s missing";

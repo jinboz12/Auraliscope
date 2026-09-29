@@ -19,7 +19,7 @@ base=(-isysroot "$sdk" -mmacosx-version-min=11.0 $arch -O2 -g0 -fvisibility=hidd
 ours=(-I Sources/BridgeTransport/include -I Bridge/Plugin/Core -I Bridge/Plugin/Editor -I Bridge/Plugin/AU)
 vst3_flags=(-std=c++17 -DRELEASE=1 -I "$vst3" -Wno-deprecated-declarations -Wno-unknown-pragmas -Wno-unused-variable
             -Wno-unused-function -Wno-overloaded-virtual -Wno-extra-tokens)
-au_flags=(-std=c++20 -I "$ausdk/include")
+au_flags=(-std=c++20 -DAUSDK_NO_LOGGING=1 -I "$ausdk/include")  # no os_log from the SDK, the render path included
 editor_vst3=(-DABR_EDITOR_CLASS=AuraliscopeBridgeEditorVST3_${ABR_BUILD})
 editor_au=(-DABR_EDITOR_CLASS=AuraliscopeBridgeEditorAU_${ABR_BUILD} -DABR_AU_VIEW_FACTORY=AuraliscopeBridgeAUViewFactory_${ABR_BUILD})
 

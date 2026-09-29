@@ -364,7 +364,7 @@
 "Waiting for the DAW plugin to connect…" = "DAW 플러그인 연결을 기다리는 중…";
 "%@ (choose one of the ◆ inserts)" = "%@ (◆ 표시된 인서트 중 하나를 선택하세요)";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 연결된 인서트 %d개가 저장된 인서트일 수 있음 · 설정에서 선택하거나 해당 플러그인 창의 버튼을 누르세요";
-"%@ · DAW plugin disconnected · measurement held until the same insert returns" = "%@ · DAW 플러그인 연결 끊김 · 같은 인서트가 돌아올 때까지 측정 유지";
+"%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW 플러그인 연결 끊김 · 이 플러그인 인스턴스가 다시 연결되면 이어서 측정하도록 유지";
 "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "다른 버전의 Auraliscope Bridge가 연결되어 있습니다(%@). 이 Auraliscope Labs와 함께 제공되는 Bridge를 설치한 다음 프로젝트를 다시 여세요.";
 "Interrupted %d×" = "%d회 중단";
 "Interrupted %d× · %@ s missing" = "%d회 중단 · %@ s 누락";

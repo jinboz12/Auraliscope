@@ -21,6 +21,7 @@ typedef struct {
     size_t used, capacity;
     bool greeted;                 // a HELLO of this protocol version arrived (written under AbrServer.lock)
     bool incompatible;            // a HELLO of another version: listed, otherwise ignored (ditto)
+    bool drop;                    // abr_server_disconnect asked for it to be closed (under AbrServer.lock)
     bool subscribed;              // what the server last told the plugin
     uint64_t subscribed_selection; // the selection generation that SUBSCRIBE belongs to
     uint32_t subscription;        // the number sent with that SUBSCRIBE (0: none); other audio is stale
@@ -42,6 +43,8 @@ struct AbrServer {
     uint8_t selected[16];
     bool has_selection;
     uint64_t selection;           // bumped by every abr_server_select, even of the same instance
+    uint8_t refused[16];          // abr_server_disconnect: this session is turned away until refused_until
+    uint64_t refused_until;
     uint32_t next_subscription;   // server thread only
     pthread_mutex_t sink_lock;    // held while the sink runs; guards the delivery state below
     AbrSink sink;
@@ -205,6 +208,10 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
         AbrHello hello;
         memcpy(&hello, payload, sizeof hello);
         pthread_mutex_lock(&server->lock);
+        const bool refused = now_ns() < server->refused_until && memcmp(server->refused, hello.session_id, 16) == 0;
+        pthread_mutex_unlock(&server->lock);
+        if (refused) return false;
+        pthread_mutex_lock(&server->lock);
         AbrSourceInfo *info = &client->info;
         memcpy(info->session_id, hello.session_id, 16);
         memcpy(info->persistent_id, hello.persistent_id, 16);
@@ -347,6 +354,13 @@ static void accept_clients(AbrServer *server) {
 static void reconcile_subscriptions(AbrServer *server) {
     for (uint32_t i = 0; i < server->count;) {
         Client *client = server->clients[i];
+        pthread_mutex_lock(&server->lock);
+        const bool drop = client->drop;
+        pthread_mutex_unlock(&server->lock);
+        if (drop) {
+            close_client(server, i);
+            continue;
+        }
         pthread_mutex_lock(&server->lock);
         bool wanted = client->greeted && server->has_selection && memcmp(server->selected, client->info.session_id, 16) == 0;
         client->info.selected = wanted;
@@ -504,6 +518,16 @@ uint32_t abr_server_sources(AbrServer *server, AbrSourceInfo *out, uint32_t capa
         }
     }
     return listed;
+}
+
+void abr_server_disconnect(AbrServer *server, const uint8_t *session_id, uint32_t refuse_ms) {
+    pthread_mutex_lock(&server->lock);
+    memcpy(server->refused, session_id, 16);
+    server->refused_until = now_ns() + (uint64_t)refuse_ms * 1000000ull;
+    for (uint32_t i = 0; i < server->count; ++i)
+        if (memcmp(server->clients[i]->info.session_id, session_id, 16) == 0) server->clients[i]->drop = true;
+    pthread_mutex_unlock(&server->lock);
+    wake(server);
 }
 
 void abr_server_select(AbrServer *server, const uint8_t *session_id) {

@@ -230,7 +230,7 @@ enum MeterStatus: Equatable {
             case .notResponding: return L("%@ · DAW plugin · not responding", name)
             case .disconnected: return L("%@ · DAW plugin disconnected · waiting for it to return", name)
             case .disconnectedHeld:
-                return L("%@ · DAW plugin disconnected · measurement held until the same insert returns", name)
+                return L("%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects", name)
             case .connecting: return L("Waiting for the DAW plugin to connect…")
             case let .ambiguous(count):
                 return L("%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button", name, count)
@@ -1088,12 +1088,18 @@ final class MeterModel: ObservableObject {
 
     /// Name shown while the selected DAW plugin is away: the name it had when chosen.
     private var waitingBridgeName: String {
-        bridgeSaved.map { $0.name }.flatMap { $0.isEmpty ? nil : $0 }
-            ?? UserDefaults.standard.string(forKey: Self.bridgeNameKey) ?? L("DAW plugin")
+        [bridgeSaved?.name, UserDefaults.standard.string(forKey: Self.bridgeNameKey)].compactMap { $0 }
+            .first { !$0.isEmpty } ?? L("DAW plugin")
     }
 
     /// Launched by a plugin and still waiting for it (no insert known yet).
     private var waitingForLaunch: Bool { selectedID.bridge == SourceID.waitingPrefix }
+
+    /// Diagnostics: breaks the selected insert's connection, as a failure would; the plugin reconnects by itself.
+    func dropBridgeConnection() {
+        guard let session = selectedID.bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) else { return }
+        bridge?.disconnect(source.session, refusingFor: 1_500)
+    }
 
     /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
     private func remember(_ source: BridgeSource) {

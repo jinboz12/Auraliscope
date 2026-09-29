@@ -207,6 +207,11 @@ final class BridgeReceiver {
 
     /// After return the server no longer writes to the ring.
     func detach() { abr_server_detach(server) }
+
+    /// Diagnostics: closes one instance's connection, as a broken connection would be; it reconnects by itself.
+    func disconnect(_ session: [UInt8], refusingFor milliseconds: UInt32) {
+        session.withUnsafeBufferPointer { abr_server_disconnect(server, $0.baseAddress!, milliseconds) }
+    }
 }
 
 struct BridgeReceiverError: Error { let reason: String }

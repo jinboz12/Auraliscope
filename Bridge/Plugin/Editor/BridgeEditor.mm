@@ -30,9 +30,9 @@ static const int32_t kDNSServiceErr_PolicyDenied_ABR = -65570;  // dns_sd.h kDNS
 static NSString *const kLabsBundleID = @"com.jinboz.SoundMeterJBZ.Labs";
 static NSString *const kReleaseBundleID = @"com.jinboz.SoundMeterJBZ";
 
-// The network scan: one DNS-SD browser for every open plugin window of this binary, stopped when the last one
-// closes. It only runs while a window is open, so the host's Local Network permission request (macOS asks on
-// behalf of the DAW) appears when the user is looking at the plugin, never from an insert in the background.
+// The network scan: one DNS-SD browser for every plugin window of this binary that asked for it, stopped when the
+// last one stops or closes. It only runs on request, so the host's Local Network permission request (macOS asks on
+// behalf of the DAW) appears when the person is looking for it, never from an insert in the background.
 static AbrBrowser *gBrowser = nullptr;
 static int gBrowserUsers = 0;
 static void acquireBrowser() { if (gBrowserUsers++ == 0) gBrowser = abr_browser_start(); }
@@ -139,15 +139,19 @@ NSTextField *heading(NSRect frame, NSString *title) {
 - (void)shutDown;
 @end
 
+// Answers three questions, top to bottom: is this insert the one Auraliscope Labs analyses (and one click makes
+// it so); is fresh audio arriving; has the stream been interrupted. The network scan sits last, collapsed: it
+// only runs when asked, because nothing on the network can receive analysis yet.
 @implementation ABR_EDITOR_CLASS {
     std::shared_ptr<abr::BridgeCore> _core;
     std::function<void()> _nameEdited;
+    NSString *_format;
     NSTimer *_timer;
-    NSTextField *_name, *_connection, *_detail, *_rate, *_layout, *_state, *_counters, *_thisMac, *_network[3];
-    BOOL _scanning;
-    NSButton *_connect;
+    NSTextField *_name, *_headline, *_detail, *_thisMac, *_identity, *_copy, *_rate, *_layout, *_state, *_fresh,
+        *_counters, *_networkSummary, *_network[2];
+    NSButton *_connect, *_scan;
     NSView *_dot;
-    BOOL _launchFailed;
+    BOOL _scanning, _scanRequested, _launchFailed;
 }
 
 - (instancetype)initWithCore:(std::shared_ptr<abr::BridgeCore>)core
@@ -157,6 +161,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     if (!self) return nil;
     _core = std::move(core);
     _nameEdited = std::move(nameEdited);
+    _format = format;
     self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     const CGFloat width = abr::kEditorWidth, margin = 16, inner = width - 2 * margin;
 
@@ -178,42 +183,33 @@ NSTextField *heading(NSRect frame, NSString *title) {
     formatLabel.stringValue = format;
     [self addSubview:formatLabel];
 
-    // Connection card: status and the one-click button.
-    ABR_CARD_CLASS *connection = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 48, inner, 98)];
+    // 1. Is this insert the one analysed? Status, and the one-click button.
+    ABR_CARD_CLASS *connection = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 48, inner, 112)];
     [self addSubview:connection];
     [connection addSubview:heading(NSMakeRect(14, 11, 200, 12), @"AURALISCOPE LABS")];
     _dot = [[NSView alloc] initWithFrame:NSMakeRect(14, 35, 8, 8)];
     _dot.wantsLayer = YES;
     _dot.layer.cornerRadius = 4;
     [connection addSubview:_dot];
-    _connection = label(NSMakeRect(28, 29, inner - 42, 18), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], ink());
-    [connection addSubview:_connection];
+    _headline = label(NSMakeRect(28, 29, inner - 42, 18), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], ink());
+    [connection addSubview:_headline];
     _detail = label(NSMakeRect(28, 48, inner - 42, 16), [NSFont systemFontOfSize:11], secondary());
     [connection addSubview:_detail];
+    _thisMac = label(NSMakeRect(28, 64, inner - 42, 14), [NSFont systemFontOfSize:10], tertiary());
+    [connection addSubview:_thisMac];
     _connect = [NSButton buttonWithTitle:@"" target:self action:@selector(connect:)];
     _connect.bordered = NO;
     _connect.wantsLayer = YES;
     _connect.layer.cornerRadius = 12;
-    _connect.frame = NSMakeRect(inner - 14 - 212, 66, 212, 24);
+    _connect.frame = NSMakeRect(inner - 14 - 196, 80, 196, 24);
     [connection addSubview:_connect];
 
-    // Scan card: Auraliscope on this Mac, and receivers on the local network (a future Auraliscope for iOS).
-    ABR_CARD_CLASS *scan = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 154, inner, 100)];
-    [self addSubview:scan];
-    [scan addSubview:heading(NSMakeRect(14, 11, inner - 28, 12), @"FOUND ON THIS MAC AND NETWORK")];
-    _thisMac = label(NSMakeRect(14, 28, inner - 28, 16), [NSFont systemFontOfSize:11 weight:NSFontWeightMedium], ink());
-    [scan addSubview:_thisMac];
-    for (int row = 0; row < 3; ++row) {
-        _network[row] = label(NSMakeRect(14, 46 + 17 * row, inner - 28, 16), [NSFont systemFontOfSize:11], secondary());
-        [scan addSubview:_network[row]];
-    }
-
-    // Source card: the editable name.
-    ABR_CARD_CLASS *source = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 262, inner, 66)];
+    // 2. Which insert this is: its name (saved with the project) and identity.
+    ABR_CARD_CLASS *source = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 168, inner, 84)];
     [self addSubview:source];
-    [source addSubview:heading(NSMakeRect(14, 11, 200, 12), @"SOURCE NAME")];
+    [source addSubview:heading(NSMakeRect(14, 11, 200, 12), @"THIS INSERT")];
     // The field sits inset in a display-coloured well, like the meter window's readouts.
-    NSView *well = [[NSView alloc] initWithFrame:NSMakeRect(14, 29, inner - 28, 26)];
+    NSView *well = [[NSView alloc] initWithFrame:NSMakeRect(14, 27, inner - 28, 26)];
     well.wantsLayer = YES;
     well.layer.backgroundColor = display().CGColor;
     well.layer.cornerRadius = 7;
@@ -228,24 +224,49 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _name.delegate = self;
     _name.target = self;
     _name.action = @selector(commitName:);
-    _name.toolTip = @"Shown in Auraliscope's source list and saved with the project. Leave empty to use the track name.";
+    _name.toolTip = @"Shown in Auraliscope Labs' source list and saved with the project. Leave empty to use the track name.";
     [well addSubview:_name];
+    _identity = label(NSMakeRect(14, 58, inner - 28, 14), [NSFont systemFontOfSize:10], tertiary());
+    [source addSubview:_identity];
+    _copy = label(NSMakeRect(14, 58, inner - 28, 14), [NSFont systemFontOfSize:10], ochre());
+    _copy.hidden = YES;
+    [source addSubview:_copy];
 
-    // Stream card: value and unit, as the meter window's heading shows them, and the state.
-    ABR_CARD_CLASS *stream = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 336, inner, 76)];
+    // 3. Is fresh audio arriving, and has the stream been interrupted?
+    ABR_CARD_CLASS *stream = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 260, inner, 90)];
     [self addSubview:stream];
     [stream addSubview:heading(NSMakeRect(14, 11, 200, 12), @"STREAM")];
-    _rate = label(NSMakeRect(14, 28, 110, 22), [NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightMedium], ink());
+    _rate = label(NSMakeRect(14, 26, 110, 22), [NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightMedium], ink());
     [stream addSubview:_rate];
-    _layout = label(NSMakeRect(118, 32, 170, 18), [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], secondary());
+    _layout = label(NSMakeRect(118, 30, 170, 18), [NSFont systemFontOfSize:12 weight:NSFontWeightMedium], secondary());
     [stream addSubview:_layout];
-    _state = label(NSMakeRect(inner - 14 - 150, 33, 150, 16), expanded(9, NSFontWeightSemibold), accent());
+    _state = label(NSMakeRect(inner - 14 - 150, 31, 150, 16), expanded(9, NSFontWeightSemibold), accent());
     _state.alignment = NSTextAlignmentRight;
     [stream addSubview:_state];
-    _counters = label(NSMakeRect(14, 53, inner - 28, 14), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], tertiary());
+    _fresh = label(NSMakeRect(14, 52, inner - 28, 14), [NSFont systemFontOfSize:11], secondary());
+    [stream addSubview:_fresh];
+    _counters = label(NSMakeRect(14, 69, inner - 28, 14), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], tertiary());
     [stream addSubview:_counters];
 
-    NSTextField *note = label(NSMakeRect(margin, 420, inner, 14), [NSFont systemFontOfSize:10], tertiary());
+    // Network, collapsed: a later Auraliscope for iPhone and iPad will be found here. It is only scanned on request,
+    // so the DAW's Local Network permission is asked for only by someone looking for it.
+    ABR_CARD_CLASS *network = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 358, inner, 80)];
+    [self addSubview:network];
+    [network addSubview:heading(NSMakeRect(14, 11, 250, 12), @"NETWORK · PREVIEW")];
+    _networkSummary = label(NSMakeRect(14, 28, inner - 28 - 110, 14), [NSFont systemFontOfSize:11], secondary());
+    [network addSubview:_networkSummary];
+    for (int row = 0; row < 2; ++row) {
+        _network[row] = label(NSMakeRect(14, 45 + 16 * row, inner - 28, 14), [NSFont systemFontOfSize:10], tertiary());
+        [network addSubview:_network[row]];
+    }
+    _scan = [NSButton buttonWithTitle:@"" target:self action:@selector(toggleScan:)];
+    _scan.bordered = NO;
+    _scan.wantsLayer = YES;
+    _scan.layer.cornerRadius = 10;
+    _scan.frame = NSMakeRect(inner - 14 - 100, 24, 100, 20);
+    [network addSubview:_scan];
+
+    NSTextField *note = label(NSMakeRect(margin, 446, inner, 14), [NSFont systemFontOfSize:10], tertiary());
     note.stringValue = @"Audio passes through unchanged. Closing this window does not stop the stream.";
     [self addSubview:note];
     [self refresh];
@@ -265,6 +286,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     [self setScanning:NO];
 }
 
+// Browses only while the person asked for it and the window is on screen.
 - (void)setScanning:(BOOL)scanning {
     if (scanning == _scanning) return;
     _scanning = scanning;
@@ -275,7 +297,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     [super viewDidMoveToWindow];
     [_timer invalidate];
     _timer = nil;
-    [self setScanning:self.window != nil];
+    [self setScanning:_scanRequested && self.window != nil];
     if (!self.window) return;
     __weak ABR_EDITOR_CLASS *weakSelf = self;
     _timer = [NSTimer timerWithTimeInterval:0.25 repeats:YES block:^(NSTimer *) { [weakSelf refresh]; }];
@@ -289,9 +311,10 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _name.delegate = nil;
     _name.target = nil;
     _connect.target = nil;
+    _scan.target = nil;
 }
 
-// One click: ask Auraliscope Labs to show this insert, launching it first when it is not running. The request
+// One click: ask Auraliscope Labs to analyse this insert, launching it first when it is not running. The request
 // waits in the core and goes out as soon as the connection is up.
 - (void)connect:(id)sender {
     _core->requestFocus();
@@ -310,6 +333,12 @@ NSTextField *heading(NSRect frame, NSString *title) {
     [self refresh];
 }
 
+- (void)toggleScan:(id)sender {
+    _scanRequested = !_scanRequested;
+    [self setScanning:_scanRequested && self.window != nil];
+    [self refresh];
+}
+
 - (void)commitName:(id)sender {
     const char *value = _name.stringValue.UTF8String ?: "";
     if (_core->sourceName() == value) return;
@@ -320,91 +349,121 @@ NSTextField *heading(NSRect frame, NSString *title) {
 
 - (void)controlTextDidEndEditing:(NSNotification *)notification { [self commitName:nil]; }
 
-- (void)setButton:(NSString *)title filled:(BOOL)filled enabled:(BOOL)enabled {
-    _connect.enabled = enabled;
-    _connect.layer.backgroundColor = (filled ? accent() : [ink() colorWithAlphaComponent:0.08]).CGColor;
+- (void)style:(NSButton *)button title:(NSString *)title filled:(BOOL)filled enabled:(BOOL)enabled size:(CGFloat)size {
+    button.enabled = enabled;
+    button.hidden = title.length == 0;
+    button.layer.backgroundColor = (filled ? accent() : [ink() colorWithAlphaComponent:0.08]).CGColor;
     NSMutableParagraphStyle *centered = [[NSMutableParagraphStyle alloc] init];
     centered.alignment = NSTextAlignmentCenter;
-    _connect.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
-        NSFontAttributeName: [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],
+    button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+        NSFontAttributeName: [NSFont systemFontOfSize:size weight:NSFontWeightSemibold],
         NSForegroundColorAttributeName: filled ? darkInk() : secondary(), NSParagraphStyleAttributeName: centered}];
 }
 
-// This Mac: the Bridge socket says whether Auraliscope Labs is connected; the running applications say whether it
-// is starting, and whether only the release Auraliscope (which does not receive DAW audio yet) is open.
-// The network: DNS-SD peers other than this Mac's own macOS receivers.
-- (void)refreshScan:(const abr::CoreStatus &)status {
+// Is this insert the one analysed, and if not, what one click does.
+- (void)refreshConnection:(const abr::CoreStatus &)status {
     NSRunningApplication *labs = [NSRunningApplication runningApplicationsWithBundleIdentifier:kLabsBundleID].firstObject;
-    NSString *version = labs ? ([NSBundle bundleWithURL:labs.bundleURL].infoDictionary[@"AuraliscopeVersionLabel"] ?: @"") : @"";
-    if (status.connected) {
-        _thisMac.stringValue = [NSString stringWithFormat:@"●  This Mac · Auraliscope Labs %@ · connected", version];
-        _thisMac.textColor = ink();
-    } else if (labs) {
-        _thisMac.stringValue = [NSString stringWithFormat:@"●  This Mac · Auraliscope Labs %@ · running, connecting…", version];
-        _thisMac.textColor = ink();
-    } else if ([NSRunningApplication runningApplicationsWithBundleIdentifier:kReleaseBundleID].count) {
-        _thisMac.stringValue = @"●  This Mac · Auraliscope is open, but only Auraliscope Labs receives DAW audio";
-        _thisMac.textColor = ochre();
-    } else {
-        _thisMac.stringValue = @"○  This Mac · Auraliscope Labs is not running";
-        _thisMac.textColor = secondary();
-    }
-
-    NSMutableArray<NSString *> *rows = [NSMutableArray array];
-    if (!gBrowser) {
-        [rows addObject:@"Network scan unavailable (DNS-SD did not start)"];
-    } else if (abr_browser_error(gBrowser) == kDNSServiceErr_PolicyDenied_ABR) {
-        [rows addObject:[NSString stringWithFormat:@"Local network access is off for %@:", NSProcessInfo.processInfo.processName]];
-        [rows addObject:@"allow it in System Settings ▸ Privacy & Security ▸ Local Network"];
-    } else {
-        AbrPeer peers[16];
-        const uint32_t count = std::min<uint32_t>(16, abr_browser_peers(gBrowser, peers, 16));
-        for (uint32_t i = 0; i < count && rows.count < 3; ++i) {
-            const AbrPeer &peer = peers[i];
-            if (peer.this_mac && std::string(peer.platform) == "macOS") continue;  // this Mac's own receiver
-            NSString *what = peer.resolved ? [NSString stringWithFormat:@"%s for %s %s", peer.app, peer.platform, peer.version]
-                                           : @"resolving…";
-            [rows addObject:[NSString stringWithFormat:@"◆  %s · %@%@", peer.name, what, peer.this_mac ? @" (this Mac)" : @""]];
+    NSDictionary *info = labs ? [NSBundle bundleWithURL:labs.bundleURL].infoDictionary : nil;
+    NSString *version = info ? [NSString stringWithFormat:@"%@ build %@", info[@"AuraliscopeVersionLabel"] ?: @"",
+                                                          info[@"CFBundleVersion"] ?: @""] : @"";
+    const bool fresh = status.secondsSinceProcess >= 0 && status.secondsSinceProcess < 0.5;
+    NSColor *dot = slate();
+    NSString *headline, *detail, *button = @"";
+    BOOL filled = NO, enabled = NO;
+    if (status.receiverTooOld) {
+        headline = @"Auraliscope Labs needs an update";
+        detail = @"The Auraliscope Labs on this Mac is older than this plugin.";
+        dot = ember();
+    } else if (status.receiverTooNew) {
+        headline = @"This plugin needs an update";
+        detail = @"Install the Auraliscope Bridge that comes with your Auraliscope Labs.";
+        dot = ember();
+    } else if (!status.connected) {
+        if (status.focusPending) {
+            headline = @"Opening Auraliscope Labs…";
+            detail = @"This insert is shown as soon as it connects.";
+            button = @"Connecting…";
+        } else if (_launchFailed) {
+            headline = @"Auraliscope Labs is not installed";
+            detail = @"Install it in Applications, then click again.";
+            dot = ember();
+            button = @"Open Auraliscope Labs";
+            filled = enabled = YES;
+        } else if (labs) {
+            headline = @"Connecting to Auraliscope Labs…";
+            detail = @"It is starting up.";
+        } else if ([NSRunningApplication runningApplicationsWithBundleIdentifier:kReleaseBundleID].count) {
+            headline = @"Auraliscope Labs is not open";
+            detail = @"Auraliscope is open, but only Auraliscope Labs receives DAW audio.";
+            dot = ochre();
+            button = @"Open Auraliscope Labs";
+            filled = enabled = YES;
+        } else {
+            headline = @"Auraliscope Labs is not open";
+            detail = @"Every insert connects by itself whenever it is open.";
+            button = @"Open Auraliscope Labs";
+            filled = enabled = YES;
         }
-        if (rows.count == 0) [rows addObject:@"Searching the local network for Auraliscope on iPhone and iPad…"];
-        else if (rows.count < 3) [rows addObject:@"iPhone and iPad are listed for now; streaming to them comes later."];
+    } else if (status.subscribed) {
+        button = @"Shown in Auraliscope Labs";
+        switch (status.state) {
+        case ABR_STATE_LIVE:
+            headline = fresh ? @"Analysing this insert" : @"Selected · no audio";
+            detail = fresh ? @"Fresh audio is reaching Auraliscope Labs."
+                           : @"The DAW is not processing this insert (stopped or suspended).";
+            dot = fresh ? accent() : ochre();
+            break;
+        case ABR_STATE_BYPASSED:
+            headline = @"Selected · bypassed";
+            detail = @"Nothing is sent while the insert is bypassed.";
+            dot = ochre();
+            break;
+        case ABR_STATE_OFFLINE:
+            headline = @"Selected · offline render";
+            detail = @"A bounce is not metered as live audio.";
+            dot = ochre();
+            break;
+        default:
+            headline = @"Selected · inactive";
+            detail = @"The DAW has not activated this insert.";
+            dot = ochre();
+            break;
+        }
+    } else {
+        headline = @"Connected · not analysed";
+        detail = @"Auraliscope Labs is analysing another source.";
+        dot = heather();
+        button = status.focusPending ? @"Switching…" : @"Analyse this insert";
+        filled = enabled = !status.focusPending;
     }
-    for (int row = 0; row < 3; ++row) {
-        _network[row].stringValue = row < (int)rows.count ? rows[row] : @"";
-        _network[row].textColor = [rows[MIN(row, (int)rows.count - 1)] hasPrefix:@"◆"] ? secondary() : tertiary();
-    }
+    _headline.stringValue = headline;
+    _detail.stringValue = detail;
+    _dot.layer.backgroundColor = dot.CGColor;
+    [self style:_connect title:button filled:filled enabled:enabled size:12];
+    _thisMac.stringValue = labs ? [NSString stringWithFormat:@"This Mac · Auraliscope Labs %@", version]
+                                : @"This Mac · Auraliscope Labs not running";
 }
 
-- (void)refresh {
-    const abr::CoreStatus status = _core->status();
+// Which insert this is, as Auraliscope Labs lists it.
+- (void)refreshIdentity:(const abr::CoreStatus &)status {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:[NSString stringWithFormat:@"ID %s", status.instanceTag.c_str()]];
+    [parts addObject:_format];
+    if (!status.trackName.empty()) [parts addObject:[NSString stringWithFormat:@"track “%@”", text(status.trackName)]];
+    _identity.stringValue = [parts componentsJoinedByString:@" · "];
+    const bool copy = status.identityFlags & ABR_IDENTITY_COPY;
+    _copy.hidden = !copy;
+    _identity.hidden = copy;
+    if (copy)
+        _copy.stringValue = [NSString stringWithFormat:@"ID %s · a copy of #%s with an identity of its own",
+                                                       status.instanceTag.c_str(), status.copiedFromTag.c_str()];
     _name.placeholderAttributedString = [[NSAttributedString alloc]
         initWithString:status.trackName.empty() ? [NSString stringWithFormat:@"Auraliscope Bridge %s", status.instanceTag.c_str()]
                                                 : text(status.trackName)
             attributes:@{NSForegroundColorAttributeName: tertiary(), NSFontAttributeName: _name.font}];
+}
 
-    NSColor *dot;
-    if (!status.connected) {
-        _connection.stringValue = status.focusPending ? @"Opening Auraliscope Labs…" : @"Not connected";
-        _detail.stringValue = _launchFailed ? @"Auraliscope Labs is not installed on this Mac."
-                                            : @"It connects by itself whenever Auraliscope Labs is open.";
-        dot = _launchFailed ? ember() : slate();
-        [self setButton:status.focusPending ? @"Connecting…" : @"Open Auraliscope Labs" filled:!status.focusPending
-                enabled:!status.focusPending];
-    } else if (status.subscribed) {
-        const bool live = status.state == ABR_STATE_LIVE;
-        _connection.stringValue = live ? @"Streaming to Auraliscope Labs" : @"Selected in Auraliscope Labs";
-        _detail.stringValue = @"This insert is the active source.";
-        dot = live ? accent() : ochre();
-        [self setButton:@"Showing in Auraliscope Labs" filled:NO enabled:NO];
-    } else {
-        _connection.stringValue = @"Connected to Auraliscope Labs";
-        _detail.stringValue = @"Auraliscope Labs is showing another source.";
-        dot = heather();
-        [self setButton:status.focusPending ? @"Connecting…" : @"Show in Auraliscope Labs" filled:!status.focusPending
-                enabled:!status.focusPending];
-    }
-    _dot.layer.backgroundColor = dot.CGColor;
-
+// Is fresh audio arriving, and has the stream been interrupted.
+- (void)refreshStream:(const abr::CoreStatus &)status {
     if (status.formatEpoch == 0) {
         _rate.stringValue = @"—";
         _layout.stringValue = @"No stream format yet";
@@ -420,12 +479,69 @@ NSTextField *heading(NSRect frame, NSString *title) {
     case ABR_STATE_OFFLINE: _state.stringValue = @"OFFLINE RENDER · NOT SENT"; _state.textColor = ochre(); break;
     default: _state.stringValue = @"INACTIVE"; _state.textColor = tertiary(); break;
     }
-    [self refreshScan:status];
+    const double since = status.secondsSinceProcess;
+    if (since < 0) {
+        _fresh.stringValue = @"The DAW has not processed this insert yet.";
+        _fresh.textColor = tertiary();
+    } else if (since < 0.5) {
+        NSString *where = status.subscribed ? @"sent to Auraliscope Labs" : @"passing through, not sent";
+        _fresh.stringValue = [NSString stringWithFormat:@"Audio is flowing · %@", where];
+        _fresh.textColor = status.subscribed && status.state == ABR_STATE_LIVE ? accent() : secondary();
+    } else {
+        _fresh.stringValue = since < 90 ? [NSString stringWithFormat:@"No audio for %.0f s: the DAW is not processing this insert", since]
+                                        : @"No audio: the DAW is not processing this insert";
+        _fresh.textColor = ochre();
+    }
     NSString *transport = !(status.transportFlags & ABR_TRANSPORT_KNOWN) ? @""
         : (status.transportFlags & ABR_TRANSPORT_PLAYING) ? @" · playing" : @" · stopped";
-    _counters.stringValue = [NSString stringWithFormat:@"sent %@ · dropped %@ · block ≤ %u · ID %s%@", count(status.framesSent),
-                                                       count(status.framesDropped), status.maxBlockFrames,
-                                                       status.instanceTag.c_str(), transport];
+    _counters.stringValue = [NSString stringWithFormat:@"sent %@ · dropped %@ · breaks %u · block ≤ %u%@", count(status.framesSent),
+                                                       count(status.framesDropped), status.interruptions,
+                                                       status.maxBlockFrames, transport];
+    _counters.textColor = status.framesDropped > 0 || status.interruptions > 0 ? ochre() : tertiary();
+    _counters.toolTip = @"Breaks: times the live stream stopped and resumed (bypass, offline render, the DAW idle or "
+                        @"restarting the plugin). Auraliscope Labs restarts its short-term analyses at each one.";
+}
+
+// The network, collapsed until asked: DNS-SD peers other than this Mac's own receivers.
+- (void)refreshNetwork {
+    [self style:_scan title:_scanRequested ? @"Stop scan" : @"Scan network" filled:NO enabled:YES size:11];
+    NSMutableArray<NSString *> *rows = [NSMutableArray array];
+    if (!_scanRequested) {
+        _networkSummary.stringValue = @"Auraliscope for iPhone and iPad will appear here.";
+        [rows addObject:@"Discovery only: nothing on the network can receive analysis yet."];
+    } else if (!gBrowser) {
+        _networkSummary.stringValue = @"Network scan unavailable (DNS-SD did not start).";
+    } else if (abr_browser_error(gBrowser) == kDNSServiceErr_PolicyDenied_ABR) {
+        _networkSummary.stringValue = [NSString stringWithFormat:@"Local network access is off for %@.",
+                                                                 NSProcessInfo.processInfo.processName];
+        [rows addObject:@"Allow it in System Settings ▸ Privacy & Security ▸ Local Network."];
+    } else {
+        AbrPeer peers[16];
+        const uint32_t total = std::min<uint32_t>(16, abr_browser_peers(gBrowser, peers, 16));
+        uint32_t found = 0;
+        for (uint32_t i = 0; i < total; ++i) {
+            const AbrPeer &peer = peers[i];
+            if (peer.this_mac && std::string(peer.platform) == "macOS") continue;  // this Mac's own receiver
+            ++found;
+            if (rows.count < 2) {
+                NSString *what = peer.resolved ? [NSString stringWithFormat:@"%s for %s %s", peer.app, peer.platform, peer.version]
+                                               : @"resolving…";
+                [rows addObject:[NSString stringWithFormat:@"◆  %s · %@%@ · listed, not usable yet", peer.name, what,
+                                                           peer.this_mac ? @" (this Mac)" : @""]];
+            }
+        }
+        _networkSummary.stringValue = found == 0 ? @"Searching the local network…"
+            : [NSString stringWithFormat:@"%u receiver%@ found · discovery only", found, found == 1 ? @"" : @"s"];
+    }
+    for (int row = 0; row < 2; ++row) _network[row].stringValue = row < (int)rows.count ? rows[row] : @"";
+}
+
+- (void)refresh {
+    const abr::CoreStatus status = _core->status();
+    [self refreshConnection:status];
+    [self refreshIdentity:status];
+    [self refreshStream:status];
+    [self refreshNetwork];
 }
 @end
 
