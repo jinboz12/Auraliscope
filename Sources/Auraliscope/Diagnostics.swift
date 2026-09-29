@@ -9,7 +9,9 @@ import Metal
 enum Diagnostics {
     static let enabled = CommandLine.arguments.contains("--diagnostic")
     /// Synthetic programme instead of an audio device, for layout review and screenshots.
-    static let demo = CommandLine.arguments.contains("--demo") || snapshotRequested
+    /// Snapshots use it too, unless `--snapshot-live` asks for the selected source instead.
+    static let demo = CommandLine.arguments.contains("--demo")
+        || (snapshotRequested && !CommandLine.arguments.contains("--snapshot-live"))
     static let snapshotRequested = CommandLine.arguments.contains("--snapshot")
     static let showSettings = CommandLine.arguments.contains("--show-settings")
     /// `--settings-apply <language>`: with `--show-settings`, stages that language and Light appearance in Settings
@@ -278,6 +280,213 @@ enum Diagnostics {
     private static var themeFadeStarted = false
     private static var systemAppearanceSwitchStarted = false
     private static var deviceSourceSelectionStarted = false
+    private static var pauseResumeStarted = false
+
+    /// `--test-pause-resume`: pauses and checks the window holds its picture (two captures 3 s apart are identical,
+    /// and with `--demo` the panels still show the signal) while the canvases come to rest; resumes and checks the
+    /// same analysis carries on from that point (same stream, histories kept, no jump in the programme); then
+    /// pauses, resets and checks the reset lets go of the held picture and that resume then starts afresh. Without
+    /// `--demo` it runs on the selected source (silence is fine).
+    @MainActor
+    static func testPauseResumeIfRequested(model: MeterModel) {
+        guard CommandLine.arguments.contains("--test-pause-resume"), !pauseResumeStarted else { return }
+        pauseResumeStarted = true
+        let driver = CanvasDriver.shared
+        func check(_ condition: Bool, _ message: String) {
+            guard condition else { fputs("FAIL: \(message)\n", stderr); exit(1) }
+            print("PASS: \(message)")
+            fflush(stdout)
+        }
+        func later(_ delay: Double, _ body: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { body() } }
+        }
+        /// The meter window's pixels below the toolbar (whose glass controls re-render on their own), saved beside
+        /// the snapshot for a look.
+        func capture(_ name: String) -> Data? {
+            guard let window = MainWindow.window,
+                  let whole = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
+                                                      [.boundsIgnoreFraming, .bestResolution]) else { return nil }
+            let toolbar = Int((window.frame.height - window.contentLayoutRect.maxY) * window.backingScaleFactor)
+            guard let image = whole.cropping(to: CGRect(x: 0, y: toolbar, width: whole.width, height: whole.height - toolbar))
+            else { return nil }
+            // Drawn into a buffer of its own: a cropped image may still hand out its source's full data.
+            var pixels = Data(count: image.width * image.height * 4)
+            pixels.withUnsafeMutableBytes { raw in
+                CGContext(data: raw.baseAddress, width: image.width, height: image.height, bitsPerComponent: 8,
+                          bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?
+                    .draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-\(name).png")
+            if let output = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
+                CGImageDestinationAddImage(output, image, nil)
+                CGImageDestinationFinalize(output)
+            }
+            return pixels
+        }
+        later(2) {
+            check(model.running && driver.running, "canvases draw while capturing")
+            model.toggleCapture()
+            later(0.3) {
+                let held = model.canvasFrame().snapshot
+                check(model.frozen && held.sequence > 0 && (!demo || held.spectrum.contains { $0 > MeterScale.spectrumFloor + 6 }),
+                      "pausing holds the last snapshot")
+                let generation = model.captureGeneration
+                let history = model.readouts.values.shortHistory.count
+                let first = capture("paused-first")
+                // The canvases settle for 2 s after the last change, then leave the display link.
+                later(3.2) {
+                    check(!model.running && !driver.running, "paused canvases come to rest")
+                    let second = capture("paused-later")
+                    // Compositing can shift an antialiased edge by a level; anything that moves changes far more.
+                    let same = first.flatMap { a in second.map { b in
+                        a.count == b.count && zip(a, b).allSatisfy { abs(Int($0) - Int($1)) <= 2 }
+                    } } ?? false
+                    check(same, "the paused window keeps its picture unchanged")
+                    let paused = driver.ticks
+                    model.toggleCapture()
+                    later(1) {
+                        check(model.running && !model.frozen && driver.running && driver.ticks - paused >= 20,
+                              "resumed canvases draw live again")
+                        let now = model.canvasFrame().snapshot
+                        // One second on: the demo moves about 30 updates and the DSP about 60 snapshots. Starting
+                        // over would reset the history and the DSP's count; skipping the pause would jump the demo.
+                        check(model.captureGeneration == generation && model.readouts.values.shortHistory.count > history
+                              && now.sequence > held.sequence && (!demo || now.sequence - held.sequence < 60),
+                              "resume carries on from the paused point")
+                        model.toggleCapture()
+                        later(3.5) {
+                            check(!driver.running, "paused again, the canvases rest")
+                            let resting = driver.ticks
+                            model.resetMeasurements()
+                            later(0.5) {
+                                check(!model.frozen && model.canvasFrame().snapshot.sequence == 0 && driver.ticks > resting,
+                                      "a reset while paused lets go of the held picture and redraws")
+                                model.toggleCapture()
+                                later(1) {
+                                    check(model.running && model.readouts.values.shortHistory.count <= 12
+                                          && (demo || model.captureGeneration != generation),
+                                          "after a reset, resume starts afresh")
+                                    // Thirty quick toggles, 40 ms apart: capture and analysis stop and start
+                                    // under each other without a crash, and the meter ends live and moving.
+                                    @MainActor func toggle(_ left: Int) {
+                                        guard left > 0 else {
+                                            let before = model.canvasFrame().snapshot.sequence
+                                            later(1) {
+                                                check(model.running && !model.frozen && driver.running
+                                                      && model.canvasFrame().snapshot.sequence > before,
+                                                      "rapid pause and resume leave the meter live")
+                                                exit(0)
+                                            }
+                                            return
+                                        }
+                                        model.toggleCapture()
+                                        later(0.04) { toggle(left - 1) }
+                                    }
+                                    toggle(30)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static var sourceSwitchStarted = false
+    private static var spaceShortcutStarted = false
+
+    /// `--test-space-shortcut` (with `--demo`): Space is the capture item's shortcut while the meter window is key,
+    /// and not while Settings is, so Space there reaches the focused control.
+    @MainActor
+    static func testSpaceShortcutIfRequested(model: MeterModel) {
+        guard CommandLine.arguments.contains("--test-space-shortcut"), !spaceShortcutStarted else { return }
+        spaceShortcutStarted = true
+        func captureItem() -> NSMenuItem? {
+            for item in NSApp.mainMenu?.items ?? [] {
+                guard let menu = item.submenu else { continue }
+                // SwiftUI refreshes a command menu when it opens; ask for that refresh as a click would.
+                menu.delegate?.menuNeedsUpdate?(menu)
+                if let found = menu.items.first(where: { $0.title == model.captureActionTitle }) { return found }
+            }
+            return nil
+        }
+        func check(_ condition: Bool, _ message: String) {
+            guard condition else { fputs("FAIL: \(message)\n", stderr); exit(1) }
+            print("PASS: \(message)")
+            fflush(stdout)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            MainActor.assumeIsolated {
+                NSApp.activate(ignoringOtherApps: true)
+                MainWindow.window?.makeKeyAndOrderFront(nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    MainActor.assumeIsolated {
+                        check(MeterWindowFocus.shared.key && captureItem()?.keyEquivalent == " ",
+                              "Space pauses while the meter window is focused")
+                        model.showSettings = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                            MainActor.assumeIsolated {
+                                check(!MeterWindowFocus.shared.key && captureItem()?.keyEquivalent == "",
+                                      "Space is left to the focused control in Settings")
+                                exit(0)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    /// `--test-source-switch <input device id>`: on real hardware, switches from the launch source to that input,
+    /// pauses, switches back to the launch source while paused, and checks that resume then starts a fresh
+    /// analysis on it instead of carrying on the paused one. Restores the saved source.
+    @MainActor
+    static func testSourceSwitchIfRequested(model: MeterModel) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--test-source-switch"), !sourceSwitchStarted,
+              index + 1 < CommandLine.arguments.count, let inputID = UInt32(CommandLine.arguments[index + 1]) else { return }
+        sourceSwitchStarted = true
+        let defaults = UserDefaults.standard
+        let saved = (defaults.object(forKey: "inputDeviceUID"), defaults.object(forKey: "inputDeviceIsOutput"))
+        func restore() {
+            for (key, value) in [("inputDeviceUID", saved.0), ("inputDeviceIsOutput", saved.1)] {
+                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+            }
+        }
+        func check(_ condition: Bool, _ message: String) {
+            guard condition else { fputs("FAIL: \(message) (status: \(model.status.logDescription))\n", stderr); restore(); exit(1) }
+            print("PASS: \(message)")
+            fflush(stdout)
+        }
+        func later(_ delay: Double, _ body: @escaping @MainActor () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { body() } }
+        }
+        later(2) {
+            let launch = model.selectedID
+            guard let input = model.devices.first(where: { !$0.output && $0.device == inputID }) else {
+                fputs("No input device \(inputID)\n", stderr); exit(1)
+            }
+            check(model.running, "the launch source is metering")
+            model.select(input.id)
+            later(1) {
+                check(model.running && model.selectedID == input.id && model.canvasFrame().snapshot.sequence > 0,
+                      "switching to the input meters it")
+                model.toggleCapture()
+                let paused = model.captureGeneration
+                model.select(launch)
+                check(!model.running && model.frozen, "choosing another source while paused keeps the pause")
+                model.toggleCapture()
+                later(1) {
+                    check(model.running && model.selectedID == launch && model.captureGeneration != paused
+                          && model.readouts.values.shortHistory.count <= 12,
+                          "resume after a source change starts afresh on the new source")
+                    restore()
+                    exit(0)
+                }
+            }
+        }
+    }
 
     /// Exercises input and output removal and return with synthetic devices, without touching audio hardware.
     @MainActor

@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import Darwin
 import AudioRing
+import AudioToolbox
 
 final class CoreTests {
     func testLocalizerKeepsTermsAndUnitsTogether() {
@@ -69,6 +70,13 @@ final class CoreTests {
             }
         }
         done.wait()
+        // Instrumented producers may still be publishing when the timed read loop ends.
+        // Drain their final publication before checking the latest generation.
+        if meter_exchange_read(exchange, &result) != 0 {
+            checkGreaterOrEqual(result[0], latest)
+            checkTrue(result.allSatisfy { $0 == result[0] })
+            latest = result[0]
+        }
         checkEqual(latest, 100_000)
         checkEqual(meter_exchange_read(exchange, &result), 0)
     }
@@ -136,6 +144,11 @@ final class CoreTests {
         // The summary keeps its default until dragged, stays inside its limits, and leaves the panels their minimum.
         checkEqual(HeroLayout.height(0, tall: true, window: 1000), 192)
         checkEqual(HeroLayout.height(0, tall: false, window: 800), 182)
+        // A 720p screen: the summary starts at its minimum and the columns below keep their short minimums.
+        checkEqual(HeroLayout.height(0, tall: false, window: 652), HeroLayout.minHeight)
+        checkTrue(!HeroLayout.showsGauge(height: HeroLayout.minHeight))
+        checkTrue(HeroLayout.showsGauge(height: HeroLayout.defaultHeight(tall: false)))
+        checkTrue(628 - HeroLayout.minHeight - HeroLayout.reservedBelow >= 0)
         checkEqual(HeroLayout.height(900, tall: true, window: 1400), HeroLayout.maxHeight)
         checkEqual(HeroLayout.height(50, tall: true, window: 1000), HeroLayout.minHeight)
         checkTrue(HeroLayout.height(400, tall: false, window: 760) <= 760 - HeroLayout.reservedBelow)
@@ -188,16 +201,80 @@ final class CoreTests {
         checkTrue(frames.prefix(4).allSatisfy { $0.center == 0 && $0.rightTopRear == 0 })
     }
 
+    /// The output-tap IOProc: one interleaved stream goes straight to the ring through the role map; several
+    /// streams (or more channels than are kept) are interleaved first, a stream without data reading as silence.
+    func testTapIOProcRoutesStreams() throws {
+        let ring = try unwrap(channel_ring_create(64))
+        defer { channel_ring_destroy(ring) }
+        let storage = UnsafeMutablePointer<Float>.allocate(capacity: 64 * 4)
+        defer { storage.deallocate() }
+        var context = CaptureContext()
+        context.ring = ring
+        context.storage = storage
+        context.max_frames = 64
+        context.channels = 4
+        withUnsafeMutableBytes(of: &context.source_for_role) { raw in
+            let roles = raw.bindMemory(to: Int32.self)
+            for role in 0..<Role.count { roles[role] = -1 }
+            roles[Role.left] = 3
+            roles[Role.right] = 0
+            roles[Role.center] = 2
+        }
+        var time = AudioTimeStamp()
+        var output = AudioBufferList()
+        var frames = [ChannelFrame](repeating: ChannelFrame(), count: 8)
+        func run(_ buffers: [(channels: UInt32, samples: [Float]?)]) -> UInt32 {
+            let list = AudioBufferList.allocate(maximumBuffers: buffers.count)
+            defer { free(list.unsafeMutablePointer) }
+            var storage: [UnsafeMutablePointer<Float>] = []
+            defer { storage.forEach { $0.deallocate() } }
+            for (index, buffer) in buffers.enumerated() {
+                var data: UnsafeMutableRawPointer?
+                let count = buffer.samples?.count ?? 0
+                if let samples = buffer.samples {
+                    let pointer = UnsafeMutablePointer<Float>.allocate(capacity: count)
+                    pointer.initialize(from: samples, count: count)
+                    storage.append(pointer)
+                    data = UnsafeMutableRawPointer(pointer)
+                }
+                list[index] = AudioBuffer(mNumberChannels: buffer.channels, mDataByteSize: UInt32(count * 4), mData: data)
+            }
+            _ = withUnsafeMutablePointer(to: &context) { pointer in
+                capture_tap_io_proc(0, &time, list.unsafePointer, &time, &output, &time, UnsafeMutableRawPointer(pointer))
+            }
+            return channel_ring_read(ring, &frames, 8)
+        }
+        // One interleaved 4-channel stream, two frames.
+        checkEqual(run([(4, [1, 2, 3, 4, 11, 12, 13, 14])]), 2)
+        checkEqual(frames.prefix(2).map(\.left), [4, 14])
+        checkEqual(frames.prefix(2).map(\.right), [1, 11])
+        checkEqual(frames.prefix(2).map(\.center), [3, 13])
+        checkTrue(frames.prefix(2).allSatisfy { $0.lfe == 0 })
+        // Two 2-channel streams read as channels 0–1 and 2–3.
+        checkEqual(run([(2, [1, 2, 11, 12]), (2, [3, 4, 13, 14])]), 2)
+        checkEqual(frames.prefix(2).map(\.left), [4, 14])
+        checkEqual(frames.prefix(2).map(\.right), [1, 11])
+        checkEqual(frames.prefix(2).map(\.center), [3, 13])
+        // A stream without data is silence; the frame count comes from the one that has it.
+        checkEqual(run([(2, nil), (2, [3, 4, 13, 14])]), 2)
+        checkEqual(frames.prefix(2).map(\.right), [0, 0])
+        checkEqual(frames.prefix(2).map(\.left), [4, 14])
+        // A wider stream than is kept: only the first four channels count.
+        checkEqual(run([(6, [1, 2, 3, 4, 5, 6])]), 1)
+        checkEqual(frames[0].left, 4)
+        checkEqual(frames[0].right, 1)
+    }
+
     func testGatedIntegrationMatchesBlockScan() throws {
         // The former implementation: rescan every gated block.
         func reference(_ blocks: [Double]) -> Float {
             guard !blocks.isEmpty else { return -100 }
             let mean = blocks.reduce(0, +) / Double(blocks.count)
-            let threshold = pow(10, (Double(LoudnessAnalyzer.loudness(mean)) - 10 + 0.691) / 10)
+            let threshold = mean * 0.1 // −10 LU is one tenth of the mean energy.
             let above = blocks.filter { $0 > threshold }
             return above.isEmpty ? -100 : LoudnessAnalyzer.loudness(above.reduce(0, +) / Double(above.count))
         }
-        var generator = SystemRandomNumberGenerator()
+        var generator = RegressionGenerator()
         for trial in 0..<40 {
             var gated = GatedIntegration()
             var blocks: [Double] = []
@@ -335,6 +412,28 @@ final class CoreTests {
         analyzer.recordsSpatial = false
         analyzer.recordsSpatial = true
         checkTrue(!analyzer.spatialReady)
+
+        // Silent roles are left out of the transforms: 7.1.4 carrying stereo reads exactly like Stereo, and
+        // silence everywhere reads the floor.
+        let immersive = try unwrap(SpectrumAnalyzer(sampleRate: 48_000, recording: [Bool](repeating: true, count: 12) + [Bool](repeating: false, count: 4)))
+        immersive.recordsSpatial = true
+        let music = (0..<SpectrumAnalyzer.fftSize).map { i -> ChannelFrame in
+            var frame = ChannelFrame()
+            frame.left = Float(0.3 * sin(2 * .pi * 1_000 * Double(i) / 48_000))
+            frame.right = Float(0.2 * sin(2 * .pi * 3_000 * Double(i) / 48_000))
+            return frame
+        }
+        music.withUnsafeBufferPointer { immersive.consume($0) }
+        var pair = [Float](repeating: -120, count: MeterSnapshot.bandCount)
+        var room = pair
+        _ = immersive.refreshSpectrum(into: &pair)
+        _ = immersive.refreshSpectrum(into: &room, roles: immersive.spatialRoles)
+        for index in pair.indices { checkEqual(room[index], pair[index], accuracy: 0.0001) }
+        let quiet = [ChannelFrame](repeating: ChannelFrame(), count: SpectrumAnalyzer.fftSize)
+        quiet.withUnsafeBufferPointer { immersive.consume($0) }
+        _ = immersive.refreshSpectrum(into: &room, roles: immersive.spatialRoles)
+        checkTrue(room.allSatisfy { $0 <= -119.9 })
+        checkTrue(immersive.roleBandPower.allSatisfy { $0 == 0 })
     }
 
     func testLUFSReferenceAndLFEExclusion() throws {
@@ -359,6 +458,32 @@ final class CoreTests {
         checkTrue(lfe.peak[3] > 0.99)
         checkEqual(lfe.integrated, -100)
         checkEqual(lfe.momentary, -100)
+    }
+
+    func testKWeightingAcrossSampleRates() throws {
+        // The K-weighting is defined at 48 kHz; other rates carry the same analog response, within 0.006 dB up
+        // to 20 kHz. Single-precision filtering missed that by up to 0.24 dB at 20 Hz (384 kHz).
+        func integrated(_ frequency: Double, _ rate: Double) throws -> Float {
+            let analyzer = try unwrap(LoudnessAnalyzer(sampleRate: rate))
+            var frames = [ChannelFrame](repeating: ChannelFrame(), count: 4096)
+            var position = 0
+            let total = Int(rate * 3)
+            while position < total {
+                let count = min(frames.count, total - position)
+                for i in 0..<count {
+                    frames[i].left = Float(0.5 * sin(2 * Double.pi * frequency * Double(position + i) / rate + 0.3))
+                }
+                frames.withUnsafeBufferPointer { analyzer.consume(UnsafeBufferPointer(rebasing: $0[0..<count])) }
+                position += count
+            }
+            return analyzer.snapshot().integrated
+        }
+        for frequency in [20.0, 40, 100, 1_000, 10_000] {
+            let reference = try integrated(frequency, 48_000)
+            for rate in [44_100.0, 96_000, 192_000, 384_000] {
+                checkEqual(try integrated(frequency, rate), reference, accuracy: 0.01)
+            }
+        }
     }
 
     func testSurroundAndHeightWeights() throws {
@@ -397,6 +522,194 @@ final class CoreTests {
         checkEqual(levels.peak[Role.center], 0)
     }
 
+    func testTruePeakAtSilenceBoundaries() throws {
+        // A two-sample burst rings above the sample peak after the input has already gone silent.
+        // The result must not depend on where Core Audio splits its buffers, including one-frame buffers.
+        // The silence outlasts the fine window (63 samples), which completes the burst's segment.
+        let samples: [Float] = [1, 1] + Array(repeating: 0, count: 126)
+        let active = (0..<Role.count).map { $0 == Role.left }
+        for rate in [44_100.0, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            let factor = rate < 96_000 ? 4 : 2
+            // Reference: the fine interpolator evaluated at every fine step of every sample (a 16× or 8× meter).
+            let padded = Array(repeating: Float(0), count: TruePeakDetector.fineTaps - 1) + samples
+            var expected: Float = 1
+            for phase in TruePeakDetector.design(factor: factor * TruePeakDetector.refinement, taps: TruePeakDetector.fineTaps,
+                                                 beta: TruePeakDetector.fineBeta) {
+                for index in 0...(padded.count - phase.count) {
+                    var value = 0.0
+                    for tap in phase.indices { value += Double(padded[index + tap]) * Double(phase[tap]) }
+                    expected = max(expected, Float(abs(value)))
+                }
+            }
+            checkGreater(expected, 1.1)
+            // The parabola between fine steps can only add to that, by the same amount for every split.
+            var reference: Float?
+            for chunk in [128, 64, 1, 2, 3, 7] {
+                let analyzer = try unwrap(LoudnessAnalyzer(sampleRate: rate, activeRoles: active))
+                let frames = samples.map { value -> ChannelFrame in
+                    var frame = ChannelFrame(); frame.left = value; return frame
+                }
+                for offset in stride(from: 0, to: frames.count, by: chunk) {
+                    frames.withUnsafeBufferPointer { buffer in
+                        analyzer.consume(UnsafeBufferPointer(start: buffer.baseAddress! + offset,
+                                                             count: min(chunk, frames.count - offset)))
+                    }
+                }
+                let reading = analyzer.snapshot().truePeak[Role.left]
+                checkGreaterOrEqual(reading, expected - 0.000001)
+                checkTrue(reading <= expected * 1.002)
+                checkEqual(reading, reference ?? reading, accuracy: 0.000001)
+                reference = reference ?? reading
+            }
+        }
+    }
+
+    func testTruePeakNearNyquist() {
+        // Inter-sample peaks matter most for bright content: the interpolation must not droop and a crest between
+        // the 4× points must still be found. Full-scale tones from 15 kHz to 20 kHz, at sixteen phases each, read
+        // within 0.005 dB of the waveform's crest at every rate from 44.1 kHz. (A 12-tap 4× meter read 18 kHz at
+        // 48 kHz 0.38 dB low; 1.2.2dev build 59 read 0.054 dB low, and 1.7 dB low at 20 kHz at 44.1 kHz.)
+        for rate in [44_100.0, 48_000, 88_200, 96_000, 192_000] {
+            var worst: Float = 0, highest: Float = -1
+            for frequency in stride(from: 15_000.0, through: 20_000, by: 250) {
+                for step in 0..<16 {
+                    let phase = Double(step) * Double.pi / 16
+                    let signal = (0..<1_024).map { Float(sin(2 * Double.pi * frequency * Double($0) / rate + phase)) }
+                    let detector = TruePeakDetector(sampleRate: rate, capacity: 1_024)
+                    signal.withUnsafeBufferPointer { buffer in
+                        // The onset (a sine switched on at full scale rings) is excluded: its segment is refined
+                        // once a point of the next one has both neighbours, within the warm-up.
+                        let warmUp = TruePeakDetector.segmentLength + 2
+                        detector.process(role: 0, signal: buffer.baseAddress!, count: warmUp, samplePeak: 1)
+                        _ = detector.take(role: 0)
+                        let peak = buffer[warmUp...].map(abs).max() ?? 0
+                        detector.process(role: 0, signal: buffer.baseAddress! + warmUp, count: buffer.count - warmUp, samplePeak: peak)
+                    }
+                    let reading = MeterScale.decibels(detector.take(role: 0))
+                    worst = min(worst, reading)
+                    highest = max(highest, reading)
+                }
+            }
+            if worst < -0.005 || highest > 0.005 { print("True peak near Nyquist: rate=\(rate) worst=\(worst) highest=\(highest)") }
+            checkGreaterOrEqual(worst, -0.005)
+            checkTrue(highest <= 0.005)
+        }
+    }
+
+    func testTruePeakOfDenseMixtures() {
+        // Twenty tones between 20 Hz and 20 kHz with random levels and phases: the exact crest of their sum is known
+        // analytically, so a candidate chosen at the wrong crest shows up. The meter reads within 0.005 dB of it.
+        var generator = SystemRandomNumberGenerator()
+        for rate in [44_100.0, 48_000, 96_000, 192_000] {
+            for _ in 0..<6 {
+                let tones = (0..<20).map { _ in
+                    (frequency: Double.random(in: 20...20_000, using: &generator), level: Double.random(in: 0.02...0.1, using: &generator),
+                     phase: Double.random(in: 0...(2 * Double.pi), using: &generator))
+                }
+                func value(_ t: Double) -> Double {
+                    tones.reduce(0) { $0 + $1.level * sin(2 * Double.pi * $1.frequency * t / rate + $1.phase) }
+                }
+                let count = 4_096
+                let signal = (0..<count).map { Float(value(Double($0))) }
+                let detector = TruePeakDetector(sampleRate: rate, capacity: count)
+                // Output i reads the signal at sample i − 33 + p / factor: the segments refined after the warm-up
+                // cover samples 223 to 3999, and the sample peaks passed in reach the end of the signal.
+                let warmUp = 4 * TruePeakDetector.segmentLength + 2
+                signal.withUnsafeBufferPointer { buffer in
+                    detector.process(role: 0, signal: buffer.baseAddress!, count: warmUp, samplePeak: 1)
+                    _ = detector.take(role: 0)
+                    let peak = buffer[warmUp...].map(abs).max() ?? 0
+                    detector.process(role: 0, signal: buffer.baseAddress! + warmUp, count: count - warmUp, samplePeak: peak)
+                }
+                let reading = Double(detector.take(role: 0))
+                // The exact crest: every 1/16 sample, then 1/4096 around the five loudest local maxima.
+                func crest(from first: Double, to last: Double) -> Double {
+                    let grid = stride(from: first, to: last, by: 1.0 / 16).map { (t: $0, v: abs(value($0))) }
+                    let maxima = grid.indices.dropFirst().dropLast()
+                        .filter { grid[$0].v >= grid[$0 - 1].v && grid[$0].v >= grid[$0 + 1].v }
+                        .sorted { grid[$0].v > grid[$1].v }.prefix(5)
+                    var result = grid.map(\.v).max() ?? 0
+                    for index in maxima {
+                        for step in -256...256 { result = max(result, abs(value(grid[index].t + Double(step) / 4_096))) }
+                    }
+                    return result
+                }
+                let refined = crest(from: 223, to: 3_999), whole = crest(from: 223, to: Double(count))
+                let under = 20 * log10(reading / refined), over = 20 * log10(reading / whole)
+                if under < -0.005 || over > 0.005 { print("Dense mixture true peak: rate=\(rate) \(under) dB, \(over) dB") }
+                checkTrue(under >= -0.005 && over <= 0.005)
+                // Crests close together exercise the runner-up candidates: any split of the buffers reads the same.
+                var reference: Float?
+                for chunk in [4_096, 1, 7, 64, 333] {
+                    let split = TruePeakDetector(sampleRate: rate, capacity: 4_096)
+                    signal.withUnsafeBufferPointer { buffer in
+                        for offset in stride(from: 0, to: count, by: chunk) {
+                            let length = min(chunk, count - offset)
+                            let peak = buffer[offset..<(offset + length)].map(abs).max() ?? 0
+                            split.process(role: 0, signal: buffer.baseAddress! + offset, count: length, samplePeak: peak)
+                        }
+                    }
+                    let reading = split.take(role: 0)
+                    checkEqual(reading, reference ?? reading, accuracy: 0.000001)
+                    reference = reference ?? reading
+                }
+            }
+        }
+    }
+
+    func testScopeSampleProjection() {
+        checkTrue(SoundstageLayout.scopeSample(left: 0, right: 0) == nil)
+        checkTrue(SoundstageLayout.scopeSample(left: .infinity, right: 0) == nil)
+        checkTrue(SoundstageLayout.scopeSample(left: .nan, right: 0) == nil)
+        for l in -20...20 {
+            for r in -20...20 where l != 0 || r != 0 {
+                let left = Float(l) / 20, right = Float(r) / 20
+                let point = SoundstageLayout.scopeSample(left: left, right: right)!
+                var mid = (left + right) * 0.70710677, side = (right - left) * 0.70710677
+                if mid < 0 { mid = -mid; side = -side }
+                let angle = Double(atan2(side, mid))
+                let radius = SoundstageLayout.scopeFraction(decibels: 20 * log10((left * left + right * right).squareRoot()))
+                checkEqual(point.x, sin(angle) * radius, accuracy: 0.000001)
+                checkEqual(point.y, -cos(angle) * radius, accuracy: 0.000001)
+                checkTrue(point.y <= 0 && hypot(point.x, point.y) <= 1.000001)
+            }
+        }
+    }
+
+    func testLoudnessSilencePartitioning() throws {
+        let active = (0..<Role.count).map { $0 == Role.left }
+        for rate in [8_000.0, 44_100, 48_000, 96_000, 192_000] {
+            // Short bursts separated by silence exercise both K-weighting tails and restarting from silence.
+            let frames = (0..<Int(rate)).map { index -> ChannelFrame in
+                var frame = ChannelFrame()
+                if index % Int(rate / 10) < 32 { frame.left = 0.8 }
+                return frame
+            }
+            func measure(chunk: Int) throws -> MultichannelLevels {
+                let analyzer = try unwrap(LoudnessAnalyzer(sampleRate: rate, activeRoles: active))
+                for offset in stride(from: 0, to: frames.count, by: chunk) {
+                    frames.withUnsafeBufferPointer { buffer in
+                        analyzer.consume(UnsafeBufferPointer(start: buffer.baseAddress! + offset,
+                                                             count: min(chunk, frames.count - offset)))
+                    }
+                }
+                return analyzer.snapshot()
+            }
+            let reference = try measure(chunk: 4096)
+            for chunk in [1, 7, 127, 511] {
+                let result = try measure(chunk: chunk)
+                if abs(result.integrated - reference.integrated) > 0.005 {
+                    print("Loudness partition: rate=\(rate) chunk=\(chunk) integrated=\(result.integrated) reference=\(reference.integrated)")
+                }
+                // vDSP's vector and one-sample paths accumulate Float roundoff differently, especially in
+                // the high-pass section at high sample rates. This is well below the 0.1 LU readout step.
+                checkEqual(result.integrated, reference.integrated, accuracy: 0.005)
+                checkEqual(result.momentary, reference.momentary, accuracy: 0.005)
+                checkEqual(result.rms[Role.left], reference.rms[Role.left], accuracy: 0.000001)
+            }
+        }
+    }
+
     func testTruePeakAndLoudnessRange() throws {
         // A 12 kHz tone sampled 45° off its crests: every sample reads −3 dBFS, the waveform peaks at 0.
         let analyzer = try unwrap(LoudnessAnalyzer(sampleRate: 48_000))
@@ -421,7 +734,7 @@ final class CoreTests {
             checkEqual(phases[0].filter { abs($0) > 0.0001 }.count, 1)
         }
         checkEqual(TruePeakDetector(sampleRate: 96_000, capacity: 16).factor, 2)
-        checkEqual(TruePeakDetector(sampleRate: 192_000, capacity: 16).factor, 1)
+        checkEqual(TruePeakDetector(sampleRate: 192_000, capacity: 16).factor, 2)
 
         // EBU Tech 3342: 10 s at −20 LUFS and 10 s at −30 LUFS spread over a 10 LU range; a −80 LUFS
         // passage is below the absolute gate and a −45 LUFS one is under the relative gate.
@@ -432,10 +745,26 @@ final class CoreTests {
         for _ in 0..<100 { range.add(energy(-30)) }
         for _ in 0..<100 { range.add(energy(-80)) }
         for _ in 0..<5 { range.add(energy(-55)) }
-        checkEqual(range.value, 10, accuracy: 0.15)
+        checkEqual(range.value, 10, accuracy: 0.0001)
         var steady = LoudnessRange()
         for _ in 0..<50 { steady.add(energy(-23)) }
-        checkEqual(steady.value, 0, accuracy: 0.01)
+        checkEqual(steady.value, 0, accuracy: 0.0001)
+        // Exact against sorting everything, Tech 3342's way: gates, then sorted index round((n − 1) · p).
+        var generator = SystemRandomNumberGenerator()
+        for trial in 0..<20 {
+            var exact = LoudnessRange()
+            var values: [Double] = []
+            for _ in 0..<(50 + trial * 97) {
+                let lufs = Double.random(in: -80 ... -5, using: &generator)
+                values.append(energy(lufs))
+                exact.add(values.last!)
+            }
+            let absolute = values.filter { $0 > energy(-70) }
+            let gate = absolute.reduce(0, +) / Double(absolute.count) * 0.01
+            let gated = absolute.filter { $0 >= gate }.sorted()
+            func at(_ p: Double) -> Double { gated[Int((Double(gated.count - 1) * p).rounded())] }
+            checkEqual(exact.value, Float(10 * log10(at(0.95) / at(0.10))), accuracy: 0.0001)
+        }
     }
 
     func testCorrelationAndPackedTransform() throws {
@@ -589,6 +918,101 @@ final class CoreTests {
             values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
         }
         for index in 0..<StereoBands.groups.count { checkEqual(band(SnapshotSlots.bandCorrelation, index), MeterSnapshot.noCorrelation) }
+    }
+
+    func testOneSidedBandReadings() throws {
+        for side in [Role.left, Role.right] {
+            let pipeline = try unwrap(MeterPipeline(sampleRate: 48_000, activeRoles: (0..<Role.count).map { $0 < 2 },
+                                                   detector: FormatDetector(), streamID: 1))
+            var values = [Float](repeating: 0, count: SnapshotSlots.total)
+            for tick in 0..<120 {
+                let frames = (0..<800).map { index -> ChannelFrame in
+                    let tone = Float(0.5 * sin(2 * Double.pi * 997 * Double(tick * 800 + index) / 48_000))
+                    var frame = ChannelFrame()
+                    if side == Role.left { frame.left = tone } else { frame.right = tone }
+                    return frame
+                }
+                frames.withUnsafeBufferPointer { pipeline.consume($0) }
+                values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+            }
+            let band = 2 // 500 Hz–2 kHz
+            checkEqual(values[SnapshotSlots.bandCorrelation + band], MeterSnapshot.noCorrelation)
+            checkEqual(values[SnapshotSlots.bandBalance + band], side == Role.left ? -1 : 1, accuracy: 0.00001)
+            checkEqual(values[SnapshotSlots.bandWidth + band], 0.5, accuracy: 0.00001)
+            checkEqual(values[SnapshotSlots.bandLevel + band], -12.0412, accuracy: 0.1)
+        }
+    }
+
+    func testUnavailableBandsAreSilent() throws {
+        for rate in [8_000.0, 16_000] {
+            let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate, recording: [Bool](repeating: true, count: Role.count)))
+            analyzer.recordsSpatial = true
+            // Bin 1 has energy but lies below the lowest displayed band. It must never stand in for 8 kHz.
+            let frames = (0..<SpectrumAnalyzer.fftSize).map { i -> ChannelFrame in
+                var frame = ChannelFrame()
+                frame.left = Float(sin(2 * Double.pi * Double(i) / Double(SpectrumAnalyzer.fftSize)))
+                frame.center = frame.left
+                return frame
+            }
+            frames.withUnsafeBufferPointer { analyzer.consume($0) }
+            var bands = [Float](repeating: 0, count: MeterSnapshot.bandCount)
+            _ = analyzer.refreshSpectrum(into: &bands, roles: analyzer.spatialRoles)
+            for role in 0..<Role.count { checkEqual(analyzer.roleBandPower[role * StereoBands.count + 4], 0) }
+            let splitter = try unwrap(StereoBandSplitter(sampleRate: rate))
+            let nearNyquist = (0..<4096).flatMap { i -> [Float] in
+                let sample = Float(sin(2 * Double.pi * 0.45 * Double(i)))
+                return [sample, sample]
+            }
+            nearNyquist.withUnsafeBufferPointer { splitter.consume($0.baseAddress!, stride: 2, count: 4096) }
+            var points = [Float](repeating: 1, count: StereoBands.scopeFloats)
+            points.withUnsafeMutableBufferPointer { splitter.writePoints(into: $0.baseAddress!, silent: false) }
+            checkTrue(points.suffix(StereoBands.scopePoints * 2).allSatisfy { $0 == 0 })
+        }
+    }
+
+    func testInvalidAudioSamplesAreIsolated() throws {
+        let ring = try unwrap(channel_ring_create(8))
+        defer { channel_ring_destroy(ring) }
+        var routing = [Int32](repeating: -1, count: Role.count)
+        routing[Role.left] = 0; routing[Role.right] = 1
+        let samples: [Float] = [.nan, 0.25, .infinity, -0.5, -.infinity, 2, 0.75, -2]
+        checkEqual(channel_ring_write(ring, samples, 4, 2, routing), 4)
+        var frames = [ChannelFrame](repeating: ChannelFrame(), count: 4)
+        checkEqual(channel_ring_read(ring, &frames, 4), 4)
+        checkEqual(frames.map(\.left), [0, 0, 0, 0.75])
+        checkEqual(frames.map(\.right), [0.25, -0.5, 2, -2])
+    }
+
+    func testBandEnergyCalibrationAcrossRates() throws {
+        for rate in [8_000.0, 44_100, 48_000, 96_000, 192_000] {
+            let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+            let n = SpectrumAnalyzer.fftSize
+            var frames = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: n)
+            var expected = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
+            for band in 0..<StereoBands.count {
+                let lower = StereoBands.edges[band]
+                let upper = min(band + 1 < StereoBands.count ? StereoBands.edges[band + 1] : 20_000, rate / 2)
+                guard upper > lower else { continue }
+                let bin = ((lower * upper).squareRoot() * Double(n) / rate).rounded()
+                let left = 0.1 + 0.02 * Double(band), right = 0.07 + 0.01 * Double(band)
+                let phase = Double(band) * .pi / 4
+                for index in 0..<n {
+                    let angle = 2 * Double.pi * bin * Double(index) / Double(n)
+                    frames[index].left += Float(left * sin(angle))
+                    frames[index].right += Float(right * sin(angle + phase))
+                }
+                expected[band] = (left * left / 2, right * right / 2, left * right * cos(phase) / 2)
+            }
+            frames.withUnsafeBufferPointer { analyzer.consume($0) }
+            var spectrum = [Float](repeating: 0, count: MeterSnapshot.bandCount)
+            _ = analyzer.refreshSpectrum(into: &spectrum)
+            for band in 0..<StereoBands.count {
+                let measured = analyzer.bandSums[band], scale = analyzer.bandPowerScale
+                checkEqual(measured.left * scale, expected[band].left, accuracy: 0.000002)
+                checkEqual(measured.right * scale, expected[band].right, accuracy: 0.000002)
+                checkEqual(measured.cross * scale, expected[band].cross, accuracy: 0.000002)
+            }
+        }
     }
 
     func testSpeakerLayouts() throws {
@@ -1050,11 +1474,25 @@ final class CoreTests {
             }
         }
         // The right-hand column: the room's share is clamped so both panels keep their minimum.
-        for total in [500, 800, 1_200] as [CGFloat] {
+        // The minimums close in continuously from the full ones to the short ones as the column shortens.
+        checkTrue(ColumnLayout.minimums(total: 524) == (200, 310))
+        checkTrue(ColumnLayout.minimums(total: ColumnLayout.minColumn) == (ColumnLayout.shortRoom, ColumnLayout.shortLevels))
+        var shorter = ColumnLayout.minimums(total: 400)
+        for total in stride(from: CGFloat(401), through: 600, by: 1) {
+            let next = ColumnLayout.minimums(total: total)
+            checkTrue(next.room >= shorter.room && next.room - shorter.room <= 1.001
+                      && next.levels >= shorter.levels && next.levels - shorter.levels <= 1.001)
+            shorter = next
+        }
+        for total in [416, 450, 500, 800, 1_200] as [CGFloat] {
             for share in [0, 0.1, 0.42, 0.9, .nan] as [CGFloat] {
                 let room = ColumnLayout.roomHeight(share: share, total: total)
-                checkGreaterOrEqual(room, ColumnLayout.minRoom)
-                checkTrue(room <= max(ColumnLayout.minRoom, total - PanelLayout.divider - ColumnLayout.minLevels))
+                let least = ColumnLayout.minimums(total: total)
+                checkGreaterOrEqual(room, least.room)
+                checkTrue(room <= max(least.room, total - PanelLayout.divider - least.levels))
+                if total >= ColumnLayout.minColumn {
+                    checkTrue(total - PanelLayout.divider - room >= ColumnLayout.shortLevels - 0.001)
+                }
             }
         }
         checkEqual(ColumnLayout.roomHeight(share: 0, total: 1_000), ColumnLayout.roomHeight(share: ColumnLayout.defaultRoomShare, total: 1_000))
@@ -1305,6 +1743,13 @@ private func checkGreaterOrEqual<T: Comparable>(_ left: T, _ right: T, file: Sta
     checkTrue(left >= right, file: file, line: line)
 }
 private enum TestError: Error { case unexpectedNil }
+private struct RegressionGenerator: RandomNumberGenerator {
+    private var state: UInt64 = 0x416572616C697363
+    mutating func next() -> UInt64 {
+        state ^= state >> 12; state ^= state << 25; state ^= state >> 27
+        return state &* 2685821657736338717
+    }
+}
 private func unwrap<T>(_ value: T?) throws -> T {
     guard let value else { throw TestError.unexpectedNil }
     return value
@@ -1313,6 +1758,28 @@ private func unwrap<T>(_ value: T?) throws -> T {
 @main
 struct TestRunner {
     static func main() throws {
+        if CommandLine.arguments.contains("--benchmark-gate") {
+            var gate = GatedIntegration()
+            var checksum: Float = 0
+            let start = Date()
+            for index in 0..<36_000 {
+                gate.add(index.isMultiple(of: 2) ? 1 : 19)
+                checksum += gate.integrated()
+            }
+            print(String(format: "36,000 gated updates: %.4f s, checksum %.4f", Date().timeIntervalSince(start), checksum))
+            return
+        }
+        if CommandLine.arguments.contains("--benchmark-layout") {
+            var sum: CGFloat = 0
+            let start = Date()
+            for index in 0..<100_000 {
+                let layout = SoundstageLayout(size: CGSize(width: 400 + index % 2, height: 300),
+                                              presence: 1, layout: .s916, part: index % 2 == 0 ? .room : .levels)
+                sum += layout.stageScale + layout.columns[0].width
+            }
+            print(String(format: "100,000 soundstage layouts: %.4f s, checksum %.4f", Date().timeIntervalSince(start), Double(sum)))
+            return
+        }
         let suite = CoreTests()
         let checks: [(String, () throws -> Void)] = [
             ("ring wrap and overflow", suite.testRingWrapAndOverflow),
@@ -1323,10 +1790,20 @@ struct TestRunner {
             ("16-role manual channel assignment", suite.testChannelAssignmentAndOverflow),
             ("BS.1770-5 997 Hz reference and LFE exclusion", suite.testLUFSReferenceAndLFEExclusion),
             ("BS.1770-5 channel weights up to 9.1.6 and unrouted roles", suite.testSurroundAndHeightWeights),
-            ("4× true peak and EBU loudness range", suite.testTruePeakAndLoudnessRange),
+            ("K-weighting matches the 48 kHz response within 0.01 dB from 44.1 to 384 kHz", suite.testKWeightingAcrossSampleRates),
+            ("true peak and exact EBU Tech 3342 loudness range", suite.testTruePeakAndLoudnessRange),
+            ("true peak preserves the tail into silence across buffer sizes and sample rates", suite.testTruePeakAtSilenceBoundaries),
+            ("true peak reads 15–20 kHz inter-sample peaks within 0.005 dB from 44.1 to 192 kHz", suite.testTruePeakNearNyquist),
+            ("true peak of 20-tone mixtures within 0.005 dB of the analytic crest, for any buffer split", suite.testTruePeakOfDenseMixtures),
+            ("stereometer Cartesian projection matches its polar reference", suite.testScopeSampleProjection),
+            ("K-weighting silence tails are independent of audio buffer size", suite.testLoudnessSilencePartitioning),
             ("packed L/R FFT, phase correlation and its zones", suite.testCorrelationAndPackedTransform),
             ("energy-weighted correlation integrator with silence reset", suite.testCorrelationIntegrator),
             ("five stereo bands: correlation, width, balance and level from the L/R cross spectrum", suite.testStereoBands),
+            ("one-sided audio retains band level, width and balance", suite.testOneSidedBandReadings),
+            ("bands above Nyquist do not borrow low-frequency energy", suite.testUnavailableBandsAreSilent),
+            ("invalid audio samples are isolated without clipping valid overs", suite.testInvalidAudioSamplesAreIsolated),
+            ("band powers and cross spectrum match calibrated tones at five sample rates", suite.testBandEnergyCalibrationAcrossRates),
             ("speaker layouts 3.0 to 9.1.6", suite.testSpeakerLayouts),
             ("chunk boundaries and stereo energy", suite.testChunkBoundariesAndStereoEnergy),
             ("8192 FFT and 512-row fixed spectrogram history", suite.testFullRangeSpectrogramHistory),
@@ -1341,10 +1818,11 @@ struct TestRunner {
             ("bass notes at 44.1, 48 and 96 kHz, and silence clearing", suite.testBassNotesAcrossSampleRates),
             ("peak readout gate, hold and attack", suite.testPeakTrackerGateHoldAndAttack),
             ("channel ring wrap and unrouted roles", suite.testChannelRingWrapsAndClearsUnroutedRoles),
+            ("output tap IOProc: interleaved and split streams through the role map", suite.testTapIOProcRoutesStreams),
             ("resizable loudness summary and its stretching column", suite.testSummaryHeightAndStretch),
-            ("constant-cost gated integration matches the block scan", suite.testGatedIntegrationMatchesBlockScan),
+            ("binned gated integration matches the block scan", suite.testGatedIntegrationMatchesBlockScan),
             ("60 Hz pipeline: 1/30 s windows, 30 Hz columns, long buffers, held peaks", suite.testPipelineWindowsPacingAndHolds),
-            ("Spatial spectrum sums every routed channel, Stereo reads L/R", suite.testSpatialSpectrumSumsRoutedChannels),
+            ("Spatial spectrum sums every routed channel and skips silent ones, Stereo reads L/R", suite.testSpatialSpectrumSumsRoutedChannels),
             ("localized text keeps instrument terms and units on one line", suite.testLocalizerKeepsTermsAndUnitsTogether)
         ]
         for (name, run) in checks { try run(); print("PASS: \(name)") }

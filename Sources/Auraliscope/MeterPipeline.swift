@@ -91,6 +91,10 @@ final class MeterPipeline {
     private var sequence = 0
     private var spectrogramSerial = 0
     private var lastDetectorTime: Double?
+    /// Frames de-interleaved at a time (`consume`).
+    private static let planarCapacity = 4096
+    private var planar = [Float](repeating: 0, count: Role.count * MeterPipeline.planarCapacity)
+    private let planarRoles: [Int]
     /// Loudest sample peak of the newest tick, for the "signal confirmed" diagnostic.
     private(set) var newestPeak: Float = 0
 
@@ -105,15 +109,20 @@ final class MeterPipeline {
         self.detector = detector
         format = detector.format
         self.streamID = Float(streamID)
+        planarRoles = (0..<Role.count).filter { $0 == Role.left || $0 == Role.right || ($0 < activeRoles.count && activeRoles[$0]) }
     }
 
     func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard !frames.isEmpty else { return }
-        loudness.consume(frames)
-        waveform.consume(frames)
-        spectrum.consume(frames)
-        frames.baseAddress!.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) {
-            splitter.consume($0, stride: Role.count, count: frames.count, leftOffset: Role.left, rightOffset: Role.right)
+        // One de-interleave for every analysis: the routed roles, and L and R, which the spectrum and the band
+        // splitter always read (they hold silence when unrouted).
+        planar.withUnsafeMutableBufferPointer { storage in
+            PlanarBlock.deinterleave(frames, roles: planarRoles, into: storage.baseAddress!, capacity: Self.planarCapacity) { block in
+                loudness.consume(block)
+                waveform.consume(block)
+                spectrum.consume(block)
+                splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
+            }
         }
     }
 
@@ -174,14 +183,19 @@ final class MeterPipeline {
             let total = sums.left + sums.right
             let energy = sums.left * sums.right
             let meanSquare = total / 2 * spectrum.bandPowerScale * (1 - Self.correlationDecay)
-            guard total > 0, total.isFinite, energy > 0 else {
+            guard total > 0, total.isFinite else {
                 v[SnapshotSlots.bandCorrelation + band] = MeterSnapshot.noCorrelation
                 v[SnapshotSlots.bandWidth + band] = 0
                 v[SnapshotSlots.bandBalance + band] = 0
                 v[SnapshotSlots.bandLevel + band] = -120
                 continue
             }
-            v[SnapshotSlots.bandCorrelation + band] = Float(max(-1, min(1, sums.cross / energy.squareRoot())))
+            // A silent side has no correlation, but the sounding side still has a level and a pan position.
+            // Gate each side separately so FFT roundoff on a silent channel cannot invent a correlation.
+            let scale = spectrum.bandPowerScale * (1 - Self.correlationDecay)
+            let correlated = sums.left * scale >= Self.bandGate && sums.right * scale >= Self.bandGate
+            v[SnapshotSlots.bandCorrelation + band] = correlated && energy > 0
+                ? Float(max(-1, min(1, sums.cross / energy.squareRoot()))) : MeterSnapshot.noCorrelation
             v[SnapshotSlots.bandWidth + band] = Float(max(0, min(1, (total - 2 * sums.cross) / (2 * total))))
             v[SnapshotSlots.bandBalance + band] = Float(max(-1, min(1, (sums.right - sums.left) / total)))
             v[SnapshotSlots.bandLevel + band] = Float(max(-120, 10 * log10(max(meanSquare, 1e-12))))

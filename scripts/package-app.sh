@@ -50,10 +50,11 @@ codesign --verify --strict "$app"
 (cd "$stage" && ditto -c -k --norsrc --keepParent "$app_name" "$archive_name")
 checksummed=("$archive_name")
 # Anything shared beyond development (a release, or a candidate such as 1.1rc) also gets a disk image: the app,
-# an Applications link to drag it onto, and the first-launch steps for an unnotarized build.
+# an Applications link to drag it onto, and the first-launch steps for an unnotarized build. A development build
+# gets one too when AURALISCOPE_DMG=1, named like its archive.
 disk_image=""
-if [[ "$version_label" != *dev* ]]; then
-    disk_image="Auraliscope.dmg"
+if [[ "$version_label" != *dev* || "${AURALISCOPE_DMG:-}" == 1 ]]; then
+    if [[ "$version_label" == *dev* ]]; then disk_image="${archive_name%.zip}.dmg"; else disk_image="Auraliscope.dmg"; fi
     dmg_root="$stage/dmg"
     mkdir -p "$dmg_root"
     ditto --norsrc "$app" "$dmg_root/$app_name"

@@ -473,13 +473,31 @@ struct PanelLayout {
 /// Height of the loudness summary, dragged by the divider under it. Stored in points; 0 means the default for
 /// the window's arrangement. The analyzer rows below always keep their minimum heights.
 enum HeroLayout {
-    static let minHeight: CGFloat = 170
+    /// Low enough for a 720p screen; below `gaugeHeight` the gauge folds away and the tiles keep their size.
+    static let minHeight: CGFloat = 150
     static let maxHeight: CGFloat = 420
-    /// The analyzer rows and dividers at their minimum, plus the status bar and gaps (the heading now lives in
-    /// the toolbar).
-    static let reservedBelow: CGFloat = PanelLayout.minSpectrum + PanelLayout.minWaveform + PanelLayout.divider + 106
+    /// The taller of the two columns below at their minimum (the Soundstage column), plus the status bar and the
+    /// gaps around it. The analyzer column's minimum is shorter.
+    static let reservedBelow: CGFloat = max(ColumnLayout.minColumn,
+                                            PanelLayout.minSpectrum + PanelLayout.minWaveform + PanelLayout.divider) + 42
 
     static func defaultHeight(tall: Bool) -> CGFloat { tall ? 192 : 182 }
+
+    /// What the summary's content needs at scale 1, padding excluded: the title row, the gauge with its axis and
+    /// two rows of tiles, with the spacing between them. Measured with the Chinese titles, the tallest.
+    static let content: CGFloat = 164
+    /// The gauge, its axis and the spacing under it.
+    static let gaugeBlock: CGFloat = 37
+    /// The gauge shows when the summary holds it with at least 8 pt above and below; shorter (a 720p screen, or a
+    /// summary dragged short) it folds away rather than squeezing the tiles.
+    static func showsGauge(height: CGFloat) -> Bool { height >= content + 16 }
+
+    /// Top and bottom padding: the arrangement's padding where there is room, closing to 8 pt so the tiles never
+    /// run past the edge.
+    static func verticalPadding(height: CGFloat, compact: Bool) -> CGFloat {
+        let need = content - (showsGauge(height: height) ? 0 : gaugeBlock)
+        return max(8, min(compact ? 14 : 18, ((height - need) / 2).rounded(.down)))
+    }
 
     /// How much the loudness column's readings grow when the summary is dragged taller: 1 up to the tall default
     /// height, then in step with the extra height, up to 1.8 (1.5 in the compact arrangement). The column's width
@@ -526,8 +544,14 @@ enum HeroLayout {
         return Columns(loudness: loudness, history: max(0, available - loudness - vu), vu: vu)
     }
 
+    /// Below this window height (a 720p screen) the columns under the summary would drop under their full
+    /// minimums, so the summary starts at its minimum instead: without the gauge, a few points taller buy nothing.
+    static let shortWindow: CGFloat = defaultHeight(tall: false) + ColumnLayout.minRoom + PanelLayout.divider
+        + ColumnLayout.minLevels + 42
+
     static func height(_ requested: CGFloat, tall: Bool, window: CGFloat) -> CGFloat {
-        let valid = requested.isFinite && requested > 0 ? requested : defaultHeight(tall: tall)
+        let automatic = window < shortWindow ? minHeight : defaultHeight(tall: tall)
+        let valid = requested.isFinite && requested > 0 ? requested : automatic
         let upper = max(minHeight, min(maxHeight, window - reservedBelow))
         return PanelLayout.clamp(valid.rounded(), minHeight, upper)
     }
@@ -544,12 +568,29 @@ enum ColumnLayout {
     static let defaultRoomShare: CGFloat = 0.42
     static let minRoom: CGFloat = 200
     static let minLevels: CGFloat = 310
+    /// In a short column (a 720p screen) the minimums close in, Channel Levels first, down to these. Channel Levels
+    /// then shows its correlation section compact (`SoundstageLayout.compactCorrelation`), and a short room folds
+    /// its band legend away (`SoundstageLayout.showsScopeLegend`).
+    static let shortRoom: CGFloat = 150
+    static let shortLevels: CGFloat = 272
+    /// The column at its shortest: both panels at their short minimum and the divider.
+    static let minColumn: CGFloat = shortRoom + PanelLayout.divider + shortLevels
+
+    /// Minimum heights in a column `total` tall: the full ones where they fit, closing in continuously (Channel
+    /// Levels before the room, whose stereometer needs the height more) as the column shortens, so a resize never
+    /// makes a panel jump.
+    static func minimums(total: CGFloat) -> (room: CGFloat, levels: CGFloat) {
+        let panels = total - PanelLayout.divider
+        let room = min(minRoom, max(shortRoom, panels - shortLevels))
+        return (room, min(minLevels, max(shortLevels, panels - room)))
+    }
 
     /// Soundstage (room) panel height for a stored share of a column `total` points tall (both panels and the divider).
     static func roomHeight(share: CGFloat, total: CGFloat) -> CGFloat {
         let valid = share.isFinite && share > 0 ? share : defaultRoomShare
-        let upper = max(minRoom, total - PanelLayout.divider - minLevels)
-        return PanelLayout.clamp((valid * total).rounded(), minRoom, upper)
+        let least = minimums(total: total)
+        let upper = max(least.room, total - PanelLayout.divider - least.levels)
+        return PanelLayout.clamp((valid * total).rounded(), least.room, upper)
     }
 
     /// Soundstage width for a requested width inside `total` (both columns and the divider).
@@ -619,7 +660,15 @@ struct SoundstageLayout {
     static let axisColumn: CGFloat = 26
     static let groupGap: CGFloat = 6
     /// Correlation section: title row, the bar (one lane per band group), zone captions and the listener hint.
-    static func correlationHeight(lanes: CGFloat) -> CGFloat { 22 + trackHeight(lanes: lanes) + 60 }
+    /// Compact, in a short Channel Levels panel, it keeps the title row and the bar and puts the lit zone and the
+    /// mono fold-down on one row under the bar, in place of the captions and the hint.
+    static func correlationHeight(lanes: CGFloat, compact: Bool = false) -> CGFloat {
+        22 + trackHeight(lanes: lanes) + (compact ? 22 : 60)
+    }
+    /// The meter block's fixed rows in Stereo: held-peak readouts, clip lights and channel names.
+    static let meterRows: CGFloat = readoutHeight + capHeight + nameHeight
+    /// Bars shorter than this with the full correlation section switch it to the compact one.
+    static let compactBars: CGFloat = 90
     /// One lane per band group, the highest at the top like every frequency axis in the window; fewer lanes are
     /// a little taller (the full-band lane is the classic single bar).
     static func laneHeight(lanes: Int) -> CGFloat { lanes <= 1 ? 12 : (lanes <= 3 ? 11 : 9) }
@@ -686,11 +735,12 @@ struct SoundstageLayout {
     /// Lanes of the correlation bar: 1 (full band), 3 or 5 (`StereoBands.Resolution`), or a value between them
     /// while a band switch animates; the bar's height follows it.
     let lanes: CGFloat
+    /// The correlation section in its compact form (`correlationHeight(lanes:compact:)`), for a short panel.
+    let compactCorrelation: Bool
 
     init(size: CGSize, presence: CGFloat = 1, mono: CGFloat = 0, layout: SpeakerLayout = .standard, part: Part,
          lanes: CGFloat = CGFloat(StereoBands.count)) {
         self.lanes = max(1, lanes)
-        let correlationHeight = Self.correlationHeight(lanes: max(1, lanes))
         let p = max(0, min(1, presence))
         let m = max(0, min(1, mono))
         self.presence = p
@@ -699,6 +749,12 @@ struct SoundstageLayout {
         speakers = layout.speakers
         stageWell = CGRect(origin: .zero, size: CGSize(width: max(1, size.width), height: max(1, size.height)))
         let inner = stageWell.insetBy(dx: 12, dy: 10)
+        // Decided for the full section at its tallest (five lanes) and independent of the format mix, so the section
+        // keeps its form through band switches and mode changes, and fewer lanes always give the bars more height.
+        let fullSection = Self.correlationHeight(lanes: CGFloat(StereoBands.count)) + Self.roomGap
+        compactCorrelation = part == .levels && inner.height - fullSection - Self.meterRows < Self.compactBars
+        let correlationHeight = Self.correlationHeight(lanes: max(1, lanes), compact: compactCorrelation)
+        let correlationGap = compactCorrelation ? 10 : Self.roomGap
 
         // Room: the largest centred square. Levels: the meters fill the well above the correlation section, which
         // takes its height only as far as it is shown.
@@ -713,10 +769,10 @@ struct SoundstageLayout {
         case .levels:
             side = 0
             radar = CGRect(x: inner.midX, y: inner.minY, width: 0, height: 0)
-            meterHeight = max(1, inner.height - (correlationHeight + Self.roomGap) * correlationWeight)
+            meterHeight = max(1, inner.height - (correlationHeight + correlationGap) * correlationWeight)
             block = CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: meterHeight)
         }
-        correlationArea = CGRect(x: inner.minX, y: block.maxY + Self.roomGap, width: inner.width, height: correlationHeight)
+        correlationArea = CGRect(x: inner.minX, y: block.maxY + correlationGap, width: inner.width, height: correlationHeight)
         correlationTrack = CGRect(x: inner.minX + Self.laneLabelColumn, y: correlationArea.minY + 22,
                                   width: max(1, inner.width - Self.laneLabelColumn - Self.laneValueColumn),
                                   height: Self.trackHeight(lanes: max(1, lanes)))
@@ -762,25 +818,29 @@ struct SoundstageLayout {
         // the band legend. The fit depends on the format only, so the room holds still through mode changes and
         // only its speakers come and go.
         let well = CGRect(x: inner.minX, y: inner.minY, width: inner.width,
-                          height: max(1, inner.height - (Self.legendHeight + 6) * (1 - m)))
-        // The floor ring and the axis, with each speaker's marker (about 0.09 room units with its level ring).
-        var extent: [CGPoint] = (0..<36).map { step in
-            Self.flat(Self.roomPoint(azimuth: Double(step) * 10, height: false)).point
-        }
-        for speaker in layout.speakers {
-            guard let azimuth = speaker.azimuth else { continue }
-            let at = Self.flat(Self.roomPoint(azimuth: azimuth, height: speaker.group == .height))
-            let reach = 0.09 * at.scale
-            extent += [CGPoint(x: at.point.x - reach, y: at.point.y - reach), CGPoint(x: at.point.x + reach, y: at.point.y + reach)]
-        }
-        extent.append(Self.flat(Point3(x: 0, y: Self.axisTop, z: 0)).point)
-        let minX = extent.map(\.x).min()!, maxX = extent.map(\.x).max()!
-        let minY = extent.map(\.y).min()!, maxY = extent.map(\.y).max()!
+                          height: max(1, inner.height - (Self.showsLegend(wellHeight: stageWell.height) ? Self.legendHeight + 6 : 0) * (1 - m)))
+        let extent = Self.roomExtents[layout]!
         let fit = CGRect(x: well.minX + Self.labelSide, y: well.minY + Self.labelTop,
                          width: max(1, well.width - 2 * Self.labelSide), height: max(1, well.height - Self.labelTop - 6))
-        stageScale = max(8, min(fit.width / max(0.01, maxX - minX), fit.height / max(0.01, maxY - minY)))
-        stageOrigin = CGPoint(x: fit.midX - (minX + maxX) / 2 * stageScale, y: fit.midY - (minY + maxY) / 2 * stageScale)
+        stageScale = max(8, min(fit.width / max(0.01, extent.width), fit.height / max(0.01, extent.height)))
+        stageOrigin = CGPoint(x: fit.midX - extent.midX * stageScale, y: fit.midY - extent.midY * stageScale)
     }
+
+    /// The room's unscaled bounds depend only on its speaker layout, not the panel size or animation. Compute
+    /// the floor ring, markers and axis once for each format instead of repeating their trigonometry per frame.
+    private static let roomExtents: [SpeakerLayout: CGRect] = Dictionary(uniqueKeysWithValues: SpeakerLayout.allCases.map { layout in
+        var points = (0..<36).map { flat(roomPoint(azimuth: Double($0) * 10, height: false)).point }
+        for speaker in layout.speakers {
+            guard let azimuth = speaker.azimuth else { continue }
+            let at = flat(roomPoint(azimuth: azimuth, height: speaker.group == .height))
+            let reach = 0.09 * at.scale
+            points += [CGPoint(x: at.point.x - reach, y: at.point.y - reach), CGPoint(x: at.point.x + reach, y: at.point.y + reach)]
+        }
+        points.append(flat(Point3(x: 0, y: axisTop, z: 0)).point)
+        let minX = points.map(\.x).min()!, maxX = points.map(\.x).max()!
+        let minY = points.map(\.y).min()!, maxY = points.map(\.y).max()!
+        return (layout, CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY))
+    })
 
     /// L always weighs 1, R recedes in Mono, every other channel follows the Spatial presence.
     func weight(_ index: Int) -> CGFloat { speakers[index].weight(presence: presence, mono: mono) }
@@ -909,8 +969,15 @@ struct SoundstageLayout {
 
     /// A speaker marker's radius where `p` stands.
     func markerRadius(_ p: Point3) -> CGFloat {
-        let base = min(Self.markerLimits.upperBound, max(Self.markerLimits.lowerBound, stageScale * Self.markerSize))
+        let minimum = compactRoom ? max(2.5, min(5, stageScale / 12)) : Self.markerLimits.lowerBound
+        let base = min(Self.markerLimits.upperBound, max(minimum, stageScale * Self.markerSize))
         return base * Self.flat(p).scale
+    }
+
+    /// Dense layouts in a short well keep orientation labels; the full channel names remain in Channel Levels.
+    var compactRoom: Bool { speakers.count > 8 && stageScale < 64 }
+    func showsRoomLabel(_ speaker: Speaker) -> Bool {
+        !compactRoom || [Role.left, Role.right, Role.center, Role.lfe, Role.leftTopFront, Role.rightTopFront].contains(speaker.role)
     }
 
     // MARK: Stereometer (Stereo)
@@ -929,20 +996,36 @@ struct SoundstageLayout {
     /// right (+45°), and an out-of-phase one lies along the horizon. Distance from the centre is the sample's level.
     var scopeCenter: CGPoint {
         let inner = stageWell.insetBy(dx: 12, dy: 10)
-        let height = inner.height - Self.legendHeight - 6
+        let height = inner.height - (showsScopeLegend ? Self.legendHeight + 6 : 0)
         let slack = max(0, height - Self.scopeMargin - scopeRadius - 16)
         return CGPoint(x: inner.midX, y: inner.minY + Self.scopeMargin + scopeRadius + slack / 2)
     }
     var scopeRadius: CGFloat {
         let inner = stageWell.insetBy(dx: 12, dy: 10)
-        let height = inner.height - Self.legendHeight - 6
+        let height = inner.height - (showsScopeLegend ? Self.legendHeight + 6 : 0)
         return max(20, min(inner.width / 2 - Self.scopeMargin + 6, height - Self.scopeMargin - 16))
     }
+    /// The band legend shows while the stereometer keeps a 40 pt radius with it; in a shorter room (a 720p
+    /// screen) it folds away and the rims' colours name the bands.
+    var showsScopeLegend: Bool { Self.showsLegend(wellHeight: stageWell.height) }
+    static func showsLegend(wellHeight: CGFloat) -> Bool { wellHeight - 20 - legendHeight - 6 - scopeMargin - 16 >= 40 }
     /// A point of the plot: `angle` in degrees from M (−90 = −S, +90 = +S), `fraction` of the radius.
     func scopePoint(angle: Double, fraction: CGFloat) -> CGPoint {
         let radians = angle * .pi / 180
         let radius = scopeRadius * fraction
         return CGPoint(x: scopeCenter.x + CGFloat(sin(radians)) * radius, y: scopeCenter.y - CGFloat(cos(radians)) * radius)
+    }
+    /// A cloud sample's offset in a unit semicircle (up is negative y). Normalising the mid/side vector
+    /// directly avoids converting each dot to an angle and immediately back through sine and cosine.
+    static func scopeSample(left: Float, right: Float) -> CGPoint? {
+        let amplitude = (left * left + right * right).squareRoot()
+        guard amplitude > 0.001, amplitude.isFinite else { return nil }
+        let fraction = scopeFraction(decibels: 20 * log10(amplitude))
+        guard fraction > 0 else { return nil }
+        var mid = Double(left) + Double(right), side = Double(right) - Double(left)
+        if mid < 0 { mid = -mid; side = -side }
+        let scale = Double(fraction) / hypot(mid, side)
+        return CGPoint(x: side * scale, y: -mid * scale)
     }
     /// Radius of a band's rim arc.
     func rimRadius(_ band: Int) -> CGFloat { scopeRadius + Self.rimGap + Self.rimPitch * CGFloat(band) }

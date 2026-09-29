@@ -11,6 +11,10 @@ final class DSPWorker {
     private var timer: DispatchSourceTimer?
     private let exchange: OpaquePointer
     private var readValues = [Float](repeating: 0, count: Int(METER_SNAPSHOT_FLOATS))
+    /// The analysis clock leaves out time spent paused, so a resumed stream carries on as if uninterrupted.
+    private final class Clock { var paused: CFTimeInterval = 0 }
+    private let clock = Clock()
+    private var pausedAt: CFTimeInterval?
 
     init?(ring: OpaquePointer, sampleRate: Double, streamID: UInt32, activeRoles: [Bool], detector: FormatDetector) {
         precondition(SnapshotSlots.total == Int(METER_SNAPSHOT_FLOATS), "snapshot layout and C buffer disagree")
@@ -23,6 +27,7 @@ final class DSPWorker {
         var receivedPCM = false
         var receivedSignal = false
         var truePeakResets: UInt32 = 0
+        let clock = clock
         source.schedule(deadline: .now(), repeating: .nanoseconds(Int(1_000_000_000 / MeterPipeline.tickRate)), leeway: .milliseconds(1))
         source.setEventHandler {
             batch.withUnsafeMutableBufferPointer { buffer in
@@ -44,7 +49,7 @@ final class DSPWorker {
                 truePeakResets = resets
                 pipeline.resetTruePeaks()
             }
-            values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: CACurrentMediaTime()) }
+            values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: CACurrentMediaTime() - clock.paused) }
             if !receivedSignal && pipeline.newestPeak > 0.000001 {
                 Diagnostics.log("Nonzero audio signal confirmed")
                 receivedSignal = true
@@ -102,7 +107,29 @@ final class DSPWorker {
         return s
     }
 
+    /// Holds the analysis where it is while capture pauses: no ticks, so the last snapshot stays the latest.
+    func pause() {
+        guard pausedAt == nil, let timer else { return }
+        timer.suspend()
+        pausedAt = CACurrentMediaTime()
+        // Let a tick in progress finish before capture clears the ring.
+        queue.sync {}
+    }
+
+    /// Carries on from the paused state once capture delivers again.
+    func resume() {
+        guard let pausedAt, let timer else { return }
+        let gap = CACurrentMediaTime() - pausedAt
+        let clock = clock
+        // On the analysis queue, which owns the clock (and is idle while the timer is suspended).
+        queue.sync { clock.paused += gap }
+        self.pausedAt = nil
+        timer.resume()
+    }
+
     func stop() {
+        // A suspended source can be neither cancelled nor released.
+        if pausedAt != nil { resume() }
         timer?.cancel()
         timer = nil
         // Wait for the last consumer operation before capture can clear/free its ring.
@@ -159,7 +186,7 @@ final class HardwareObserver {
 }
 
 enum MeterStatus: Equatable {
-    case chooseInput, waitingForPermission, permissionDenied, paused, ringFailed, noDevice, noSelection, dspFailed, demo
+    case chooseInput, standby, waitingForPermission, permissionDenied, paused, ringFailed, noDevice, noSelection, dspFailed, demo
     case capturing(device: String, output: Bool, channels: Int, layout: String)
     case failure(StatusMessage)
 
@@ -167,6 +194,7 @@ enum MeterStatus: Equatable {
     var text: String {
         switch self {
         case .chooseInput: return L("Choose an input device")
+        case .standby: return L("Standby")
         case .waitingForPermission: return L("Waiting for microphone access…")
         case .permissionDenied: return L("Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone.")
         case .paused: return L("Paused")
@@ -230,11 +258,20 @@ final class MeterModel: ObservableObject {
     @Published private(set) var selectedID = SourceID.none
     private var snapshot = MeterSnapshot()
     @Published private(set) var status = MeterStatus.chooseInput {
-        didSet { if status != oldValue { DiagnosticLog.event(status.logDescription) } }
+        didSet {
+            if status != oldValue { DiagnosticLog.event(status.logDescription) }
+            if status != .paused && frozen { frozen = false }
+        }
     }
     @Published private(set) var running = false
+    /// Paused by the person: every panel holds the picture it showed at that moment (the last snapshot, with no
+    /// decay or scrolling) until capture resumes. Reset while paused, and any other stop, clear it as before.
+    @Published private(set) var frozen = false
     @Published private(set) var sampleRate: Double = 48_000
     @Published private(set) var droppedFrames: UInt64 = 0
+    /// An output source has delivered nothing but digital silence for a while: nothing is playing to it, or macOS
+    /// is withholding it (without System Audio Recording a tap reads as silence). The status bar says so.
+    @Published private(set) var silentOutput = false
     /// Bumped by "reset": clears peak holds, clip latches and (via restart) integrated loudness.
     @Published private(set) var epoch = 0
     /// Auto follows the routing and the DSP-side detector; Mono / Stereo / Spatial pin the display.
@@ -340,6 +377,8 @@ final class MeterModel: ObservableObject {
     private(set) var captureStarted: Date?
     private(set) var captureChannels = 0
     private var lastDropLog = Date.distantPast
+    /// Frames dropped before the last resume: capture restarts clear the ring's own count.
+    private var droppedBefore: UInt64 = 0
     let readouts = Readouts()
 
     private let capture = AudioCapture()
@@ -352,6 +391,15 @@ final class MeterModel: ObservableObject {
     private var hardwareObserver: HardwareObserver?
     private var permissionPending = false
     private var wantsCapture = true
+    /// What a pause left waiting in place: the source and routing the analysis was measuring, and when it paused.
+    /// Resume carries on with that analysis while they still hold (see `continuePaused`).
+    private struct PausedSession {
+        let source: SourceID
+        let sources: [Int32]
+        let roles: [Bool]
+        let time: CFTimeInterval
+    }
+    private var paused: PausedSession?
 
     deinit {
         worker?.stop()
@@ -386,6 +434,8 @@ final class MeterModel: ObservableObject {
             selectedID = (systemDefault ?? saved ?? devices.first)?.id ?? .none
         }
         loadAssignment()
+        // A source is chosen but nothing started yet (the welcome may be showing): not a missing input.
+        if selectedDevice != nil { status = .standby }
         readouts.attach(to: self)
         // The band switches write user defaults; follow them so every writer (the switches, a defaults change)
         // reaches the canvases.
@@ -433,7 +483,7 @@ final class MeterModel: ObservableObject {
 
     func canvasFrame() -> CanvasFrame {
         worker?.setSpatialSpectrum(format == .spatial)
-        return CanvasFrame(snapshot: pollSnapshot(), sampleRate: sampleRate, running: running,
+        return CanvasFrame(snapshot: pollSnapshot(), sampleRate: sampleRate, running: running, frozen: frozen,
                     activeRoles: routedRoles, epoch: epoch, spatial: format == .spatial, mono: format == .mono,
                     layout: speakerLayout, spectrumStrip: spectrumStrip, truePeakEpoch: truePeakEpoch,
                     stageBands: stageBands, levelsBands: levelsBands, stageStyle: stageStyle,
@@ -465,9 +515,21 @@ final class MeterModel: ObservableObject {
                        canDetectSpatial: FormatDetector.evidenceRoles.contains { sourceForRole[$0] >= 0 })
     }
 
+    /// Called at the readout rate with whether any sample above silence has arrived since the last reset.
+    func refreshSilence(heardSignal: Bool) {
+        var capturingOutput = false
+        if case let .capturing(_, output, _, _) = status { capturingOutput = output }
+        // With nothing routed nothing is measured, so silence would prove nothing.
+        let silent = capturingOutput && running && !heardSignal && routedRoles.contains(true)
+            && (captureStarted.map { Date().timeIntervalSince($0) > 5 } ?? false)
+        guard silent != silentOutput else { return }
+        silentOutput = silent
+        if silent { DiagnosticLog.event("Output has delivered only digital silence for 5 s") }
+    }
+
     /// Called at the readout rate rather than per frame.
     func refreshDroppedFrames() {
-        let dropped = capture.map { channel_ring_dropped($0.ring) } ?? 0
+        let dropped = droppedBefore + (capture.map { channel_ring_dropped($0.ring) } ?? 0)
         if dropped != droppedFrames {
             droppedFrames = dropped
             // At most one line every 10 s, however often the count grows.
@@ -481,6 +543,12 @@ final class MeterModel: ObservableObject {
 
     func resetMeasurements() {
         if running && demoStart == nil { restart(); return }
+        // Paused, a reset lets go of the held picture and of the paused analysis, so resume starts afresh.
+        if paused != nil {
+            stop()
+            snapshot = MeterSnapshot()
+            status = .standby
+        }
         clearMeasurements()
         if running { captureStarted = Date() }
     }
@@ -510,7 +578,7 @@ final class MeterModel: ObservableObject {
     var streamParts: [(value: String, unit: String)] {
         let rate = sampleRate.truncatingRemainder(dividingBy: 1000) == 0
             ? "\(Int(sampleRate / 1000))" : String(format: "%.1f", sampleRate / 1000)
-        guard running else { return [(rate, "kHz")] }
+        guard running || frozen else { return [(rate, "kHz")] }
         return [(rate, "kHz"), ("\(captureChannels)", "ch"),
                 (format == .spatial ? speakerLayout.name : (format == .mono ? "1.0" : "2.0"), "")]
     }
@@ -635,10 +703,20 @@ final class MeterModel: ObservableObject {
     func resume() {
         wantsCapture = true
         if Diagnostics.demo {
-            startDemo()
+            if !continueDemo() { startDemo() }
             return
         }
         requestPermissionAndStart()
+    }
+
+    /// The demo carries on from the moment it paused.
+    private func continueDemo() -> Bool {
+        guard let session = paused, let demoStart else { return false }
+        let gap = CACurrentMediaTime() - session.time
+        self.demoStart = demoStart + gap
+        carryOn(after: gap)
+        status = .demo
+        return true
     }
 
     private func startDemo() {
@@ -655,15 +733,74 @@ final class MeterModel: ObservableObject {
     }
 
     func toggleCapture() {
-        if running {
-            wantsCapture = false
-            stop()
-            snapshot = MeterSnapshot()
-            status = .paused
-        } else { resume() }
+        if running { pause() } else { resume() }
+    }
+
+    /// Pause holds everything where it is: capture stops, the analysis waits in place, and every panel keeps what it
+    /// showed (see `frozen`). Resume carries on from that point rather than starting over.
+    private func pause() {
+        wantsCapture = false
+        worker?.pause()
+        silentOutput = false
+        // The newest snapshot (the demo's included) is the one the panels hold.
+        _ = pollSnapshot()
+        // Capture stops before its final counter is read and the ring is cleared. The 10 Hz readout can
+        // lag behind the last callback, so carrying its displayed count would lose recent drops.
+        droppedBefore += capture?.stop() ?? 0
+        droppedFrames = droppedBefore
+        paused = PausedSession(source: selectedID, sources: capturedSources, roles: routedRoles, time: CACurrentMediaTime())
+        running = false
+        status = .paused
+        frozen = true
+    }
+
+    /// Resumes the paused analysis when capture can pick up exactly where it stopped: the same source and routing,
+    /// at the same sample rate. Integrated loudness, held peaks, the histories and the scrolling displays then
+    /// continue; anything else starts afresh (`restart`).
+    private func continuePaused() -> Bool {
+        guard let session = paused, let worker, let capture, let device = selectedDevice, device.id == session.source,
+              capturedSources == session.sources, routedRoles == session.roles else { return false }
+        do { try capture.start(device: device, sourceForRole: capturedSources) } catch { return false }
+        guard capture.sampleRate == sampleRate else {
+            capture.stop()
+            return false
+        }
+        worker.resume()
+        captureChannels = Int(capture.channels)
+        carryOn(after: CACurrentMediaTime() - session.time)
+        status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels),
+                            layout: speakerLayout.name)
+        Diagnostics.log("Capture resumed: \(status.text)")
+        return true
+    }
+
+    /// Live again after a pause of `gap` seconds, which the elapsed time leaves out.
+    private func carryOn(after gap: CFTimeInterval) {
+        paused = nil
+        captureStarted = captureStarted?.addingTimeInterval(gap)
+        running = true
+        DiagnosticLog.event("Resumed")
+    }
+
+    /// The capture state in a word, for the Settings sidebar: live, paused (holding the picture), or standby (not
+    /// started, or stopped). The summary chip words the same three states in capitals of its own.
+    var captureStateTitle: String { running ? L("Live") : (frozen ? L("Paused") : L("Standby")) }
+
+    /// What the capture button does now: pause, resume a paused analysis, or start one.
+    var captureActionTitle: String {
+        running ? L("Pause Capture") : (paused != nil ? L("Resume Capture") : L("Start Capture"))
+    }
+
+    /// Capture for the selected source: the paused analysis when it can carry on, otherwise a fresh one.
+    private func startCapture() {
+        if !continuePaused() { restart() }
     }
 
     func stop() {
+        frozen = false
+        silentOutput = false
+        droppedBefore = 0
+        paused = nil
         demoStart = nil
         hardwareObserver?.watch(nil)
         worker?.stop()
@@ -682,11 +819,11 @@ final class MeterModel: ObservableObject {
         }
         // Core Audio taps ask for System Audio Recording when the output aggregate begins capture.
         // Microphone authorization is only needed for a physical or virtual input source.
-        if selectedDevice.output { restart(); return }
+        if selectedDevice.output { startCapture(); return }
         guard !permissionPending else { return }
         Diagnostics.log("Microphone authorization: \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: restart()
+        case .authorized: startCapture()
         case .notDetermined:
             permissionPending = true
             status = .waitingForPermission
@@ -694,7 +831,8 @@ final class MeterModel: ObservableObject {
                 Task { @MainActor in
                     guard let self else { return }
                     self.permissionPending = false
-                    if granted && self.wantsCapture { self.restart() }
+                    AudioPermission.shared.refresh()
+                    if granted && self.wantsCapture { self.startCapture() }
                     else { self.status = .permissionDenied }
                 }
             }

@@ -89,8 +89,11 @@ final class Readouts: ObservableObject {
         guard let model else { return }
         model.refreshDroppedFrames()
         guard model.running else {
-            if latest.peak.visible { latest.peak.reset() }
-            if !latest.notes.notes.isEmpty { latest.notes.reset() }
+            // Paused, the readings hold as they were; stopped, the peak badge and the lit keys go out.
+            if !model.frozen {
+                if latest.peak.visible { latest.peak.reset() }
+                if !latest.notes.notes.isEmpty { latest.notes.reset() }
+            }
             publish()
             return
         }
@@ -147,6 +150,7 @@ final class Readouts: ObservableObject {
             next.shortHistory.removeFirst(next.shortHistory.count - Self.historyLength)
             next.momentaryHistory.removeFirst(next.momentaryHistory.count - Self.historyLength)
         }
+        model.refreshSilence(heardSignal: next.maxPeak > 0)
         latest = next
         publish()
     }
