@@ -16,3 +16,57 @@ OSStatus capture_input_proc(void *_Nonnull context, AudioUnitRenderActionFlags *
     if (status == noErr) channel_ring_write(capture->ring, capture->storage, frames, capture->channels, capture->source_for_role);
     return status;
 }
+
+OSStatus capture_tap_io_proc(AudioObjectID device, const AudioTimeStamp *_Nonnull now,
+                             const AudioBufferList *_Nonnull input, const AudioTimeStamp *_Nonnull input_time,
+                             AudioBufferList *_Nonnull output, const AudioTimeStamp *_Nonnull output_time,
+                             void *_Nullable context) {
+    (void)device;
+    (void)now;
+    (void)input_time;
+    (void)output;
+    (void)output_time;
+    CaptureContext *capture = context;
+    if (!capture || capture->channels == 0 || input->mNumberBuffers == 0) return noErr;
+    const AudioBuffer *first = &input->mBuffers[0];
+    // A tap is one interleaved Float32 stream: it goes to the ring as it is.
+    if (input->mNumberBuffers == 1 && first->mData && first->mNumberChannels == capture->channels) {
+        uint32_t frames = first->mDataByteSize / (capture->channels * (uint32_t)sizeof(float));
+        channel_ring_write(capture->ring, first->mData, frames, capture->channels, capture->source_for_role);
+        return noErr;
+    }
+    // Otherwise (several streams, or more channels than are kept) interleave into storage; a stream without data
+    // reads as silence.
+    if (!capture->storage) return noErr;
+    uint32_t frames = 0;
+    for (uint32_t index = 0; index < input->mNumberBuffers; index++) {
+        const AudioBuffer *buffer = &input->mBuffers[index];
+        if (buffer->mData && buffer->mNumberChannels > 0) {
+            frames = buffer->mDataByteSize / (buffer->mNumberChannels * (uint32_t)sizeof(float));
+            break;
+        }
+    }
+    if (frames > capture->max_frames) frames = capture->max_frames;
+    if (frames == 0) return noErr;
+    uint32_t base = 0;
+    for (uint32_t index = 0; index < input->mNumberBuffers && base < capture->channels; index++) {
+        const AudioBuffer *buffer = &input->mBuffers[index];
+        uint32_t width = buffer->mNumberChannels;
+        uint32_t kept = width < capture->channels - base ? width : capture->channels - base;
+        const float *samples = buffer->mData;
+        uint32_t available = width > 0 && samples ? buffer->mDataByteSize / (width * (uint32_t)sizeof(float)) : 0;
+        for (uint32_t frame = 0; frame < frames; frame++) {
+            float *destination = capture->storage + (size_t)frame * capture->channels + base;
+            for (uint32_t channel = 0; channel < kept; channel++) {
+                destination[channel] = frame < available ? samples[(size_t)frame * width + channel] : 0;
+            }
+        }
+        base += width;
+    }
+    for (uint32_t frame = 0; frame < frames && base < capture->channels; frame++) {
+        float *destination = capture->storage + (size_t)frame * capture->channels + base;
+        for (uint32_t channel = 0; channel < capture->channels - base; channel++) destination[channel] = 0;
+    }
+    channel_ring_write(capture->ring, capture->storage, frames, capture->channels, capture->source_for_role);
+    return noErr;
+}

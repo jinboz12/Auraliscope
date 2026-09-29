@@ -69,6 +69,7 @@ struct AboutView: View {
                     AboutGroup(title: L("Acknowledgements")) {
                         VStack(alignment: .leading, spacing: 10) {
                             paragraph(L("Spectrogram inspired by AudioSpectrogram. MIT license included."))
+                            paragraph(L("Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them."))
                             DisclosureGroup(L("Third-party notices")) {
                                 ScrollView {
                                     Text(verbatim: notices)

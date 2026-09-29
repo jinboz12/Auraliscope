@@ -19,10 +19,10 @@ struct VUMeterPanel: View {
         let reference = Float(model.loudnessTarget)
         VUDial()
             .overlay {
-                VUNeedle(model: model, running: running, roles: model.routedRoles, reference: reference)
+                VUNeedle(model: model, running: running, frozen: model.frozen, roles: model.routedRoles, reference: reference)
             }
             .overlay(alignment: .bottomTrailing) {
-                let level = running ? readouts.values.programmeLevel : -120
+                let level = running || model.frozen ? readouts.values.programmeLevel : -120
                 let vu = VUScale.vu(fromDecibels: level, reference: reference)
                 StableNumber(text: level > -100 ? MeterScale.tenths(vu, floor: -99) + " VU" : "— VU", template: "−88.8 VU",
                              font: .system(size: 10, weight: .semibold),
@@ -112,6 +112,7 @@ private struct VUDial: View {
 private struct VUNeedle: NSViewRepresentable {
     let model: MeterModel
     let running: Bool
+    let frozen: Bool
     let roles: [Bool]
     let reference: Float
 
@@ -120,19 +121,21 @@ private struct VUNeedle: NSViewRepresentable {
     func updateNSView(_ view: VUNeedleView, context: Context) {
         view.roles = roles
         view.reference = reference
-        view.running = running
+        view.update(running: running, frozen: frozen)
     }
 
     static func dismantleNSView(_ view: VUNeedleView, coordinator: ()) { view.shutDown() }
 }
 
 /// Owns the IEC 60268-17 ballistics. A display link (a 60 Hz timer before macOS 14) steps them while capture
-/// runs and the window is visible; otherwise the needle rests and nothing ticks.
+/// runs and the window is visible; otherwise the needle rests and nothing ticks. Paused, it stays where it was.
 final class VUNeedleView: NSView {
     private weak var model: MeterModel?
     var roles = [Bool](repeating: false, count: Role.count)
     var reference: Float = VUScale.defaultReference
-    var running = false { didSet { if running != oldValue { runningChanged() } } }
+    private var running = false
+    /// Paused with the picture held (`MeterModel.frozen`).
+    private var frozen = false
 
     private let ballistics = VUBallistics()
     private let needleShadow = CAShapeLayer()
@@ -216,10 +219,18 @@ final class VUNeedleView: NSView {
         occlusionObserver = nil
     }
 
-    private func runningChanged() {
+    /// Both at once, so pausing never passes through a stopped state that would drop the needle.
+    func update(running: Bool, frozen: Bool) {
+        guard running != self.running || frozen != self.frozen else { return }
+        self.running = running
+        self.frozen = frozen
         if !running {
-            ballistics.rest()
-            show(0)
+            if frozen {
+                ballistics.hold()
+            } else {
+                ballistics.rest()
+                show(0)
+            }
         }
         restyle()
         updateTicker()
@@ -228,7 +239,7 @@ final class VUNeedleView: NSView {
     private func restyle() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shaft.strokeColor = Theme.inkRGB.cgColor(running ? 1 : 0.5)
+        shaft.strokeColor = Theme.inkRGB.cgColor(running || frozen ? 1 : 0.5)
         CATransaction.commit()
     }
 

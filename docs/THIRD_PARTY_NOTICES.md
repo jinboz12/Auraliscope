@@ -30,3 +30,11 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Trademarks
+
+Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners.
+Auraliscope names them only to identify the loudness targets those services publish (its loudness target
+menu); it is not affiliated with, sponsored by or endorsed by any of them. EBU R128, ATSC A/85 and
+ITU-R BS.1770 are published standards of their respective organizations. Apple, Mac and macOS are
+trademarks of Apple Inc.

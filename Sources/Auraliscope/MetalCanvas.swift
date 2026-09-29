@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import ImageIO
 import MetalKit
 import SwiftUI
@@ -10,6 +11,13 @@ struct CanvasFrame {
     var snapshot = MeterSnapshot()
     var sampleRate: Double = 48_000
     var running = false
+    /// Paused with the picture held: scenes draw the last snapshot as if live, but take in nothing new and let no
+    /// signal decay, fade or scroll. Layout transitions (format, bands) still animate.
+    var frozen = false
+    /// The signal is on display: capturing, or paused and held.
+    var shown: Bool { running || frozen }
+    /// Seconds for signal decays this frame: none while frozen.
+    func signal(_ dt: Float) -> Float { frozen ? 0 : dt }
     var activeRoles = [Bool](repeating: true, count: Role.count)
     var epoch = 0
     /// Effective channel format; extended channels recede when `spatial` is false, and R too when `mono` is true.
@@ -118,6 +126,7 @@ struct MeterCanvas: NSViewRepresentable {
             let gpu = try MeterGPU.shared.get()
             view.device = gpu.device
             context.coordinator.renderer = try CanvasRenderer(kind: kind, gpu: gpu, shared: true)
+            CanvasDriver.shared.follow(model)
         } catch {
             let message = StatusMessage { L("Metal failed to start: %@", error.localizedDescription) }
             Task { @MainActor in model.reportRendererError(message) }
@@ -250,9 +259,27 @@ final class CanvasDriver: NSObject {
     static let shared = CanvasDriver()
     private let canvases = NSHashTable<CanvasView>.weakObjects()
     private var ticker: AnyObject?
+    private var modelChanges: AnyCancellable?
+    /// Display refreshes drawn so far (diagnostics check that paused canvases rest and resumed ones draw).
+    private(set) var ticks = 0
+    var running: Bool { ticker != nil }
 
     func add(_ view: CanvasView) { canvases.add(view) }
     func remove(_ view: CanvasView) { canvases.remove(view) }
+
+    /// Every change the model publishes wakes the canvases. Resuming capture, a reset or an over cleared while
+    /// paused must reach canvases that went to rest, and the panels around them re-render only when their own
+    /// inputs change, which none of these do.
+    func follow(_ model: MeterModel) {
+        guard modelChanges == nil else { return }
+        modelChanges = model.objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.wakeAll() }
+        }
+    }
+
+    private func wakeAll() {
+        for view in canvases.allObjects { view.wake() }
+    }
 
     /// Starts the display link if a canvas wants frames.
     func wake() {
@@ -283,6 +310,7 @@ final class CanvasDriver: NSObject {
         let views = canvases.allObjects.filter(\.wantsFrames)
         guard let model = views.first?.coordinator?.model else { return stop() }
         let frame = model.canvasFrame()
+        ticks += 1
         // One command buffer per refresh for every canvas: one submission to the GPU instead of one per panel.
         let command = (try? MeterGPU.shared.get())?.queue.makeCommandBuffer()
         for view in views {
@@ -800,6 +828,16 @@ protocol CanvasScene: AnyObject {
 /// starting blank. Only the pipelines, compiled with the new colours, change.
 enum SceneStore {
     private static var scenes: [CanvasKind: CanvasScene] = [:]
+    private static var dampings: [CanvasKind: DampedDisplayState] = [:]
+
+    /// The display smoothing carries over with its scene, so a rebuilt canvas (a palette or appearance change, even
+    /// while paused) continues from the levels on screen instead of jumping to the raw ones.
+    static func damping(_ kind: CanvasKind) -> DampedDisplayState {
+        if let damping = dampings[kind] { return damping }
+        let damping = DampedDisplayState()
+        dampings[kind] = damping
+        return damping
+    }
 
     static func scene(_ kind: CanvasKind, device: MTLDevice) throws -> CanvasScene {
         if let scene = scenes[kind] { return scene }
@@ -830,7 +868,7 @@ final class CanvasRenderer {
     // A scene's texture upload must wait until the previous GPU read of it completes.
     private let inFlight = DispatchSemaphore(value: 1)
     private var builder: ShapeBuilder
-    private let damping = DampedDisplayState()
+    private let damping: DampedDisplayState
     private var lastDrawTime: CFTimeInterval = 0
     private var previous: MeterSnapshot?
     private var previousSize = CGSize.zero
@@ -861,6 +899,7 @@ final class CanvasRenderer {
         }
         builder = ShapeBuilder(reserving: vertexCapacity)
         scene = shared ? try SceneStore.scene(kind, device: gpu.device) : try SceneStore.make(kind, device: gpu.device)
+        damping = shared ? SceneStore.damping(kind) : DampedDisplayState()
         // inFlight permits one GPU submission at a time, so one shared vertex buffer is enough.
         guard let buffer = gpu.device.makeBuffer(length: vertexCapacity * MemoryLayout<ShapeVertex>.stride,
                                                  options: .storageModeShared) else { throw MetalError.allocation }
@@ -913,7 +952,7 @@ final class CanvasRenderer {
 
     fileprivate func render(frame: CanvasFrame, size: CGSize, dt: Float, encoder: MTLRenderCommandEncoder, buffer: MTLBuffer) {
         scene.prepare(frame: frame)
-        let display = scene.usesDampedLevels ? damping.step(target: frame.snapshot, deltaTime: dt) : frame.snapshot
+        let display = scene.usesDampedLevels ? damping.step(target: frame.snapshot, deltaTime: frame.signal(dt)) : frame.snapshot
         builder.reset()
         scene.build(&builder, frame: frame, display: display, size: size, dt: dt)
         let underlayCount = min(builder.underlay.count, vertexCapacity)
@@ -1040,6 +1079,7 @@ final class SpectrumScene: CanvasScene {
     private var holds = [Float](repeating: -120, count: MeterSnapshot.bandCount)
     private var holdTimers = [Float](repeating: 0, count: MeterSnapshot.bandCount)
     private var curve: [CGPoint] = []
+    private var epoch = -1
 
     // Shapes only: no underlay quad is ever added, so the texture is never bound.
     var underlayKind: UnderlayKind { .waterfall }
@@ -1048,7 +1088,13 @@ final class SpectrumScene: CanvasScene {
 
     init() { curve.reserveCapacity(MeterSnapshot.bandCount * 4 + 2) }
 
-    func prepare(frame: CanvasFrame) {}
+    /// A reset clears the peak holds, as it does the channel meters'.
+    func prepare(frame: CanvasFrame) {
+        guard frame.epoch != epoch else { return }
+        epoch = frame.epoch
+        holds = Array(repeating: -120, count: MeterSnapshot.bandCount)
+        holdTimers = Array(repeating: 0, count: MeterSnapshot.bandCount)
+    }
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
         let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
@@ -1110,6 +1156,8 @@ final class SpectrumScene: CanvasScene {
             b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(octave == 4 ? 0.10 : 0.045))
         }
         for (p, q) in zip(curve, curve.dropFirst()) { b.line(p, q, width: 1.5, lime.simd()) }
+        // Held while frozen, unless peak holds are switched off meanwhile.
+        let dt = frame.options.peakHolds ? frame.signal(dt) : dt
         for index in 0..<count {
             let value = frame.running && frame.options.peakHolds ? frame.snapshot.spectrum[index] : -120
             if value >= holds[index] {
@@ -1368,6 +1416,8 @@ final class SoundstageScene: CanvasScene {
     /// the snapshot the newest came from.
     private var clouds: [(points: [Float], time: CFTimeInterval)] = []
     private var cloudSequence: Float = -1
+    /// The time the clouds age against: the last live frame's.
+    private var cloudClock: CFTimeInterval = 0
     /// A dot's opacity halves about every 35 ms, so a sample glows briefly and trails off like phosphor.
     private static let cloudDecay: CFTimeInterval = 0.05
     private static let cloudLife: CFTimeInterval = 0.11
@@ -1436,6 +1486,8 @@ final class SoundstageScene: CanvasScene {
         let layout = SoundstageLayout(size: size, presence: CGFloat(presence), mono: CGFloat(mono), layout: frame.layout, part: part,
                                       lanes: part == .levels ? bands.lanes : CGFloat(StereoBands.count))
 
+        // The springs above move the layout even while frozen; holds, trails and envelopes below do not.
+        let signalDt = frame.signal(dt)
         for role in 0..<Role.count {
             peakDb[role] = MeterScale.decibels(display.channelPeaks[role])
             rmsDb[role] = MeterScale.decibels(display.channelRMS[role])
@@ -1443,9 +1495,9 @@ final class SoundstageScene: CanvasScene {
                 holds[role] = peakDb[role]
                 holdTimers[role] = 1.5
             } else if holdTimers[role] > 0 {
-                holdTimers[role] -= dt
+                holdTimers[role] -= signalDt
             } else {
-                holds[role] = max(-120, holds[role] - 20 * dt)
+                holds[role] = max(-120, holds[role] - 20 * signalDt)
             }
         }
         switch part {
@@ -1457,16 +1509,16 @@ final class SoundstageScene: CanvasScene {
                 drawRoom(&b, layout: layout, frame: frame)
                 b.fade(from: start, by: (1 - stereo) * (1 - stereo))
             }
-            updateCloud(frame.snapshot, running: frame.running)
+            updateCloud(frame)
             if stereo > 0.001 {
                 let start = b.shapes.count
-                drawStereometer(&b, layout: layout, display: display, running: frame.running, style: frame.stageStyle, dt: dt,
+                drawStereometer(&b, layout: layout, display: display, running: frame.shown, style: frame.stageStyle, dt: signalDt,
                                 layers: bands.layers)
                 b.fade(from: start, by: stereo * stereo)
             }
         case .levels:
             drawMeters(&b, layout: layout, frame: frame)
-            drawCorrelation(&b, layout: layout, display: display, running: frame.running, dt: dt, layers: bands.layers)
+            drawCorrelation(&b, layout: layout, display: display, running: frame.shown, dt: signalDt, layers: bands.layers)
         }
     }
 
@@ -1705,7 +1757,7 @@ final class SoundstageScene: CanvasScene {
             image = image + layout.position(speaker) * energy
             total += energy
         }
-        let hasImage = total > 1e-6 && frame.running
+        let hasImage = total > 1e-6 && frame.shown
         if hasImage { image = image * (1 / total) }
         let imageY = layout.point(image).y
 
@@ -1770,7 +1822,7 @@ final class SoundstageScene: CanvasScene {
         let at = layout.position(speaker)
         let point = layout.point(at)
         let n = layout.markerRadius(at) * CGFloat(0.6 + 0.4 * v)
-        let ring = n + 3.5
+        let ring = n + (layout.compactRoom ? 2 : 3.5)
         guard active else {
             b.disk(point, radius: n, Theme.displayRGB.simd(0.9 * v))
             b.ring(point, radius: n, width: 1, ink.simd(0.22 * v))
@@ -1792,13 +1844,17 @@ final class SoundstageScene: CanvasScene {
     /// 1 in Stereo, folding to 0 toward Multi Channel and toward Mono, like the correlation section.
     private var stereoImageWeight: Float { (1 - presence) * (1 - mono) }
 
-    /// Keeps the clouds of the last `cloudLife` seconds; each fades with its age, frame by frame.
-    private func updateCloud(_ snapshot: MeterSnapshot, running: Bool) {
-        guard running else {
+    /// Keeps the clouds of the last `cloudLife` seconds; each fades with its age, frame by frame. Frozen, the
+    /// clouds and their clock stand still, so the trail holds as it was.
+    private func updateCloud(_ frame: CanvasFrame) {
+        guard frame.shown else {
             clouds.removeAll()
             return
         }
+        guard frame.running else { return }
         let now = CACurrentMediaTime()
+        cloudClock = now
+        let snapshot = frame.snapshot
         if snapshot.sequence != cloudSequence {
             cloudSequence = snapshot.sequence
             clouds.insert((snapshot.bandPoints, now), at: 0)
@@ -1854,7 +1910,7 @@ final class SoundstageScene: CanvasScene {
             let hue = Theme.bandRGB(resolution, group)
             let band = resolution.offset + group
             arc(from: -90, to: 90, fraction: fraction, width: 1, hue.simd(dark ? 0.16 : 0.18))
-            guard running, display.bandCorrelation[band] != MeterSnapshot.noCorrelation else { continue }
+            guard running, display.bandLevel[band] > -80 else { continue }
             let r = Double(max(-1, min(1, display.bandCorrelation[band])))
             let balance = Double(max(-1, min(1, display.bandBalance[band])))
             let spread = min(90, r >= 0 ? 45 * (1 - r) : 45 + 45 * -r) * (1 - pow(abs(balance), 3))
@@ -1891,10 +1947,12 @@ final class SoundstageScene: CanvasScene {
         // as separate dots over its trail instead of a mat. Bands are interleaved point by point, so no band
         // always covers another. During a band switch the dots re-colour by cross-fading the two groupings.
         let points = StereoBands.scopePoints
-        let now = CACurrentMediaTime()
+        let now = cloudClock
         let backing = Theme.displayRGB
+        let center = layout.scopeCenter, radius = layout.scopeRadius
         for (resolution, weight) in layers {
         let cloudStart = b.shapes.count
+        let groups = resolution.groups
         let hues = (0..<resolution.count).map { Theme.bandRGB(resolution, $0) }
         for (generation, cloud) in clouds.enumerated().reversed() where cloud.points.count == StereoBands.scopeFloats {
             let newest = generation == 0
@@ -1902,22 +1960,15 @@ final class SoundstageScene: CanvasScene {
             let opacity = newest ? 1 : Float(0.5 * exp(-Double(age)))
             guard opacity > 0.04 else { continue }
             for point in 0..<points {
-                for (group, members) in resolution.groups.enumerated() {
+                for (group, members) in groups.enumerated() {
                     // A group's samples are the sum of its bands' (the crossovers sum back to the programme).
                     var left: Float = 0, right: Float = 0
                     for band in members {
                         left += cloud.points[(band * points + point) * 2]
                         right += cloud.points[(band * points + point) * 2 + 1]
                     }
-                    var mid = (left + right) * 0.70710677, side = (right - left) * 0.70710677
-                    let amplitude = (left * left + right * right).squareRoot()
-                    guard amplitude > 0.001, amplitude.isFinite else { continue }
-                    // Polar form folds the lower half onto the upper: a sample and its negative are one direction.
-                    if mid < 0 { mid = -mid; side = -side }
-                    let angle = Double(atan2(side, mid)) * 180 / .pi
-                    let fraction = SoundstageLayout.scopeFraction(decibels: 20 * log10(amplitude))
-                    guard fraction > 0 else { continue }
-                    let position = layout.scopePoint(angle: angle, fraction: fraction)
+                    guard let offset = SoundstageLayout.scopeSample(left: left, right: right) else { continue }
+                    let position = CGPoint(x: center.x + offset.x * radius, y: center.y + offset.y * radius)
                     if newest {
                         b.disk(position, radius: 2.5, backing.simd(dark ? 0.6 : 0.5))
                         b.disk(position, radius: 1.6, hues[group].simd(0.95))
@@ -2045,7 +2096,7 @@ final class SoundstageScene: CanvasScene {
                                resolution: StereoBands.Resolution) {
         typealias P3 = SoundstageLayout.Point3
         let p = presence
-        guard p > 0.002, frame.running else { return }
+        guard p > 0.002, frame.shown else { return }
         let power = frame.snapshot.roleBandPower
         guard power.count == StereoBands.roleFloats else { return }
         for (group, members) in resolution.groups.enumerated() {
