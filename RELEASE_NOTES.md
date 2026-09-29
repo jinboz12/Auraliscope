@@ -1,3 +1,40 @@
+# Auraliscope 1.2.2
+
+The 1.2.2 release (build 62), following 1.1 (build 51). It collects the 1.2 line: the release candidates 1.2 rc 1 (build 55), 1.2.1rc (build 57), 1.2.1rc2 (build 58) and 1.2.2rc (build 61), none of which was released on its own. Their sections below give the details; everything in them is part of this release. The source is unchanged from 1.2.2rc apart from the version.
+
+## Changes since 1.1
+
+- **Pause and resume.** Pause (Space, with the meter window in front) freezes every panel and reading as it was. Resume carries on the same measurement (Integrated loudness, loudness range, held peaks and histories) and leaves the paused time out. A change of source, routing or sample rate while paused, or Reset, starts a fresh measurement.
+- **True peak.** Rewritten as locate-then-measure: a 4× stage (2× from 96 kHz) finds the crests, and a 64-tap interpolator with a parabolic fit measures them. 1.1's 12-tap 4× meter read an 18 kHz inter-sample peak 0.38 dB low (48 kHz) and more closer to 20 kHz, did not oversample 192 kHz streams, and dropped the tail of a burst that ended in digital silence. Tones from 15 to 20 kHz now read within 0.0002 dB of their crest at 44.1 to 192 kHz, and random 20-tone mixtures within 0.00034 dB, identically for every buffer split.
+- **Loudness.** K-weighting runs in double precision; in single precision the low-frequency weighting drifted at high sample rates (20 Hz: −0.16 dB at 192 kHz, +0.24 dB at 384 kHz), and every rate from 44.1 to 384 kHz now matches the 48 kHz response within 0.01 dB for tones from 20 Hz to 10 kHz. The filter rests only after its state decays. Loudness range follows EBU Tech 3342 exactly (1.1 used 0.1 LU bins and a nearest-rank percentile), and the integrated gate is applied in the energy domain.
+- **Band readings.** Band level, balance and width stay visible when only one side carries sound; bands entirely above Nyquist stay silent at low sample rates.
+- **Robust input.** NaN and infinite samples from a driver become silence at the capture ring; finite overs above full scale stay measurable.
+- **Output capture.** Metering an output no longer goes through the microphone path, so macOS asks only for System Audio Recording. An output that delivers only digital silence for 5 s shows **No sound from this output**, with how to allow System Audio Recording.
+- **Small screens.** The meter window goes down to 1000 × 628 pt of content (about 680 pt with the toolbar) and fits a 1280 × 720 display; the summary, Channel Levels and the soundstage make room in turn.
+- **Performance.** Five paired runs of the DSP benchmark (100 simulated seconds of 16-role 48 kHz audio), median CPU seconds: Stereo 1.150 → 0.610 (−47%), Spatial 2.166 → 1.224 (−43%) against 1.1. In Spatial, digitally silent roles skip the FFT. With a 6-channel 48 kHz input and a full-size window at 60 Hz, the whole app used about 21% of one core in both 1.1 and 1.2.2 on the test Mac; at that channel count drawing, not analysis, sets the cost.
+- **Fixes and polish.** Space acts only while the meter window is in front; the welcome returns on the first launch of each new build; Settings and About no longer reopen at launch; the status says Standby before metering starts; 9.1.6 waveform lanes keep their names in the smallest window; the Stereo waveform legend sits flush right.
+- **Rights.** About, the README and the third-party notices state that the service names in the loudness target menu are their owners' trademarks. The app uses documented Apple APIs only; `docs/IP_REVIEW.md` records the provenance and licence review (not a patent search).
+
+## Requirements
+
+Apple silicon, macOS 13 or later. Output capture requires macOS 14.2 or later and System Audio Recording permission; input capture requires Microphone permission.
+
+## Validation
+
+42 core checks and 308 localization keys in each of three languages pass, also under Address Sanitizer and Thread Sanitizer. On the packaged candidate: capture self-test and pause/resume on a virtual input, pause/resume on an output process tap, source switching while paused, device removal and return (synthetic and a real aggregate device), sample-rate changes at 44.1, 96 and 192 kHz, settings regression and persistence, live language switching, full screen, the smallest window, a 15-minute sustained run with flat memory, and a leak check. Details are in `docs/1.2.2_TEST_REPORT.md` and in `TEST_REPORT.md` beside the build.
+
+## Known limitations
+
+- **Output capture content not verified here.** Tap creation, delivery, routing and pause/resume on an output were verified, but the test context had no System Audio Recording permission (TCC reported it undetermined), so macOS delivered silence. Hearing real programme through an output needs a manual check with the permission granted.
+- **Not tested:** the System Audio Recording prompt and indicator on a clean Mac, macOS versions other than 27.2 (the minimum supported is 13), first launch on another Mac, sleep and wake while capturing, and physical multichannel interfaces.
+- Loudness at rates other than 48 kHz and long-programme Integrated loudness have not been cross-checked against an external compliance meter.
+- Integrated loudness and loudness range keep every 100 ms value for exactness, so their memory grows by under 1 MB per hour of continuous metering until Reset or a new source.
+- A sample-rate change restarts capture twice in quick succession; metering continues at the new rate.
+
+## Distribution notice
+
+`Auraliscope.dmg` (with "Read Me First") and `Auraliscope.zip`, both containing `Auraliscope.app` (bundle ID `com.jinboz.SoundMeterJBZ`, so it replaces 1.1 and keeps its settings). Ad hoc signed and not notarized: approve the first launch in System Settings ▸ Privacy & Security (Open Anyway). macOS treats each build as a new app, so it asks for audio permissions again.
+
 # Auraliscope 1.2.2rc
 
 Release candidate, build 61, on 1.2.1rc2 (build 58): more precise measurement and about 40% less DSP CPU. It carries the work of the 1.2.2dev builds 59 and 60, plus two true-peak fixes from the release-candidate review.

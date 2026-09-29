@@ -8,7 +8,7 @@ Auraliscope brings loudness, levels, spectrum, spectrogram, waveform, soundstage
 
 It is made for music production, mixing, audio post-production, and for simply looking at what your Mac is playing.
 
-[Download](https://github.com/jinboz12/Auraliscope/releases) · [Release notes](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [Report an issue](https://github.com/jinboz12/Auraliscope/issues)
+[Download](https://github.com/jinboz12/Auraliscope/releases) · [Release notes](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [Report an issue](https://github.com/jinboz12/Auraliscope/issues)
 
 ## Features
 
@@ -74,7 +74,7 @@ The deployment target is not a guarantee that every version has been verified. O
 3. Open Auraliscope from Applications.
 4. Grant audio capture permission when asked, and choose the source to analyse.
 
-The current release is **1.1 (build 51)**. It is ad hoc signed and not notarized by Apple. The download is `Auraliscope.dmg`, containing `Auraliscope.app`.
+The current release is **1.2.2 (build 62)**. It is ad hoc signed and not notarized by Apple. The download is `Auraliscope.dmg`, containing `Auraliscope.app`.
 
 If macOS blocks the first launch, make sure the download came from this project's Releases page, then open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
@@ -141,7 +141,7 @@ Auraliscope 将响度、电平、频谱、频谱图、波形、声场和立体�
 
 适用于音乐制作、混音、音频后期，以及日常播放与监听中的音频观察。
 
-[下载应用](https://github.com/jinboz12/Auraliscope/releases) · [更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [反馈问题](https://github.com/jinboz12/Auraliscope/issues)
+[下载应用](https://github.com/jinboz12/Auraliscope/releases) · [更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [反馈问题](https://github.com/jinboz12/Auraliscope/issues)
 
 ## 主要功能
 
@@ -207,7 +207,7 @@ Mono 模式默认隐藏，可在设置中启用。
 3. 从“应用程序”文件夹启动应用。
 4. 根据提示授予音频捕获权限，并选择要分析的音频源。
 
-当前版本为 **1.1（build 51）**，使用 ad hoc 签名，尚未经过 Apple 公证。下载文件为 `Auraliscope.dmg`，其中的应用为 `Auraliscope.app`。
+当前版本为 **1.2.2（build 62）**，使用 ad hoc 签名，尚未经过 Apple 公证。下载文件为 `Auraliscope.dmg`，其中的应用为 `Auraliscope.app`。
 
 如果 macOS 阻止首次启动，请先确认安装包来自本项目官方 Releases 页面，然后前往 **系统设置 → 隐私与安全性**，选择 **“仍要打开”**。
 
@@ -274,7 +274,7 @@ Auraliscope는 라우드니스, 레벨, 스펙트럼, 스펙트로그램, 파형
 
 음악 제작, 믹싱, 오디오 후반 작업은 물론, Mac에서 재생되는 소리를 살펴보는 일상적인 용도에도 적합합니다.
 
-[다운로드](https://github.com/jinboz12/Auraliscope/releases) · [릴리스 노트](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [문제 신고](https://github.com/jinboz12/Auraliscope/issues)
+[다운로드](https://github.com/jinboz12/Auraliscope/releases) · [릴리스 노트](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [문제 신고](https://github.com/jinboz12/Auraliscope/issues)
 
 ## 주요 기능
 
@@ -340,7 +340,7 @@ Core Audio 입력 장치를 읽습니다. macOS 14.2 이상에서는 Core Audio 
 3. 응용 프로그램 폴더에서 Auraliscope를 엽니다.
 4. 요청이 뜨면 오디오 캡처 권한을 허용하고, 분석할 소스를 고릅니다.
 
-현재 버전은 **1.1(build 51)**입니다. ad hoc 서명되었으며 Apple의 공증을 받지 않았습니다. 다운로드 파일은 `Auraliscope.dmg`이며, 그 안의 앱은 `Auraliscope.app`입니다.
+현재 버전은 **1.2.2(build 62)**입니다. ad hoc 서명되었으며 Apple의 공증을 받지 않았습니다. 다운로드 파일은 `Auraliscope.dmg`이며, 그 안의 앱은 `Auraliscope.app`입니다.
 
 macOS가 첫 실행을 막으면, 이 프로젝트의 Releases 페이지에서 받은 파일인지 확인한 뒤 **시스템 설정 → 개인정보 보호 및 보안**에서 **그래도 열기**를 선택하세요.
 
