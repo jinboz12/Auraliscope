@@ -3,7 +3,9 @@ import AVFoundation
 import Combine
 import SwiftUI
 
-/// Authorization for direct input capture. Output taps request System Audio Recording separately on start.
+/// Authorization for direct input capture. Output taps request System Audio Recording separately on start; macOS
+/// offers no public way to read that permission, so only this one is shown. Checked at launch, whenever the app
+/// becomes active and after each request, so the indicator never shows a stale state.
 @MainActor
 final class AudioPermission: ObservableObject {
     static let shared = AudioPermission()
@@ -14,7 +16,15 @@ final class AudioPermission: ObservableObject {
         }
     }
     var granted: Bool { status == .authorized }
-    func refresh() { status = AVCaptureDevice.authorizationStatus(for: .audio) }
+    func refresh() {
+        let microphone = AVCaptureDevice.authorizationStatus(for: .audio)
+        if microphone != status { status = microphone }
+    }
+    /// Checks it at launch and records it in the diagnostic log.
+    func checkAtLaunch() {
+        refresh()
+        DiagnosticLog.event("Privacy: microphone \(Self.logName(status))")
+    }
     func request() {
         refresh()
         if status == .notDetermined {
@@ -35,6 +45,16 @@ final class AudioPermission: ObservableObject {
         case .denied: return L("Denied")
         case .restricted: return L("Restricted")
         @unknown default: return L("Unavailable")
+        }
+    }
+
+    private static func logName(_ status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: return "allowed"
+        case .notDetermined: return "not requested"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        @unknown default: return "unavailable"
         }
     }
 }

@@ -9,6 +9,7 @@
 "Meter" = "미터";
 "Pause Capture" = "캡처 일시 정지";
 "Start Capture" = "캡처 시작";
+"Resume Capture" = "캡처 재개";
 "Reset Measurements" = "측정 재설정";
 "Monitoring Mode" = "모니터링 모드";
 "Immersive Format" = "이머시브 포맷";
@@ -52,6 +53,7 @@
 "Waiting for microphone access…" = "마이크 권한을 기다리는 중…";
 "Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone." = "마이크 권한이 꺼져 있습니다. 시스템 설정 → 개인정보 보호 및 보안 → 마이크에서 허용하십시오.";
 "Paused" = "일시 정지됨";
+"Standby" = "대기";
 "Demo signal · no audio device open" = "데모 신호 · 열린 오디오 장치 없음";
 "No audio device available" = "사용 가능한 오디오 장치가 없습니다";
 "%@ (output)" = "%@ (출력)";
@@ -77,6 +79,7 @@
 "Initialize audio unit" = "오디오 유닛 초기화";
 "Start audio unit" = "오디오 유닛 시작";
 "Create output tap" = "출력 탭 생성";
+"Start output capture" = "출력 캡처 시작";
 "Input device %d" = "입력 장치 %d";
 
 /* Settings: sidebar and General */
@@ -113,6 +116,8 @@
 "System audio recording" = "시스템 오디오 녹음";
 "Open System Settings" = "시스템 설정 열기";
 "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "출력을 측정할 때 필요합니다. 출력 캡처가 시작되면 macOS가 묻습니다. 미터가 계속 조용하면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope를 허용한 다음 출력을 다시 선택하십시오.";
+"No sound from this output" = "이 출력에서 소리가 없습니다";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "지금까지 디지털 무음만 들어왔습니다. 앱이 이 출력으로 재생 중이라면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope를 허용한 다음 출력을 다시 선택하십시오.";
 "Allowed" = "허용됨";
 "Not requested" = "요청 전";
 "Denied" = "거부됨";
@@ -187,6 +192,7 @@
 "Real-time waveforms for each monitored channel." = "모니터링 중인 각 채널의 실시간 파형.";
 "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "오디오는 Mac의 메모리에서만 분석되며 녹음되거나 업로드되지 않습니다.";
 "Spectrogram inspired by AudioSpectrogram. MIT license included." = "스펙트로그램은 AudioSpectrogram에서 영감을 받았습니다. MIT 라이선스가 포함되어 있습니다.";
+"Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them." = "Spotify, YouTube, Tidal, Apple Music, Dolby Atmos 및 Netflix는 각 소유자의 상표입니다. 이 서비스들이 공개한 라우드니스 목표를 나타내기 위해서만 이름을 사용하며, Auraliscope는 이들과 제휴하거나 이들의 보증을 받지 않았습니다.";
 
 /* Meter window, theme names and the language restart (1.0.1). */
 "LOUDNESS" = "라우드니스";
@@ -231,6 +237,7 @@
 "ON TARGET" = "목표 도달";
 "LIVE" = "실시간";
 "PAUSED" = "일시정지";
+"STANDBY" = "대기";
 "LAST 15 S" = "최근 15초";
 "ALL CHANNELS" = "전체 채널";
 "now" = "현재";

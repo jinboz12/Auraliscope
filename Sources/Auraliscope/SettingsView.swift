@@ -429,7 +429,7 @@ struct SettingsView: View {
                 .padding(.bottom, 14)
             HStack(spacing: 8) {
                 StatusDot(running: model.running)
-                Text((model.running ? L("Live") : L("Paused")).uppercased(with: l10n.locale))
+                Text(model.captureStateTitle.uppercased(with: l10n.locale))
                     .font(.system(size: 10, weight: .bold).width(.expanded)).tracking(l10n.tracking(0.8))
                     .foregroundStyle(Theme.secondary)
                 Spacer(minLength: 0)
@@ -615,6 +615,12 @@ private struct AudioPane: View {
                     .lineLimit(1).truncationMode(.middle)
                     .help(model.status.text)
             }
+            if model.silentOutput {
+                Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
+                      systemImage: "speaker.slash")
+                    .font(.system(size: 11)).foregroundStyle(Theme.ochre)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
             SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
             SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
@@ -632,6 +638,8 @@ private struct AudioPane: View {
             }
             SettingsNote(L("Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
         }
+        // The pane never shows a state from before a change made in System Settings.
+        .onAppear { AudioPermission.shared.refresh() }
     }
 }
 

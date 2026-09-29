@@ -62,4 +62,10 @@ final class VUBallistics: ObservableObject {
         velocity = 0
         lastTime = nil
     }
+
+    /// Stops the needle where it is (a paused meter holds its picture); the next step starts from there.
+    func hold() {
+        velocity = 0
+        lastTime = nil
+    }
 }

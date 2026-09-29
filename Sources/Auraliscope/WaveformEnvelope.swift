@@ -31,28 +31,38 @@ final class WaveformEnvelope {
 
     func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard let base = frames.baseAddress, !frames.isEmpty else { return }
-        let stride = Role.count
-        base.withMemoryRebound(to: Float.self, capacity: frames.count * stride) { samples in
-            var offset = 0
-            while offset < frames.count {
-                let count = min(framesPerColumn - filled, frames.count - offset)
-                let first = samples + offset * stride
-                for role in activeRoles {
-                    var low: Float = 0, high: Float = 0
-                    vDSP_minv(first + role, stride, &low, vDSP_Length(count))
-                    vDSP_maxv(first + role, stride, &high, vDSP_Length(count))
-                    if filled == 0 {
-                        column[role * 2] = low
-                        column[role * 2 + 1] = high
-                    } else {
-                        column[role * 2] = min(column[role * 2], low)
-                        column[role * 2 + 1] = max(column[role * 2 + 1], high)
-                    }
+        base.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) { samples in
+            consume(count: frames.count, stride: Role.count) { samples + $0 }
+        }
+    }
+
+    /// Already de-interleaved audio (see `MeterPipeline`): contiguous channels.
+    func consume(_ block: PlanarBlock) {
+        consume(count: block.count, stride: 1) { block.channel($0) }
+    }
+
+    /// `channel(role)` is the role's first sample; its samples lie `stride` floats apart.
+    private func consume(count total: Int, stride: Int, channel: (Int) -> UnsafePointer<Float>) {
+        guard total > 0 else { return }
+        var offset = 0
+        while offset < total {
+            let count = min(framesPerColumn - filled, total - offset)
+            for role in activeRoles {
+                let first = channel(role) + offset * stride
+                var low: Float = 0, high: Float = 0
+                vDSP_minv(first, stride, &low, vDSP_Length(count))
+                vDSP_maxv(first, stride, &high, vDSP_Length(count))
+                if filled == 0 {
+                    column[role * 2] = low
+                    column[role * 2 + 1] = high
+                } else {
+                    column[role * 2] = min(column[role * 2], low)
+                    column[role * 2 + 1] = max(column[role * 2 + 1], high)
                 }
-                filled += count
-                offset += count
-                if filled == framesPerColumn { emit() }
             }
+            filled += count
+            offset += count
+            if filled == framesPerColumn { emit() }
         }
     }
 

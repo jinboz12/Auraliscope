@@ -9,6 +9,7 @@
 "Meter" = "仪表";
 "Pause Capture" = "暂停采集";
 "Start Capture" = "开始采集";
+"Resume Capture" = "继续采集";
 "Reset Measurements" = "重置测量";
 "Monitoring Mode" = "监听模式";
 "Immersive Format" = "沉浸声格式";
@@ -52,6 +53,7 @@
 "Waiting for microphone access…" = "正在等待麦克风权限…";
 "Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone." = "麦克风权限已关闭。请在“系统设置 → 隐私与安全 → 麦克风”中允许。";
 "Paused" = "已暂停";
+"Standby" = "待机";
 "Demo signal · no audio device open" = "演示信号 · 未打开音频设备";
 "No audio device available" = "没有可用的音频设备";
 "%@ (output)" = "%@（输出）";
@@ -77,6 +79,7 @@
 "Initialize audio unit" = "初始化音频单元";
 "Start audio unit" = "启动音频单元";
 "Create output tap" = "创建输出 tap";
+"Start output capture" = "启动输出采集";
 "Input device %d" = "输入设备 %d";
 
 /* Settings: sidebar and General */
@@ -113,6 +116,8 @@
 "System audio recording" = "系统录音";
 "Open System Settings" = "打开系统设置";
 "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "测量输出时需要此权限。开始采集输出时 macOS 会询问。如果电平表一直没有信号，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope，然后重新选择该输出。";
+"No sound from this output" = "此输出没有声音";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "目前只收到数字静音。如果有应用正在向此输出播放，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope，然后重新选择该输出。";
 "Allowed" = "已允许";
 "Not requested" = "尚未请求";
 "Denied" = "已拒绝";
@@ -187,6 +192,7 @@
 "Real-time waveforms for each monitored channel." = "每个监听声道的实时波形。";
 "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "音频始终留在你的 Mac 上，仅在内存中分析，不录制或上传。";
 "Spectrogram inspired by AudioSpectrogram. MIT license included." = "声谱图设计参考 AudioSpectrogram，附有 MIT 许可。";
+"Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them." = "Spotify、YouTube、Tidal、Apple Music、Dolby Atmos 和 Netflix 是其各自所有者的商标。此处提及它们仅为标明这些服务公布的响度目标；Auraliscope 与它们没有关联，也未获得其认可。";
 
 /* Meter window, theme names and the language restart (1.0.1). */
 "LOUDNESS" = "响度";
@@ -231,6 +237,7 @@
 "ON TARGET" = "达标";
 "LIVE" = "实时";
 "PAUSED" = "已暂停";
+"STANDBY" = "待机";
 "LAST 15 S" = "最近 15 秒";
 "ALL CHANNELS" = "全部声道";
 "now" = "现在";

@@ -72,21 +72,21 @@ enum StereoBands {
 
 /// Splits L and R into the five `StereoBands` with fourth-order Linkwitz–Riley crossovers (two cascaded
 /// Butterworth sections at each edge, from the RBJ cookbook) and keeps the newest samples of every band, for the
-/// stereometer's multiband cloud. Owned by the DSP queue.
+/// stereometer's multiband cloud. All ten cascades (band × side) run together in `band_filter`, padded to four
+/// sections with pass-through ones. Owned by the DSP queue.
 final class StereoBandSplitter {
     static let historyLength = 4096
     let sampleRate: Double
-    /// One cascade per band: low-pass for the lowest, high-pass for the highest, both for the bands between.
-    private var setups: [vDSP_biquad_Setup] = []
-    private var sections: [Int] = []
-    /// Filter state per band and side (L, R).
-    private var delays: [[Float]] = []
+    /// `band_filter` coefficients: lane 2 × band + side, four sections each; a band above Nyquist outputs zero.
+    private static let sections = Int(BAND_SECTIONS)
+    private static let groups = Int(BAND_LANES) / 4
+    private var coefficients = [Float](repeating: 0, count: groups * sections * 5 * 4)
+    private var state = [Float](repeating: 0, count: groups * sections * 2 * 4)
     /// Newest `historyLength` filtered samples per band and side, all sharing `cursor`.
     private var history: [Float]
     private var cursor = 0
     private var left: [Float] = []
     private var right: [Float] = []
-    private var scratch: [Float] = []
 
     init?(sampleRate: Double) {
         guard sampleRate.isFinite, sampleRate > 100 else { return nil }
@@ -101,26 +101,32 @@ final class StereoBandSplitter {
             let b1 = highPass ? -(1 + c) : 1 - c
             return [b0 / a0, b1 / a0, b0 / a0, -2 * c / a0, (1 - alpha) / a0]
         }
+        let passThrough: [Double] = [1, 0, 0, 0, 0]
         for band in 0..<StereoBands.count {
-            var coefficients: [Double] = []
-            if band > 0 {
-                let edge = butterworth(StereoBands.edges[band], highPass: true)
-                coefficients += edge + edge
+            var sections: [[Double]] = []
+            if StereoBands.edges[band] < nyquist {
+                if band > 0 {
+                    let edge = butterworth(StereoBands.edges[band], highPass: true)
+                    sections += [edge, edge]
+                }
+                if band + 1 < StereoBands.count, StereoBands.edges[band + 1] < nyquist {
+                    let edge = butterworth(StereoBands.edges[band + 1], highPass: false)
+                    sections += [edge, edge]
+                }
+                sections += Array(repeating: passThrough, count: Self.sections - sections.count)
+            } else {
+                sections = Array(repeating: [0, 0, 0, 0, 0], count: Self.sections)
             }
-            if band + 1 < StereoBands.count, StereoBands.edges[band + 1] < nyquist {
-                let edge = butterworth(StereoBands.edges[band + 1], highPass: false)
-                coefficients += edge + edge
+            for side in 0..<2 {
+                let lane = 2 * band + side
+                for (k, section) in sections.enumerated() {
+                    for (j, value) in section.enumerated() {
+                        coefficients[((lane / 4 * Self.sections + k) * 5 + j) * 4 + lane % 4] = Float(value)
+                    }
+                }
             }
-            let count = coefficients.count / 5
-            guard count > 0, let setup = vDSP_biquad_CreateSetup(coefficients, vDSP_Length(count)) else { return nil }
-            setups.append(setup)
-            sections.append(count)
-            delays.append([Float](repeating: 0, count: 2 * count + 2))
-            delays.append([Float](repeating: 0, count: 2 * count + 2))
         }
     }
-
-    deinit { setups.forEach { vDSP_biquad_DestroySetup($0) } }
 
     /// Filters `count` frames of L and R, read from `samples` with `stride` floats per frame.
     func consume(_ samples: UnsafePointer<Float>, stride: Int, count: Int, leftOffset: Int = 0, rightOffset: Int = 1) {
@@ -128,34 +134,35 @@ final class StereoBandSplitter {
         if left.count < count {
             left = [Float](repeating: 0, count: count)
             right = [Float](repeating: 0, count: count)
-            scratch = [Float](repeating: 0, count: count)
         }
-        let n = vDSP_Length(count)
-        vDSP_mmov(samples + leftOffset, &left, 1, n, vDSP_Length(stride), 1)
-        vDSP_mmov(samples + rightOffset, &right, 1, n, vDSP_Length(stride), 1)
+        audio_gather_strided(samples + leftOffset, UInt32(stride), &left, UInt32(count))
+        audio_gather_strided(samples + rightOffset, UInt32(stride), &right, UInt32(count))
+        left.withUnsafeBufferPointer { l in
+            right.withUnsafeBufferPointer { r in consume(left: l.baseAddress!, right: r.baseAddress!, count: count) }
+        }
+    }
+
+    /// Filters `count` contiguous samples of L and R straight into the band rings.
+    func consume(left: UnsafePointer<Float>, right: UnsafePointer<Float>, count: Int) {
         let length = Self.historyLength
-        for band in 0..<StereoBands.count {
-            for side in 0..<2 {
-                let input = side == 0 ? left : right
-                vDSP_biquad(setups[band], &delays[2 * band + side], input, 1, &scratch, 1, n)
-                // Newest `historyLength` samples into the band's ring.
-                let skip = max(0, count - length)
-                var written = 0
-                var position = cursor + skip
-                while written < count - skip {
-                    let run = min(count - skip - written, length - position % length)
-                    let base = (2 * band + side) * length + position % length
-                    history.withUnsafeMutableBufferPointer { ring in
-                        scratch.withUnsafeBufferPointer { source in
-                            (ring.baseAddress! + base).update(from: source.baseAddress! + skip + written, count: run)
+        let lanes = 2 * StereoBands.count
+        history.withUnsafeMutableBufferPointer { ring in
+            coefficients.withUnsafeBufferPointer { c in
+                state.withUnsafeMutableBufferPointer { s in
+                    withUnsafeTemporaryAllocation(of: UnsafeMutablePointer<Float>?.self, capacity: lanes) { outputs in
+                        var offset = 0
+                        while offset < count {
+                            let run = min(count - offset, length - cursor)
+                            for lane in 0..<lanes { outputs[lane] = ring.baseAddress! + lane * length + cursor }
+                            band_filter(c.baseAddress!, s.baseAddress!, left + offset, right + offset, outputs.baseAddress!,
+                                        UInt32(lanes), UInt32(run))
+                            offset += run
+                            cursor = (cursor + run) % length
                         }
                     }
-                    written += run
-                    position += run
                 }
             }
         }
-        cursor = (cursor + count) % length
     }
 
     /// Writes `StereoBands.scopeFloats`: per band, `scopePoints` (L, R) pairs spread evenly over the newest
@@ -247,6 +254,8 @@ final class SpectrumAnalyzer {
     let sampleRate: Double
     private let setup: OpaquePointer
     private var window = [Float](repeating: 0, count: fftSize)
+    /// `window` halved: the conjugate-symmetric split's ¼ rides on the window (a power of two, so exact).
+    private var fftWindow = [Float](repeating: 0, count: fftSize)
     /// Newest `fftSize` samples of each recorded role: one ring per role, all sharing `cursor`.
     private var history = [Float](repeating: 0, count: Role.count * fftSize)
     /// L, R and every other routed role: what a Spatial spectrum sums.
@@ -259,8 +268,8 @@ final class SpectrumAnalyzer {
     private var spatialHistoryCount = 0
     private var inputReal = [Float](repeating: 0, count: fftSize)
     private var inputImaginary = [Float](repeating: 0, count: fftSize)
-    private var mirrored = [Float](repeating: 0, count: fftSize / 2)
-    private var scratch = [Float](repeating: 0, count: fftSize / 2)
+    /// Newest frames of each role's ring that are all digital silence (`fftSize`: the whole ring).
+    private var silentFrames = [Int](repeating: fftSize, count: Role.count)
     private var outputReal = [Float](repeating: 0, count: fftSize)
     private var outputImaginary = [Float](repeating: 0, count: fftSize)
     private var leftPower = [Float](repeating: 0, count: fftSize / 2)
@@ -281,7 +290,7 @@ final class SpectrumAnalyzer {
     /// Mean square of the windowed signal per unit of one-sided |X|² (Parseval): 2 / (N · Σw²).
     private(set) var bandPowerScale: Double = 0
     /// First and last bin of each band, and every transformed role's mean square per band (role-major).
-    private var bandBins: [ClosedRange<Int>] = []
+    private var bandBins: [Range<Int>] = []
     private(set) var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
     private var cursor = 0
     private var historyCount = 0
@@ -300,6 +309,8 @@ final class SpectrumAnalyzer {
         self.sampleRate = sampleRate
         recordedRoles = [Role.left, Role.right] + (0..<min(roles.count, Role.count)).filter { $0 > Role.right && roles[$0] }
         vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_DENORM))
+        var half: Float = 0.5
+        vDSP_vsmul(window, 1, &half, &fftWindow, 1, vDSP_Length(Self.fftSize))
         var windowSum: Float = 0
         vDSP_sve(window, 1, &windowSum, vDSP_Length(Self.fftSize))
         amplitudeScale = 2 / windowSum
@@ -309,7 +320,8 @@ final class SpectrumAnalyzer {
         binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: Self.fftSize)
         bandBins = (0..<StereoBands.count).map { band in
             let bins = binBands.indices.filter { binBands[$0] == band }
-            return (bins.first ?? 1)...(bins.last ?? 1)
+            guard let first = bins.first, let last = bins.last else { return 0..<0 }
+            return first..<(last + 1)
         }
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
         spectrogramBands = Self.bandMaps(count: MeterSnapshot.spectrogramBandCount, sampleRate: sampleRate)
@@ -345,29 +357,39 @@ final class SpectrumAnalyzer {
     func consume(_ frames: UnsafeBufferPointer<StereoFrame>) {
         guard let base = frames.baseAddress, !frames.isEmpty else { return }
         base.withMemoryRebound(to: Float.self, capacity: frames.count * 2) { samples in
-            accumulate(samples, stride: 2, count: frames.count, roles: [(Role.left, 0), (Role.right, 1)])
+            accumulate(count: frames.count, stride: 2, roles: [Role.left, Role.right]) { samples + ($0 == Role.left ? 0 : 1) }
         }
     }
 
     /// Role-mapped frames from the capture ring: L/R sums for the correlation, history for every recorded role.
     func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard let base = frames.baseAddress, !frames.isEmpty else { return }
-        let roles = recordsSpatial ? recordedRoles : [Role.left, Role.right]
         base.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) { samples in
-            accumulate(samples, stride: Role.count, count: frames.count, roles: roles.map { ($0, $0) })
+            accumulate(count: frames.count, stride: Role.count, roles: historyRoles) { samples + $0 }
         }
         if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + frames.count) }
     }
 
-    /// `roles` pairs a role with its offset inside each frame of `stride` floats; L and R come first.
-    private func accumulate(_ samples: UnsafePointer<Float>, stride: Int, count frameCount: Int, roles: [(role: Int, offset: Int)]) {
+    /// Already de-interleaved audio (see `MeterPipeline`); L, R and, while Spatial is recorded, every routed role
+    /// must be present.
+    func consume(_ block: PlanarBlock) {
+        guard block.count > 0 else { return }
+        accumulate(count: block.count, stride: 1, roles: historyRoles) { block.channel($0) }
+        if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + block.count) }
+    }
+
+    /// The roles whose history is kept right now: L and R, plus every routed role while Spatial is recorded.
+    var historyRoles: [Int] { recordsSpatial ? recordedRoles : [Role.left, Role.right] }
+
+    /// `channel(role)` is the role's first sample; its samples lie `stride` floats apart. L and R come first.
+    private func accumulate(count frameCount: Int, stride: Int, roles: [Int], channel: (Int) -> UnsafePointer<Float>) {
         var leftPeak: Float = 0
         var rightPeak: Float = 0
         var leftSquared: Float = 0
         var rightSquared: Float = 0
         var product: Float = 0
         let count = vDSP_Length(frameCount)
-        let left = samples + roles[0].offset, right = samples + roles[1].offset
+        let left = channel(roles[0]), right = channel(roles[1])
         vDSP_maxmgv(left, stride, &leftPeak, count)
         vDSP_maxmgv(right, stride, &rightPeak, count)
         vDSP_svesq(left, stride, &leftSquared, count)
@@ -380,22 +402,31 @@ final class SpectrumAnalyzer {
         sumProduct += Double(product)
         // Keep the newest FFT window: at most two contiguous copies per role into its ring.
         var remaining = frameCount
-        var source = samples
+        var skip = 0
         if remaining > Self.fftSize {
-            source += (remaining - Self.fftSize) * stride
+            skip = remaining - Self.fftSize
             remaining = Self.fftSize
         }
         history.withUnsafeMutableBufferPointer { rings in
             while remaining > 0 {
                 let run = min(remaining, Self.fftSize - cursor)
-                // vDSP_mmov with one column copies a strided run into a contiguous one.
-                for (role, offset) in roles {
-                    vDSP_mmov(source + offset, rings.baseAddress! + role * Self.fftSize + cursor, 1, vDSP_Length(run), vDSP_Length(stride), 1)
+                for role in roles {
+                    audio_gather_strided(channel(role) + skip * stride, UInt32(stride), rings.baseAddress! + role * Self.fftSize + cursor, UInt32(run))
                 }
                 cursor = (cursor + run) % Self.fftSize
-                source += run * stride
+                skip += run
                 remaining -= run
             }
+        }
+        // How long each ring has held nothing but zeros: a ring that is all zeros transforms to zeros.
+        for role in roles {
+            var peak: Float = 0
+            switch role {
+            case roles[0]: peak = leftPeak
+            case roles[1]: peak = rightPeak
+            default: vDSP_maxmgv(channel(role), stride, &peak, count)
+            }
+            silentFrames[role] = peak > 0 ? 0 : min(Self.fftSize, silentFrames[role] + frameCount)
         }
         levelFrames += frameCount
         historyCount = min(Self.fftSize, historyCount + frameCount)
@@ -567,10 +598,17 @@ final class SpectrumAnalyzer {
     /// up to ~2 dB between bins (a tone half-way between two rows read low); the parabola recovers the peak.
     private func levels(_ maps: [BandMap], into output: inout [Float]) {
         let count = maps.count
-        for (index, map) in maps.enumerated() where !map.interpolated {
-            var power: Float = 0
-            for bin in map.first...map.last { power = max(power, self.power[bin]) }
-            rowPower[index] = power
+        power.withUnsafeBufferPointer { bins in
+            for (index, map) in maps.enumerated() where !map.interpolated {
+                let width = map.last - map.first + 1
+                var power: Float = 0
+                if width < 8 {
+                    for bin in map.first...map.last { power = max(power, bins[bin]) }
+                } else {
+                    vDSP_maxv(bins.baseAddress! + map.first, 1, &power, vDSP_Length(width))
+                }
+                rowPower[index] = max(0, power)
+            }
         }
         var scale = amplitudeScale * amplitudeScale
         var floor: Float = 1e-12
@@ -606,15 +644,11 @@ final class SpectrumAnalyzer {
         let first = max(2, Int(20 / binWidth))
         let last = min(Self.fftSize / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
         guard first < last else { return (0, -120) }
-        var peakBin = first
         var peakPower: Float = 0
-        for bin in first...last {
-            let power = self.power[bin]
-            if power > peakPower {
-                peakPower = power
-                peakBin = bin
-            }
-        }
+        var index: vDSP_Length = 0
+        power.withUnsafeBufferPointer { vDSP_maxvi($0.baseAddress! + first, 1, &peakPower, &index, vDSP_Length(last - first + 1)) }
+        // The first loudest bin; a silent spectrum keeps the lowest.
+        let peakBin = peakPower > 0 ? first + Int(index) : first
         func decibels(_ bin: Int) -> Float {
             return 20 * log10(max(sqrt(power[bin]) * amplitudeScale, 0.000001))
         }
@@ -629,8 +663,22 @@ final class SpectrumAnalyzer {
     /// |A[k]|² = ((Zr[k] + Zr[N−k])² + (Zi[k] − Zi[N−k])²) / 4 and
     /// |B[k]|² = ((Zi[k] + Zi[N−k])² + (Zr[k] − Zr[N−k])²) / 4.
     /// The display power is the sum over `roles`, halved (see `power`). L and R alone need one transform.
-    private func transform(_ roles: [Int]) {
+    private func transform(_ requested: [Int]) {
+        // A silent ring adds nothing to the power, and its band powers are zero: after L and R, only roles with
+        // sound are transformed, paired among themselves. A 7.1.4 stream carrying stereo costs one transform.
+        let roles = requested.count > 2
+            ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < Self.fftSize }
+            : requested
         let bins = vDSP_Length(Self.fftSize / 2)
+        if roles.allSatisfy({ silentFrames[$0] >= Self.fftSize }) {
+            // Digital silence everywhere (a paused player still delivers zeros): the transforms would be zeros.
+            for i in power.indices { power[i] = 0 }
+            for i in roleBandPower.indices { roleBandPower[i] = 0 }
+            if roles.count > 1 && roles[0] == Role.left && roles[1] == Role.right {
+                bandSums = Array(repeating: (0, 0, 0), count: StereoBands.count)
+            }
+            return
+        }
         var index = 0
         while index < roles.count {
             let pair = index + 1 < roles.count
@@ -657,6 +705,7 @@ final class SpectrumAnalyzer {
     private func accumulateRoleBands(_ a: Int, _ b: Int?) {
         let scale = Float(bandPowerScale)
         for (band, bins) in bandBins.enumerated() {
+            guard !bins.isEmpty else { continue }
             var sum: Float = 0
             leftPower.withUnsafeBufferPointer { vDSP_sve($0.baseAddress! + bins.lowerBound, 1, &sum, vDSP_Length(bins.count)) }
             roleBandPower[a * StereoBands.count + band] = sum * scale
@@ -674,13 +723,15 @@ final class SpectrumAnalyzer {
         var sums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
         outputReal.withUnsafeBufferPointer { zr in
             outputImaginary.withUnsafeBufferPointer { zi in
-                for bin in 1..<(n / 2) {
-                    let band = Int(binBands[bin])
-                    guard band >= 0 else { continue }
-                    let cross = 0.5 * (zr[bin] * zi[n - bin] + zr[n - bin] * zi[bin])
-                    sums[band].left += Double(leftPower[bin])
-                    sums[band].right += Double(rightPower[bin])
-                    sums[band].cross += Double(cross)
+                for (band, bins) in bandBins.enumerated() where !bins.isEmpty {
+                    let start = bins.lowerBound, count = vDSP_Length(bins.count)
+                    var left: Float = 0, right: Float = 0, crossA: Float = 0, crossB: Float = 0
+                    leftPower.withUnsafeBufferPointer { vDSP_sve($0.baseAddress! + start, 1, &left, count) }
+                    rightPower.withUnsafeBufferPointer { vDSP_sve($0.baseAddress! + start, 1, &right, count) }
+                    vDSP_dotpr(zr.baseAddress! + start, 1, zi.baseAddress! + n - start, -1, &crossA, count)
+                    vDSP_dotpr(zi.baseAddress! + start, 1, zr.baseAddress! + n - start, -1, &crossB, count)
+                    // Z comes from the half-amplitude window: ½·(…) of full-amplitude Z is 2·(…) here.
+                    sums[band] = (Double(left), Double(right), 2 * (Double(crossA) + Double(crossB)))
                 }
             }
         }
@@ -689,56 +740,38 @@ final class SpectrumAnalyzer {
 
     /// Fills `leftPower` with |A|² and `rightPower` with |B|² (zero without a second role).
     private func transformPair(_ a: Int, _ b: Int?) {
-        let n = Self.fftSize, half = n / 2
+        let n = Self.fftSize
         let tail = n - cursor
-        // Oldest sample first: the ring from the cursor to the end, then from the start.
+        // Oldest sample first: the ring from the cursor to the end, then from the start, windowed on the way.
         inputReal.withUnsafeMutableBufferPointer { real in
             inputImaginary.withUnsafeMutableBufferPointer { imaginary in
                 history.withUnsafeBufferPointer { rings in
-                    let ringA = rings.baseAddress! + a * n
-                    real.baseAddress!.update(from: ringA + cursor, count: tail)
-                    (real.baseAddress! + tail).update(from: ringA, count: cursor)
-                    if let b {
-                        let ringB = rings.baseAddress! + b * n
-                        imaginary.baseAddress!.update(from: ringB + cursor, count: tail)
-                        (imaginary.baseAddress! + tail).update(from: ringB, count: cursor)
-                    } else {
-                        vDSP_vclr(imaginary.baseAddress!, 1, vDSP_Length(n))
+                    fftWindow.withUnsafeBufferPointer { w in
+                        func windowed(_ ring: UnsafePointer<Float>, into out: UnsafeMutablePointer<Float>) {
+                            vDSP_vmul(ring + cursor, 1, w.baseAddress!, 1, out, 1, vDSP_Length(tail))
+                            if cursor > 0 { vDSP_vmul(ring, 1, w.baseAddress! + tail, 1, out + tail, 1, vDSP_Length(cursor)) }
+                        }
+                        windowed(rings.baseAddress! + a * n, into: real.baseAddress!)
+                        if let b {
+                            windowed(rings.baseAddress! + b * n, into: imaginary.baseAddress!)
+                        } else {
+                            vDSP_vclr(imaginary.baseAddress!, 1, vDSP_Length(n))
+                        }
                     }
                 }
-                vDSP_vmul(real.baseAddress!, 1, window, 1, real.baseAddress!, 1, vDSP_Length(n))
-                vDSP_vmul(imaginary.baseAddress!, 1, window, 1, imaginary.baseAddress!, 1, vDSP_Length(n))
             }
         }
         vDSP_DFT_Execute(setup, inputReal, inputImaginary, &outputReal, &outputImaginary)
         outputReal.withUnsafeBufferPointer { zr in
             outputImaginary.withUnsafeBufferPointer { zi in
-                mirrored.withUnsafeMutableBufferPointer { m in
-                    scratch.withUnsafeMutableBufferPointer { t in
-                        leftPower.withUnsafeMutableBufferPointer { lp in
-                            rightPower.withUnsafeMutableBufferPointer { rp in
-                                let r = zr.baseAddress!, i = zi.baseAddress!
-                                let count = vDSP_Length(half - 1)
-                                // Bins 1..<half; bin k pairs with N−k, read with a negative stride.
-                                let rMirror = r + n - 1, iMirror = i + n - 1
-                                var quarter: Float = 0.25
-                                // |A|²: (Zr[k] + Zr[N−k])² + (Zi[k] − Zi[N−k])²
-                                vDSP_vadd(r + 1, 1, rMirror, -1, m.baseAddress! + 1, 1, count)
-                                vDSP_vsub(iMirror, -1, i + 1, 1, t.baseAddress! + 1, 1, count)
-                                vDSP_vdist(m.baseAddress! + 1, 1, t.baseAddress! + 1, 1, lp.baseAddress! + 1, 1, count)
-                                vDSP_vsq(lp.baseAddress! + 1, 1, lp.baseAddress! + 1, 1, count)
-                                vDSP_vsmul(lp.baseAddress! + 1, 1, &quarter, lp.baseAddress! + 1, 1, count)
-                                // |B|²: (Zi[k] + Zi[N−k])² + (Zr[k] − Zr[N−k])²
-                                vDSP_vadd(i + 1, 1, iMirror, -1, m.baseAddress! + 1, 1, count)
-                                vDSP_vsub(rMirror, -1, r + 1, 1, t.baseAddress! + 1, 1, count)
-                                vDSP_vdist(m.baseAddress! + 1, 1, t.baseAddress! + 1, 1, rp.baseAddress! + 1, 1, count)
-                                vDSP_vsq(rp.baseAddress! + 1, 1, rp.baseAddress! + 1, 1, count)
-                                vDSP_vsmul(rp.baseAddress! + 1, 1, &quarter, rp.baseAddress! + 1, 1, count)
-                                // DC pairs with itself: A = Re Z[0], B = Im Z[0].
-                                lp[0] = r[0] * r[0]
-                                rp[0] = i[0] * i[0]
-                            }
-                        }
+                leftPower.withUnsafeMutableBufferPointer { lp in
+                    rightPower.withUnsafeMutableBufferPointer { rp in
+                        let r = zr.baseAddress!, i = zi.baseAddress!
+                        // Bins 1..<half, in one pass; the half-amplitude window (`fftWindow`) already supplies the ¼.
+                        packed_pair_powers(r, i, UInt32(n), lp.baseAddress!, rp.baseAddress!)
+                        // DC pairs with itself: A = Re Z[0], B = Im Z[0] (each halved by the window).
+                        lp[0] = 4 * r[0] * r[0]
+                        rp[0] = 4 * i[0] * i[0]
                     }
                 }
             }

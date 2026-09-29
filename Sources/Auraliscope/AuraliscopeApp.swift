@@ -7,6 +7,19 @@ import SwiftUI
 private final class WelcomeCoordinator: ObservableObject {
     @Published var presented = false
     var launchHandled = false
+
+    private static let seenBuildKey = "welcomeSeenBuild"
+    private static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+
+    /// The first launch of each build shows the welcome, even where an earlier build was told not to: that choice
+    /// is kept in the sandbox container, which outlives reinstalling the app. `-showWelcomeOnLaunch` on the
+    /// command line still decides alone.
+    static var firstLaunchOfBuild: Bool {
+        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        return arguments["showWelcomeOnLaunch"] == nil && UserDefaults.standard.string(forKey: seenBuildKey) != build
+    }
+
+    static func noteLaunch() { UserDefaults.standard.set(build, forKey: seenBuildKey) }
 }
 
 @main
@@ -23,7 +36,7 @@ struct AuraliscopeApp: App {
         Window("Auraliscope", id: "meter") {
             MeterView(model: model)
                 .modifier(ThemeIdentity())
-                .frame(minWidth: 1000, minHeight: 820)
+                .frame(minWidth: 1000, minHeight: 628)
                 .onAppear {
                     guard !welcome.launchHandled else { return }
                     welcome.launchHandled = true
@@ -31,7 +44,8 @@ struct AuraliscopeApp: App {
                         && model.selectedDevice?.isBridge != true && model.selectedID.bridge == nil
                         && AVCaptureDevice.authorizationStatus(for: .audio) != .authorized
                     if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && !launchedByBridge
-                                                   && (showWelcomeOnLaunch || inputNeedsPermission)) {
+                                                   && (showWelcomeOnLaunch || WelcomeCoordinator.firstLaunchOfBuild || inputNeedsPermission)) {
+                        if !Diagnostics.snapshotRequested { WelcomeCoordinator.noteLaunch() }
                         welcome.presented = true
                     } else {
                         model.resume()
@@ -74,22 +88,7 @@ struct AuraliscopeApp: App {
                     .keyboardShortcut(",")
             }
             AppearanceCommands()
-            CommandMenu(L("Meter")) {
-                Button(model.running ? L("Pause Capture") : L("Start Capture"), action: model.toggleCapture)
-                    .keyboardShortcut(.space, modifiers: [])
-                Button(L("Reset Measurements"), action: model.resetMeasurements)
-                    .keyboardShortcut("r")
-                Divider()
-                Picker(L("Monitoring Mode"), selection: $model.formatMode) {
-                    ForEach(model.availableModes) { mode in Text(mode.title).tag(mode) }
-                }
-                Picker(L("Immersive Format"), selection: $model.speakerLayout) {
-                    ForEach(SpeakerLayout.allCases) { layout in Text(verbatim: layout.name).tag(layout) }
-                }
-                Divider()
-                Button(L("Channel Routing…")) { model.openSettings(.channels) }
-                    .keyboardShortcut("k")
-            }
+            MeterCommands(model: model)
         }
     }
 }
@@ -100,6 +99,41 @@ private struct ThemeIdentity: ViewModifier {
     @ObservedObject private var theme = ThemeSettings.shared
 
     func body(content: Content) -> some View { content.id(theme.signature) }
+}
+
+/// The Meter menu. Space pauses and resumes only while the meter window is focused: as an app-wide shortcut it
+/// reached the menu before any control, so in Settings (with Full Keyboard Access) Space toggled capture instead of
+/// the focused switch, and behind the welcome sheet it started metering.
+private struct MeterCommands: Commands {
+    @ObservedObject var model: MeterModel
+    @ObservedObject private var focus = MeterWindowFocus.shared
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some Commands {
+        CommandMenu(L("Meter")) {
+            Button(model.captureActionTitle, action: model.toggleCapture)
+                .keyboardShortcut(focus.key ? KeyboardShortcut(.space, modifiers: []) : nil)
+            Button(L("Reset Measurements"), action: model.resetMeasurements)
+                .keyboardShortcut("r")
+            Divider()
+            Picker(L("Monitoring Mode"), selection: $model.formatMode) {
+                ForEach(model.availableModes) { mode in Text(mode.title).tag(mode) }
+            }
+            Picker(L("Immersive Format"), selection: $model.speakerLayout) {
+                ForEach(SpeakerLayout.allCases) { layout in Text(verbatim: layout.name).tag(layout) }
+            }
+            Divider()
+            Button(L("Channel Routing…")) { model.openSettings(.channels) }
+                .keyboardShortcut("k")
+        }
+    }
+}
+
+/// Whether the meter window is the key window (not Settings, About or the welcome sheet).
+@MainActor
+final class MeterWindowFocus: ObservableObject {
+    static let shared = MeterWindowFocus()
+    @Published var key = false
 }
 
 private struct AppearanceCommands: Commands {
@@ -196,6 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // The privacy indicators start from the real permissions, not from whatever the last session saw.
+        AudioPermission.shared.checkAtLaunch()
         // The menu bar's AppKit items follow a language change at once (see `SystemMenus`).
         DispatchQueue.main.async {
             SystemMenus.follow()
@@ -352,6 +388,15 @@ private final class WindowProbe: NSView {
                     MainWindow.adoptGreenButton(window)
                 })
             }
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+                observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { note in
+                    let key = note.name == NSWindow.didBecomeKeyNotification
+                    MainActor.assumeIsolated {
+                        if MeterWindowFocus.shared.key != key { MeterWindowFocus.shared.key = key }
+                    }
+                })
+            }
+            MeterWindowFocus.shared.key = window.isKeyWindow
             for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] note in
                     guard let self, let window = self.window else { return }
@@ -405,7 +450,8 @@ private struct WindowConfigurator: NSViewRepresentable {
 }
 
 /// Keeps a secondary window (Settings, About) above the floating meter and available over its full-screen Space,
-/// and keeps its title in the current language: SwiftUI names a `Window` scene once, when it opens.
+/// keeps its title in the current language (SwiftUI names a `Window` scene once, when it opens), and leaves it out
+/// of window restoration.
 struct UtilityWindowProbe: NSViewRepresentable {
     let title: String
     var capture = false
@@ -431,6 +477,8 @@ struct UtilityWindowProbe: NSViewRepresentable {
             window.collectionBehavior.insert(.fullScreenAuxiliary)
             window.titlebarAppearsTransparent = true
             window.appearance = nil
+            // Settings and About open when asked, never on their own because they were open at the last quit.
+            window.isRestorable = false
             if capture { Diagnostics.captureWindowIfRequested(window) }
         }
     }
@@ -465,8 +513,8 @@ private struct TransportButtons: View {
         Button(action: model.toggleCapture) {
             Image(systemName: model.running ? "pause.fill" : "play.fill")
         }
-        .help(model.running ? L("Pause Capture") : L("Start Capture"))
-        .accessibilityLabel(model.running ? L("Pause Capture") : L("Start Capture"))
+        .help(model.captureActionTitle)
+        .accessibilityLabel(model.captureActionTitle)
         Button(action: model.resetMeasurements) {
             Image(systemName: "arrow.counterclockwise")
         }
@@ -593,6 +641,7 @@ private struct DashboardHero: View {
                 let row = geometry.size.width - 2 * padding
                 let columns = HeroLayout.columns(width: row, compact: compact, loudness: CGFloat(loudnessWidth), vu: CGFloat(vuWidth))
                 let scale = HeroLayout.contentScale(height: geometry.size.height, compact: compact, loudnessWidth: columns.loudness)
+                let gauge = HeroLayout.showsGauge(height: geometry.size.height)
                 HStack(alignment: .top, spacing: 0) {
                     // A grid over the short-term reading and the loudness column: the title row spans both, the
                     // gauge sits over the tiles, and the short-term reading is centred beside the tiles.
@@ -607,8 +656,10 @@ private struct DashboardHero: View {
                             LoudnessStandardMenus(model: model)
                         }
                         .frame(height: 24)
-                        HeroGauge(readouts: readouts, target: Float(target), scale: scale)
-                            .padding(.leading, HeroLayout.leadWidth(compact: compact) + gap)
+                        if gauge {
+                            HeroGauge(readouts: readouts, target: Float(target), scale: scale)
+                                .padding(.leading, HeroLayout.leadWidth(compact: compact) + gap)
+                        }
                         HStack(alignment: .top, spacing: 0) {
                             HeroShortTerm(readouts: readouts, target: Float(target), compact: compact, scale: scale)
                             .frame(width: HeroLayout.leadWidth(compact: compact), alignment: .leading)
@@ -638,7 +689,8 @@ private struct DashboardHero: View {
                     VUMeterPanel(model: model, readouts: readouts)
                         .frame(width: columns.vu)
                 }
-                .padding(padding)
+                .padding(.horizontal, padding)
+                .padding(.vertical, HeroLayout.verticalPadding(height: geometry.size.height, compact: compact))
             }
         }
         .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
@@ -653,7 +705,7 @@ private struct DashboardHero: View {
         HStack(spacing: 6) {
             Circle().fill(model.running ? Theme.ink : Theme.ink.opacity(0.45))
                 .frame(width: 6, height: 6)
-            Text(model.running ? L("LIVE") : L("PAUSED"))
+            Text(model.running ? L("LIVE") : (model.frozen ? L("PAUSED") : L("STANDBY")))
                 .font(.system(size: 10, weight: .bold)).tracking(1)
             if format {
                 Text("·")
@@ -982,7 +1034,8 @@ private struct MeterView: View {
                     stagePanels
                         .frame(width: stage)
                 }
-                StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames)
+                StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames,
+                          silentOutput: model.silentOutput)
             }
             .padding(.horizontal, gutter)
             .padding(.top, tall ? 8 : 2)
@@ -1077,6 +1130,9 @@ private struct WindowOpeners: View {
                 Diagnostics.benchmarkThemeSwitchIfRequested()
                 Diagnostics.testSystemAppearanceSwitchIfRequested()
                 Diagnostics.testDeviceSourceSelectionIfRequested(model: model)
+                Diagnostics.testPauseResumeIfRequested(model: model)
+                Diagnostics.testSourceSwitchIfRequested(model: model)
+                Diagnostics.testSpaceShortcutIfRequested(model: model)
                 guard Diagnostics.showAbout else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { openWindow(id: "about") }
             }
@@ -1097,11 +1153,18 @@ private struct StatusBar: View {
     let status: String
     let running: Bool
     let droppedFrames: UInt64
+    let silentOutput: Bool
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         HStack(spacing: 8) {
             Text(status).lineLimit(1).truncationMode(.middle).help(status)
+            if silentOutput {
+                Label(L("No sound from this output"), systemImage: "speaker.slash")
+                    .lineLimit(1)
+                    .foregroundStyle(Theme.ochre)
+                    .help(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
+            }
             Spacer(minLength: 8)
             if droppedFrames > 0 {
                 Label(L("Dropped %d", Int(droppedFrames)), systemImage: "exclamationmark.triangle.fill")

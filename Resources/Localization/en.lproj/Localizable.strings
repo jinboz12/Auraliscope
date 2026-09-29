@@ -9,6 +9,7 @@
 "Meter" = "Meter";
 "Pause Capture" = "Pause Capture";
 "Start Capture" = "Start Capture";
+"Resume Capture" = "Resume Capture";
 "Reset Measurements" = "Reset Measurements";
 "Monitoring Mode" = "Monitoring Mode";
 "Immersive Format" = "Immersive Format";
@@ -52,6 +53,7 @@
 "Waiting for microphone access…" = "Waiting for microphone access…";
 "Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone." = "Microphone access is off. Allow it in System Settings → Privacy & Security → Microphone.";
 "Paused" = "Paused";
+"Standby" = "Standby";
 "Demo signal · no audio device open" = "Demo signal · no audio device open";
 "No audio device available" = "No audio device available";
 "%@ (output)" = "%@ (output)";
@@ -77,6 +79,7 @@
 "Initialize audio unit" = "Initialize audio unit";
 "Start audio unit" = "Start audio unit";
 "Create output tap" = "Create output tap";
+"Start output capture" = "Start output capture";
 "Input device %d" = "Input device %d";
 
 /* Settings: sidebar and General */
@@ -113,6 +116,8 @@
 "System audio recording" = "System audio recording";
 "Open System Settings" = "Open System Settings";
 "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
+"No sound from this output" = "No sound from this output";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
 "Allowed" = "Allowed";
 "Not requested" = "Not requested";
 "Denied" = "Denied";
@@ -187,6 +192,7 @@
 "Real-time waveforms for each monitored channel." = "Real-time waveforms for each monitored channel.";
 "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded.";
 "Spectrogram inspired by AudioSpectrogram. MIT license included." = "Spectrogram inspired by AudioSpectrogram. MIT license included.";
+"Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them." = "Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them.";
 
 /* Meter window, theme names and the language restart (1.0.1). */
 "LOUDNESS" = "LOUDNESS";
@@ -231,6 +237,7 @@
 "ON TARGET" = "ON TARGET";
 "LIVE" = "LIVE";
 "PAUSED" = "PAUSED";
+"STANDBY" = "STANDBY";
 "LAST 15 S" = "LAST 15 S";
 "ALL CHANNELS" = "ALL CHANNELS";
 "now" = "now";

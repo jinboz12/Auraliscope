@@ -8,7 +8,7 @@ Auraliscope brings loudness, levels, spectrum, spectrogram, waveform, soundstage
 
 It is made for music production, mixing, audio post-production, and for simply looking at what your Mac is playing.
 
-[Download](https://github.com/jinboz12/Auraliscope/releases) · [Release notes](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [Report an issue](https://github.com/jinboz12/Auraliscope/issues)
+[Download](https://github.com/jinboz12/Auraliscope/releases) · [Release notes](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [Report an issue](https://github.com/jinboz12/Auraliscope/issues)
 
 ## Features
 
@@ -45,6 +45,8 @@ At launch it meters the current macOS default output; any other source can be ch
 
 Layouts go up to 9.1.6, and up to 64 physical channels can be routed to any speaker role.
 
+Pause (Space) holds every panel exactly as it was, so a moment can be studied at leisure. Resume carries on from that point: Integrated loudness, loudness range, held peaks and the histories continue rather than starting over. Reset starts a new measurement.
+
 ### Appearance and language
 
 - System, Light and Dark appearances, with colour themes that tint every control.
@@ -60,6 +62,7 @@ Layouts go up to 9.1.6, and up to 64 physical channels can be routed to any spea
 | Processor | Apple Silicon Mac |
 | System | macOS 13 or later |
 | Output capture | macOS 14.2 or later |
+| Display | 1280 × 720 or larger (the window goes down to about 1000 × 666 pt) |
 | Tested on | macOS 27.0 (26A428), MacBook Pro M1 Max |
 
 The deployment target is not a guarantee that every version has been verified. Other macOS versions still need testing.
@@ -71,7 +74,7 @@ The deployment target is not a guarantee that every version has been verified. O
 3. Open Auraliscope from Applications.
 4. Grant audio capture permission when asked, and choose the source to analyse.
 
-The current release is **1.1 (build 51)**. It is ad hoc signed and not notarized by Apple. The download is `Auraliscope.dmg`, containing `Auraliscope.app`.
+The current release is **1.2.2 (build 62)**. It is ad hoc signed and not notarized by Apple. The download is `Auraliscope.dmg`, containing `Auraliscope.app`.
 
 If macOS blocks the first launch, make sure the download came from this project's Releases page, then open **System Settings → Privacy & Security** and choose **Open Anyway**.
 
@@ -122,6 +125,8 @@ This software is provided "as is", without warranty of any kind, express or impl
 
 The spectrogram's dB legend and time and frequency markings take their design cues from [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram). Auraliscope's real-time analysis and rendering are an independent implementation in Swift, Accelerate and Metal, and do not link that project's Rust library.
 
+Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with, sponsored by or endorsed by any of them.
+
 ---
 
 <a id="中文"></a>
@@ -136,7 +141,7 @@ Auraliscope 将响度、电平、频谱、频谱图、波形、声场和立体�
 
 适用于音乐制作、混音、音频后期，以及日常播放与监听中的音频观察。
 
-[下载应用](https://github.com/jinboz12/Auraliscope/releases) · [更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [反馈问题](https://github.com/jinboz12/Auraliscope/issues)
+[下载应用](https://github.com/jinboz12/Auraliscope/releases) · [更新日志](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [反馈问题](https://github.com/jinboz12/Auraliscope/issues)
 
 ## 主要功能
 
@@ -173,6 +178,8 @@ Mono 模式默认隐藏，可在设置中启用。
 
 支持最高 9.1.6 的声道布局，并可将最多 64 个物理声道自定义映射至不同的扬声器角色。
 
+暂停（空格键）会让所有面板定格在当时的画面，便于仔细查看某一时刻。继续后从暂停处接着测量：积分响度、响度范围、峰值保持与各段历史都会延续，而不是重新开始；“重置”则开始新的测量。
+
 ### 外观与语言
 
 - 支持跟随系统、浅色和深色外观，颜色主题会为所有控件着色。
@@ -188,6 +195,7 @@ Mono 模式默认隐藏，可在设置中启用。
 | 处理器 | Apple Silicon Mac |
 | 系统 | macOS 13 或更高版本 |
 | 输出音频捕获 | macOS 14.2 或更高版本 |
+| 显示器 | 1280 × 720 或更高（窗口最小约 1000 × 666 pt） |
 | 已测试系统 | macOS 27.0（26A428），MacBook Pro M1 Max |
 
 系统部署目标不等于所有版本均已完成兼容性验证。其他 macOS 版本的实际运行情况仍待测试。
@@ -199,7 +207,7 @@ Mono 模式默认隐藏，可在设置中启用。
 3. 从“应用程序”文件夹启动应用。
 4. 根据提示授予音频捕获权限，并选择要分析的音频源。
 
-当前版本为 **1.1（build 51）**，使用 ad hoc 签名，尚未经过 Apple 公证。下载文件为 `Auraliscope.dmg`，其中的应用为 `Auraliscope.app`。
+当前版本为 **1.2.2（build 62）**，使用 ad hoc 签名，尚未经过 Apple 公证。下载文件为 `Auraliscope.dmg`，其中的应用为 `Auraliscope.app`。
 
 如果 macOS 阻止首次启动，请先确认安装包来自本项目官方 Releases 页面，然后前往 **系统设置 → 隐私与安全性**，选择 **“仍要打开”**。
 
@@ -250,6 +258,8 @@ Copyright © 2026 JINBOZ.
 
 Auraliscope 的频谱图展示参考了 [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram) 中的 dB 图例及时间、频率标记设计思路。Auraliscope 的实时分析与渲染采用独立的 Swift、Accelerate 和 Metal 实现，未链接该项目的 Rust 库。
 
+Spotify、YouTube、Tidal、Apple Music、Dolby Atmos 和 Netflix 是其各自所有者的商标。此处提及它们仅为标明这些服务公布的响度目标；Auraliscope 与它们没有关联，也未获得其赞助或认可。
+
 ---
 
 <a id="한국어"></a>
@@ -264,7 +274,7 @@ Auraliscope는 라우드니스, 레벨, 스펙트럼, 스펙트로그램, 파형
 
 음악 제작, 믹싱, 오디오 후반 작업은 물론, Mac에서 재생되는 소리를 살펴보는 일상적인 용도에도 적합합니다.
 
-[다운로드](https://github.com/jinboz12/Auraliscope/releases) · [릴리스 노트](https://github.com/jinboz12/Auraliscope/releases/tag/v1.1) · [문제 신고](https://github.com/jinboz12/Auraliscope/issues)
+[다운로드](https://github.com/jinboz12/Auraliscope/releases) · [릴리스 노트](https://github.com/jinboz12/Auraliscope/releases/tag/v1.2.2) · [문제 신고](https://github.com/jinboz12/Auraliscope/issues)
 
 ## 주요 기능
 
@@ -301,6 +311,8 @@ Core Audio 입력 장치를 읽습니다. macOS 14.2 이상에서는 Core Audio 
 
 최대 9.1.6 레이아웃을 지원하며, 최대 64개의 물리 채널을 원하는 스피커 역할에 라우팅할 수 있습니다.
 
+일시정지(스페이스 바)하면 모든 패널이 그 순간의 화면 그대로 멈추어, 한 순간을 천천히 살펴볼 수 있습니다. 재개하면 멈춘 지점부터 이어서 측정합니다. 통합 라우드니스, 라우드니스 레인지, 피크 홀드와 기록이 처음부터 다시 시작하지 않고 이어지며, 재설정하면 새 측정을 시작합니다.
+
 ### 모양과 언어
 
 - 시스템, 라이트, 다크 모양을 지원하며, 색상 테마가 모든 컨트롤에 적용됩니다.
@@ -316,6 +328,7 @@ Core Audio 입력 장치를 읽습니다. macOS 14.2 이상에서는 Core Audio 
 | 프로세서 | Apple Silicon Mac |
 | 시스템 | macOS 13 이상 |
 | 출력 캡처 | macOS 14.2 이상 |
+| 디스플레이 | 1280 × 720 이상 (창은 약 1000 × 666 pt까지 줄어듭니다) |
 | 테스트 환경 | macOS 27.0(26A428), MacBook Pro M1 Max |
 
 배포 대상 버전이 모든 버전의 호환성 검증을 뜻하지는 않습니다. 다른 macOS 버전은 아직 테스트가 필요합니다.
@@ -327,7 +340,7 @@ Core Audio 입력 장치를 읽습니다. macOS 14.2 이상에서는 Core Audio 
 3. 응용 프로그램 폴더에서 Auraliscope를 엽니다.
 4. 요청이 뜨면 오디오 캡처 권한을 허용하고, 분석할 소스를 고릅니다.
 
-현재 버전은 **1.1(build 51)**입니다. ad hoc 서명되었으며 Apple의 공증을 받지 않았습니다. 다운로드 파일은 `Auraliscope.dmg`이며, 그 안의 앱은 `Auraliscope.app`입니다.
+현재 버전은 **1.2.2(build 62)**입니다. ad hoc 서명되었으며 Apple의 공증을 받지 않았습니다. 다운로드 파일은 `Auraliscope.dmg`이며, 그 안의 앱은 `Auraliscope.app`입니다.
 
 macOS가 첫 실행을 막으면, 이 프로젝트의 Releases 페이지에서 받은 파일인지 확인한 뒤 **시스템 설정 → 개인정보 보호 및 보안**에서 **그래도 열기**를 선택하세요.
 
@@ -377,3 +390,5 @@ Copyright © 2026 JINBOZ.
 이 소프트웨어는 명시적이든 묵시적이든 어떠한 보증도 없이 "있는 그대로" 제공됩니다. 관련 법이 허용하는 범위에서, 작성자는 이 소프트웨어 사용으로 생긴 손실에 책임지지 않습니다. Auraliscope에 포함된 서드파티 구성 요소와 자료에는 각각의 라이선스가 적용됩니다.
 
 Auraliscope 스펙트로그램의 dB 범례와 시간·주파수 표시는 [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram)의 디자인을 참고했습니다. Auraliscope의 실시간 분석과 렌더링은 Swift, Accelerate, Metal로 독자적으로 구현되었으며, 해당 프로젝트의 Rust 라이브러리를 링크하지 않습니다.
+
+Spotify, YouTube, Tidal, Apple Music, Dolby Atmos 및 Netflix는 각 소유자의 상표입니다. 이 서비스들이 공개한 라우드니스 목표를 나타내기 위해서만 이름을 사용하며, Auraliscope는 이들과 제휴하거나 이들의 후원 또는 보증을 받지 않았습니다.

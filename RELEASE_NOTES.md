@@ -1,3 +1,180 @@
+# Auraliscope 1.2.2
+
+The 1.2.2 release (build 62), following 1.1 (build 51). It collects the 1.2 line: the release candidates 1.2 rc 1 (build 55), 1.2.1rc (build 57), 1.2.1rc2 (build 58) and 1.2.2rc (build 61), none of which was released on its own. Their sections below give the details; everything in them is part of this release. The source is unchanged from 1.2.2rc apart from the version.
+
+## Changes since 1.1
+
+- **Pause and resume.** Pause (Space, with the meter window in front) freezes every panel and reading as it was. Resume carries on the same measurement (Integrated loudness, loudness range, held peaks and histories) and leaves the paused time out. A change of source, routing or sample rate while paused, or Reset, starts a fresh measurement.
+- **True peak.** Rewritten as locate-then-measure: a 4× stage (2× from 96 kHz) finds the crests, and a 64-tap interpolator with a parabolic fit measures them. 1.1's 12-tap 4× meter read an 18 kHz inter-sample peak 0.38 dB low (48 kHz) and more closer to 20 kHz, did not oversample 192 kHz streams, and dropped the tail of a burst that ended in digital silence. Tones from 15 to 20 kHz now read within 0.0002 dB of their crest at 44.1 to 192 kHz, and random 20-tone mixtures within 0.00034 dB, identically for every buffer split.
+- **Loudness.** K-weighting runs in double precision; in single precision the low-frequency weighting drifted at high sample rates (20 Hz: −0.16 dB at 192 kHz, +0.24 dB at 384 kHz), and every rate from 44.1 to 384 kHz now matches the 48 kHz response within 0.01 dB for tones from 20 Hz to 10 kHz. The filter rests only after its state decays. Loudness range follows EBU Tech 3342 exactly (1.1 used 0.1 LU bins and a nearest-rank percentile), and the integrated gate is applied in the energy domain.
+- **Band readings.** Band level, balance and width stay visible when only one side carries sound; bands entirely above Nyquist stay silent at low sample rates.
+- **Robust input.** NaN and infinite samples from a driver become silence at the capture ring; finite overs above full scale stay measurable.
+- **Output capture.** Metering an output no longer goes through the microphone path, so macOS asks only for System Audio Recording. An output that delivers only digital silence for 5 s shows **No sound from this output**, with how to allow System Audio Recording.
+- **Small screens.** The meter window goes down to 1000 × 628 pt of content (about 680 pt with the toolbar) and fits a 1280 × 720 display; the summary, Channel Levels and the soundstage make room in turn.
+- **Performance.** Five paired runs of the DSP benchmark (100 simulated seconds of 16-role 48 kHz audio), median CPU seconds: Stereo 1.150 → 0.610 (−47%), Spatial 2.166 → 1.224 (−43%) against 1.1. In Spatial, digitally silent roles skip the FFT. With a 6-channel 48 kHz input and a full-size window at 60 Hz, the whole app used about 21% of one core in both 1.1 and 1.2.2 on the test Mac; at that channel count drawing, not analysis, sets the cost.
+- **Fixes and polish.** Space acts only while the meter window is in front; the welcome returns on the first launch of each new build; Settings and About no longer reopen at launch; the status says Standby before metering starts; 9.1.6 waveform lanes keep their names in the smallest window; the Stereo waveform legend sits flush right.
+- **Rights.** About, the README and the third-party notices state that the service names in the loudness target menu are their owners' trademarks. The app uses documented Apple APIs only; `docs/IP_REVIEW.md` records the provenance and licence review (not a patent search).
+
+## Requirements
+
+Apple silicon, macOS 13 or later. Output capture requires macOS 14.2 or later and System Audio Recording permission; input capture requires Microphone permission.
+
+## Validation
+
+42 core checks and 308 localization keys in each of three languages pass, also under Address Sanitizer and Thread Sanitizer. On the packaged candidate: capture self-test and pause/resume on a virtual input, pause/resume on an output process tap, source switching while paused, device removal and return (synthetic and a real aggregate device), sample-rate changes at 44.1, 96 and 192 kHz, settings regression and persistence, live language switching, full screen, the smallest window, a 15-minute sustained run with flat memory, and a leak check. Details are in `docs/1.2.2_TEST_REPORT.md` and in `TEST_REPORT.md` beside the build.
+
+## Known limitations
+
+- **Output capture content not verified here.** Tap creation, delivery, routing and pause/resume on an output were verified, but the test context had no System Audio Recording permission (TCC reported it undetermined), so macOS delivered silence. Hearing real programme through an output needs a manual check with the permission granted.
+- **Not tested:** the System Audio Recording prompt and indicator on a clean Mac, macOS versions other than 27.2 (the minimum supported is 13), first launch on another Mac, sleep and wake while capturing, and physical multichannel interfaces.
+- Loudness at rates other than 48 kHz and long-programme Integrated loudness have not been cross-checked against an external compliance meter.
+- Integrated loudness and loudness range keep every 100 ms value for exactness, so their memory grows by under 1 MB per hour of continuous metering until Reset or a new source.
+- A sample-rate change restarts capture twice in quick succession; metering continues at the new rate.
+
+## Distribution notice
+
+`Auraliscope.dmg` (with "Read Me First") and `Auraliscope.zip`, both containing `Auraliscope.app` (bundle ID `com.jinboz.SoundMeterJBZ`, so it replaces 1.1 and keeps its settings). Ad hoc signed and not notarized: approve the first launch in System Settings ▸ Privacy & Security (Open Anyway). macOS treats each build as a new app, so it asks for audio permissions again.
+
+# Auraliscope 1.2.2rc
+
+Release candidate, build 61, on 1.2.1rc2 (build 58): more precise measurement and about 40% less DSP CPU. It carries the work of the 1.2.2dev builds 59 and 60, plus two true-peak fixes from the release-candidate review.
+
+## True peak
+
+- **Rewritten as locate-then-measure.** A 4× stage (2× from 96 kHz) with 16 taps per phase now only finds the crests. It takes the local maxima of its magnitudes: the loudest in each 64-sample segment, plus the runner-up when it is within 1 dB, because a short filter can rank two near-equal crests the wrong way round. Around each one, a 64-tap Kaiser interpolator, flat within 0.004 dB to 20 kHz even at 44.1 kHz, evaluates the signal every 1/16 sample (1/8 at 2×) until it brackets the loudest value. A parabola through that value and its neighbours then places the crest between grid points.
+- **Accuracy.**
+  - Tones from 15 to 20 kHz at any phase read within 0.0002 dB of their crest at 44.1, 48, 88.2, 96 and 192 kHz, 20 kHz at 44.1 kHz included.
+  - In 1,500 random 20-tone mixtures (20 Hz to 20 kHz) at 44.1, 48, 88.2, 96 and 192 kHz, the reading stayed within 0.00034 dB of the analytic crest, under or over, and every buffer split read the same.
+  - For comparison: build 58's 12-tap 4× meter read an 18 kHz tone at 48 kHz 0.38 dB low. Build 59 read up to 0.054 dB low at 48 kHz, and its filter drooped 1.7 dB at 20 kHz at 44.1 kHz.
+- 192 kHz streams, which had no oversampling in build 58, use 2× plus the same measurement.
+- The reading never goes below the sample peak. It is independent of how the audio is split into buffers: segments are counted in absolute samples, a point is judged once both of its neighbours are known, and ties go to the earliest point.
+- **Fixed in review (since build 60).**
+  - The coarse grid that ranks crests now includes the samples themselves. Without them, the 2× grid used above 96 kHz had points a whole sample apart, and a 96 kHz mixture could read 0.007 dB low when the true crest ranked second.
+  - The shortcut that skips points too quiet to matter now depends only on the segment's candidates. Its threshold had come from the current buffer, so a buffer split could, in principle, change which crests were measured.
+
+## Loudness
+
+- **K-weighting in double precision.** In single precision, the high-pass poles sit so close to the unit circle at high sample rates that rounding moved the response. At 20 Hz the weighting was off by −0.16 dB at 192 kHz and +0.24 dB at 384 kHz; at 100 Hz, by up to 0.07 dB. The filter now runs in double precision, eight channels per pass, and sums energy in the same loop. Every rate from 44.1 to 384 kHz now matches the 48 kHz response within 0.01 dB for tones from 20 Hz to 10 kHz.
+- **Exact EBU Tech 3342 loudness range.** Build 58 read LRA from a 0.1 LU histogram with a nearest-rank percentile, and counted the whole bin at the relative gate. Every short-term value is now kept, sorted within its bin. The gate is applied value by value, and the 10th and 95th percentiles are picked as Tech 3342 specifies: the value at index round((n − 1) · p) of the sorted gated values. Checked against sorting everything, to 0.0001 LU.
+
+## Performance
+
+- Five paired DSP benchmark runs, median CPU seconds per 100 simulated seconds of 16-role 48 kHz audio:
+
+  | Spectrum mode | Build 58 | Build 61 |
+  | --- | ---: | ---: |
+  | Stereo | 1.055 | 0.615 (−42%) |
+  | Spatial | 2.024 | 1.243 (−39%) |
+
+  These figures cover the DSP components only; the audio driver, rendering and WindowServer are not included.
+- **De-interleaving.** `vDSP_mmov` with one-float rows called `memmove` once per sample, about a third of the DSP queue. A strided copy replaces it, and each delivery is de-interleaved once and shared by loudness, waveform, spectrum and band splitter.
+- **Stereometer band splitter.** The ten Linkwitz–Riley cascades (five bands × L/R) run together as three four-lane vector groups instead of ten scalar filters.
+- **Spectrum.**
+  - The FFT ring copy and the Hann window are fused into one multiply, with the ¼ of the conjugate split carried exactly by a half-amplitude window.
+  - The split of each packed pair into two power spectra is one vector pass.
+  - Peak searches use vector maxima.
+- **Silence skipping.** In Spatial analysis, roles whose whole FFT window is digital silence are left out of the transforms, and the remaining roles are paired among themselves. A 7.1.4 stream carrying stereo costs one transform instead of six, and full silence (a paused player) costs none. The result is exactly what the skipped transforms would have produced.
+- **Readings.** Only true peak and loudness range change by design. The K-weighting now differs from build 58 only by rounding at 44.1 and 48 kHz (a small effect at 96 kHz); from 176.4 kHz up it is corrected. The benchmark checksum (which includes true peak) is −6886.990, against −6890.791 in build 58.
+
+## Tooling
+
+- `AURALISCOPE_DMG=1 scripts/package-app.sh` also builds a disk image for a development build, named like its archive.
+
+Ad hoc signed; not notarized.
+
+# Auraliscope 1.2.1rc2
+
+Release candidate 2, build 58. Includes the fixes and compact-window refinements from 1.2.1rc (build 57).
+
+- Fixed frequency-band level, balance and width readings disappearing when only the left or right channel carries audio. The Soundstage band marker now remains visible for a one-sided signal; correlation remains unavailable when either side is below the analysis gate.
+- Fixed phantom high-band readings at low sample rates. Bands entirely above Nyquist now remain silent in both the FFT analysis and the band splitter.
+- Optimized FFT power extraction and band accumulation using vector operations, retaining the 8192-point FFT. Analytic tone regressions verify band power and cross power at 8, 44.1, 48, 96 and 192 kHz.
+- Improved integrated-loudness gate calculation by applying the relative gate directly in the energy domain. Per-bin bounds skip unnecessary history scans without approximating the accepted energies. Worst-case boundary-bin scans and history storage can still grow over time.
+- Non-finite input samples (NaN and infinity) are replaced with silence at the multichannel capture ring, preventing invalid samples from poisoning subsequent analysis. Finite values above full scale remain measurable.
+- Five paired DSP benchmark runs against build 57 reduced median CPU time from 1.1399 to 1.0667 seconds in Stereo (6.4%) and from 2.1773 to 2.0600 seconds in Spatial (5.4%), per 100 simulated seconds. These component results exclude the audio driver, rendering and WindowServer.
+- Expanded sanitizer checks to instrument both Swift and the C ring/callback support code. All 39 core checks and 308 localization keys passed. Virtual-input routing and pause/resume checks also passed.
+
+Known test boundary: the virtual-output self-test blocked inside Core Audio IOProc registration and was stopped. Output capture is not marked as verified for this candidate. See the accompanying test report for details. Ad hoc signed; not notarized.
+
+# Auraliscope 1.2.1rc
+
+Release candidate, build 57, following development build 56.
+
+- Fixed True Peak under-reading at the end of short bursts: digitally silent buffers now drain the interpolator tail instead of discarding it. Verified against a scalar convolution reference at 44.1–192 kHz and buffer sizes down to one sample.
+- K-weighting now rests only once its filter state has decayed, rather than after two silent buffers. This preserves the decay through short buffers and prevents stale state returning with the next signal.
+- Pausing preserves the final dropped-frame count, including drops since the last readout refresh.
+- Soundstage fitting reuses per-layout geometry. Stereometer dots use direct vector projection, with equivalent positions, avoiding angle-to-vector round trips.
+- Dense speaker layouts in very short Soundstage panels use smaller markers and fewer orientation labels. Channel Levels retains the complete channel names; enlarging the Soundstage restores all labels.
+- Checked source, resources, tests, scripts and documentation for agent self-attributions: none found in the build 56 baseline. Existing author credits and required third-party copyright notices are retained.
+- Five paired DSP benchmark runs remained effectively unchanged (Stereo 1.1372 → 1.1357 s; Spatial 2.1654 → 2.1640 s per 100 simulated seconds). The isolated layout benchmark improved from 0.3279 to 0.1834 s for 100,000 layouts, with an identical checksum. These are component measurements, not whole-app CPU percentages.
+
+Includes the build 56 small-window refinements and the 1.2 pause/freeze/continuation fixes. FFT resolution remains 8192. No audio-device buffer or DAW signal-path changes.
+
+See `TEST_REPORT.md` beside the DMG for verification and remaining runtime boundaries. Ad hoc signed; not notarized.
+
+# Auraliscope 1.2.1dev
+
+Development build 56 on 1.2 rc 1 (build 55): small screens, layout fixes and a lighter true-peak meter.
+
+## Small screens
+
+- **The meter window fits a 720p screen.** Its minimum height was 820 pt, taller than a 1280 × 720 display, so the status bar and the bottom of every panel sat off screen. The window now goes down to 1000 × 628 pt of content (about 666 pt with the toolbar), and on a short screen the panels make room in order:
+  - The loudness summary starts at its minimum height; its loudness bar folds away and the tiles keep their size. Dragged taller (180 pt or more), the bar returns.
+  - Channel Levels gives up height before the Soundstage room, down to its short minimum.
+  - Whenever the full correlation section would leave the Stereo bars under 90 pt, the section becomes compact: the lit zone's name and the mono fold-down share one row under the bar, and the listener hint moves to the zone name's tooltip. This also applies to a short Channel Levels panel in a larger window (about 355 pt or less), where the bars used to shrink to about 46 pt; they now keep about twice that.
+  - A short room folds its band legend away (the rims' colours still name the bands) and the stereometer's dB marks thin out, so they no longer overlap.
+- **The summary's tiles no longer run past its edge.** At the regular height (182 pt) with the wide arrangement (a window 1240 pt or wider and under 940 pt tall, such as a 1440 × 900 screen), the second row of tiles touched the bottom of the card. The top and bottom padding now close in before the tiles do.
+- **Dragging the summary taller no longer crushes Channel Levels.** Its limit left room for the analyzer column's minimum, not the taller Soundstage column's, so a tall summary squeezed Channel Levels well below its minimum. The limit now keeps both columns at their minimum.
+
+## Performance
+
+- The true-peak meter no longer runs the oversampling phase that reproduces the input samples, whose peak it already has: a quarter less filtering at 44.1, 48 and 88.2 kHz, half at 96 and 176.4 kHz, with the same readings.
+
+# Auraliscope 1.2 rc 1
+
+The first 1.2 release candidate (build 55): a refinement release on 1.1 (build 51), with fixes for what testers found in 1.1, a pause that holds and resumes, and polish throughout. The 1.2dev builds 52–54 were internal.
+
+## New
+
+- **Pause holds the picture.** Pause (Space) freezes every panel exactly as it was: the spectrum and its peak holds, the spectrogram, the waveform, the stereometer and its trail, channel levels and clip lights, correlation, the VU needle and every reading. A moment can be studied at leisure; switching Stereo, Immersive or the band count still animates.
+- **Resume carries on.** Resume continues the same measurement: Integrated loudness, loudness range, held peaks and the histories continue, and the time spent paused is left out. A change of source, routing or sample rate while paused, or Reset, starts a fresh measurement instead. While paused, the toolbar and the Meter menu offer Resume Capture.
+
+## Fixes
+
+- **Resume and Reset after a pause:** the spectrum, spectrogram, waveform, soundstage and level panels stayed frozen after resuming, and Reset seemed to do nothing. Paused panels went to rest and nothing woke them.
+- **Welcome on first launch:** "Don't show this again" from an earlier build is kept in the app's container, which survives reinstalling, so the welcome never came back. The first launch of each new build now shows it.
+- **Microphone use while metering an output:** macOS treated Auraliscope as using the microphone (orange indicator, microphone permission check) whatever source was chosen. Outputs are now read without the microphone path, so macOS asks only for System Audio Recording. On the test Mac the built-in microphone was never opened, before or after.
+- **Waveform legend:** in Stereo it kept invisible space for Height and LFE and did not sit flush right.
+- **Microphone access indicator:** Settings ▸ Audio checks it at every launch, whenever the app comes forward, when the pane opens and after each request; the diagnostic log records it at launch.
+- **Space in Settings and the welcome:** Space paused or started capture from anywhere in the app, so in Settings (with Full Keyboard Access) it never reached the focused control, and behind the welcome it started metering. It now pauses and resumes only while the meter window is focused.
+
+## Polish
+
+- Before metering starts, the summary chip and the status line say **Standby**, not "Paused" or "Choose an input device".
+- An output that delivers only digital silence for 5 seconds shows **No sound from this output** in the status bar and in Settings ▸ Audio, with how to allow System Audio Recording if an app is playing to it.
+- Settings and About no longer reopen by themselves at launch.
+- The 16 waveform lanes of 9.1.6 keep their channel names in the smallest window.
+- The dropped-frames count carries across a resume.
+- About, the README and the third-party notices state that the service names in the loudness target menu are their owners' trademarks and that Auraliscope is not affiliated with them.
+
+## Rights and platform
+
+The 1.2dev builds read the System Audio Recording permission through a private macOS function. It has been removed: the app uses documented Apple APIs only. `docs/IP_REVIEW.md` records the review of code provenance, licenses, trademarks and platform terms, and its open points; it is not a patent search.
+
+## Requirements
+
+Apple Silicon, macOS 13 or later. Output capture requires macOS 14.2 or later and System Audio Recording permission; input capture requires Microphone permission.
+
+## Validation
+
+32 core checks (one new, for the output-tap reader) and 308 localization keys in each of three languages pass, with 13 settings checks. Pause and resume (10 checks, including 30 rapid toggles) pass on the demo signal and on a real output tap, as do a real-hardware source switch, the Space shortcut, device removal and return, the paused peak reset and the capture self-test on a Pro Tools Audio Bridge. All 13 Immersive layouts render offscreen. Thread Sanitizer and Address Sanitizer runs of these flows report no issues. The DSP benchmark is unchanged from 1.1 rc 2; the live app uses about 13–21 % of one core in a full-size window at 60 Hz, and about 0.1 % while paused. Details are in `TEST_REPORT.md` beside the build.
+
+Not yet validated: the System Audio Recording prompt and indicator on a clean Mac and on macOS versions before 26, and first launch on other Macs.
+
+## Distribution notice
+
+Ad hoc signed and not notarized. Open the disk image, drag the app to Applications, and approve the first launch in System Settings ▸ Privacy & Security (Open Anyway); "Read Me First" in the disk image has the steps. macOS treats each build as a new app, so it asks for audio permissions again.
+
 # Auraliscope 1.1
 
 The 1.1 release (build 51). It follows the release candidates 1.1rc (build 49) and 1.1 rc 2 (build 50); everything in them below is part of this release.

@@ -953,11 +953,12 @@ private struct WaveHeader: View {
         PanelHeader(title: L("WAVEFORM"), detail: "\(spatial ? layout.name : (format == .mono ? "M" : "L/R")) · \(DisplayOptions.waveChoices.contains(seconds) ? seconds : 4) s · " + L("linear") + " · " + L("min/max")) {
             LegendDot(color: Theme.sage, text: spatial ? L("Left side") : (format == .mono ? L("Mono") : L("Left")))
             if format != .mono { LegendDot(color: Theme.sand, text: spatial ? L("Right side") : L("Right")) }
-            Group {
+            // Left out, not faded, outside Immersive: hidden entries kept their width and pushed the legend off
+            // the trailing edge.
+            if spatial {
                 if layout.heightCount > 0 { LegendDot(color: Theme.heather, text: L("Height")) }
                 if layout.hasLFE { LegendDot(color: Theme.clay, text: "LFE") }
             }
-            .opacity(spatial ? 1 : 0)
             LegendDot(color: Theme.ember, text: L("Clip"))
         }
     }
@@ -1019,14 +1020,15 @@ private struct WaveformLabels: View, Animatable {
                 let weight = layout.weight(index)
                 let active = activeRoles[speaker.role]
                 Text(speaker.displayName(mono: mix.mono))
-                    .font(.system(size: lane.height < 18 ? 8 : 10, weight: .semibold).width(.expanded))
+                    // Down to 7 pt, so the 16 lanes of 9.1.6 keep their names in the smallest window.
+                    .font(.system(size: lane.height < 9 ? 7 : (lane.height < 18 ? 8 : 10), weight: .semibold).width(.expanded))
                     .foregroundStyle(active ? Theme.laneRGB(speaker).color : Theme.tertiary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     // Right-aligned against the lanes, so names of every width end at the same edge.
                     .frame(width: WaveformLayout.gutter - 8, alignment: .trailing)
                     .scaleEffect(0.8 + 0.2 * weight, anchor: .trailing)
-                    .opacity(dissolve(weight) * (lane.height >= 7 ? 1 : 0))
+                    .opacity(dissolve(weight) * (lane.height >= 6 ? 1 : 0))
                     .position(x: scope.minX - 4 - (WaveformLayout.gutter - 8) / 2, y: lane.midY)
                 if lane.height >= WaveformLayout.labelledLane {
                     ForEach([CGFloat(0.5), -0.5], id: \.self) { amplitude in
@@ -1088,7 +1090,7 @@ private struct SoundstageStaticLabels: View, Animatable {
                 .foregroundStyle(activeRoles[speaker.role] ? Theme.groupColor(speaker.group).opacity(0.95) : Theme.tertiary)
                 .fixedSize()
                 .blur(radius: (1 - weight) * 3)
-                .opacity(dissolve(weight))
+                .opacity(stage.showsRoomLabel(speaker) ? dissolve(weight) : 0)
                 .position(stage.label(speaker))
         }
     }
@@ -1106,7 +1108,9 @@ private struct SoundstageStaticLabels: View, Animatable {
                         .fixedSize()
                         .position(stage.scopeLabel(angle: angle))
                 }
-                ForEach([Float(0), -24, -48], id: \.self) { db in
+                // The marks sit 0.4 radius apart; a small plot (a short room) keeps the ones that stay clear.
+                let radius = stage.scopeRadius
+                ForEach([Float(0), -24, -48].filter { $0 == 0 || radius >= ($0 == -24 ? 50 : 25) }, id: \.self) { db in
                     let point = stage.scopePoint(angle: 90, fraction: SoundstageLayout.scopeFraction(decibels: db))
                     Text(verbatim: db == 0 ? "0" : "−\(Int(-db))")
                         .font(.axis).foregroundStyle(Theme.tertiary).fixedSize()
@@ -1122,7 +1126,7 @@ private struct SoundstageStaticLabels: View, Animatable {
     @ViewBuilder
     private func bandLegend(_ stage: SoundstageLayout) -> some View {
         let weight = (1 - mix.mono) * (markers ? 1 : 1 - mix.presence)
-        if weight > 0.001 {
+        if weight > 0.001, stage.showsScopeLegend {
             let legend = stage.scopeLegend
             HStack(spacing: 0) {
                 ForEach(0..<resolution.count, id: \.self) { group in
@@ -1320,51 +1324,81 @@ private struct SoundstageReadouts: View, Animatable {
                               y: stage.correlationLane(band, of: resolution.count).midY)
                     .transition(.opacity)
             }
-            // Zone names under the track, each centred in its zone; Mono is too narrow and hangs from the end.
-            ForEach(CorrelationZone.allCases, id: \.self) { item in
-                let lit = item == zone
-                Text(item.caption)
-                    .font(.system(size: 9, weight: lit ? .bold : .medium))
-                    .foregroundStyle(lit ? Theme.correlationColor(item) : Theme.tertiary)
-                    .fixedSize()
-                    .frame(width: 90, alignment: item == .mono ? .trailing : .center)
-                    .position(x: item == .mono ? track.maxX - 45 : stage.correlationX(Self.center(item)),
-                              y: track.maxY + 9)
-            }
-            HStack(alignment: .top, spacing: 8) {
-                if let zone {
-                    Text(zone.title)
-                        .font(.system(size: 9, weight: .bold)).tracking(l10n.tracking(0.6))
-                        .foregroundStyle(Theme.onStatus)
-                        .lineLimit(1).fixedSize()
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.correlationColor(zone)))
-                    Text(zone.hint)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Theme.secondary)
-                        .lineLimit(2)
-                        .lineSpacing(1)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(L("No stereo signal."))
-                        .font(.system(size: 10)).foregroundStyle(Theme.tertiary)
+            if stage.compactCorrelation {
+                // Compact: the lit zone's name stands in for the captions, the hint moves to its tooltip, and the
+                // mono fold-down sits at the end of the same row.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if let zone {
+                        zoneChip(zone).help(zone.hint)
+                    } else {
+                        Text(L("No stereo signal."))
+                            .font(.system(size: 10)).foregroundStyle(Theme.tertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    monoLabel
+                    monoReading(values.monoFoldDown)
                 }
-                Spacer(minLength: 6)
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(L("IN MONO"))
-                        .font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(l10n.tracking(1))
-                        .foregroundStyle(Theme.tertiary)
-                        .lineLimit(1).fixedSize()
-                    let fold = values.monoFoldDown
-                    Text(verbatim: fold.map { MeterScale.signedTenths($0, floor: -39.9) + " dB" } ?? "—")
-                        .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(fold.map { $0 < -6 ? Theme.ember : ($0 < -3.5 ? Theme.ochre : Theme.ink) } ?? Theme.tertiary)
-                        .lineLimit(1).fixedSize()
+                .frame(width: area.width, alignment: .leading)
+                .position(x: area.midX, y: track.maxY + 13)
+            } else {
+                // Zone names under the track, each centred in its zone; Mono is too narrow and hangs from the end.
+                ForEach(CorrelationZone.allCases, id: \.self) { item in
+                    let lit = item == zone
+                    Text(item.caption)
+                        .font(.system(size: 9, weight: lit ? .bold : .medium))
+                        .foregroundStyle(lit ? Theme.correlationColor(item) : Theme.tertiary)
+                        .fixedSize()
+                        .frame(width: 90, alignment: item == .mono ? .trailing : .center)
+                        .position(x: item == .mono ? track.maxX - 45 : stage.correlationX(Self.center(item)),
+                                  y: track.maxY + 9)
                 }
+                HStack(alignment: .top, spacing: 8) {
+                    if let zone {
+                        zoneChip(zone)
+                        Text(zone.hint)
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.secondary)
+                            .lineLimit(2)
+                            .lineSpacing(1)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(L("No stereo signal."))
+                            .font(.system(size: 10)).foregroundStyle(Theme.tertiary)
+                    }
+                    Spacer(minLength: 6)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        monoLabel
+                        monoReading(values.monoFoldDown)
+                    }
+                }
+                .frame(width: area.width, alignment: .leading)
+                .position(x: area.midX, y: track.maxY + 42)
             }
-            .frame(width: area.width, alignment: .leading)
-            .position(x: area.midX, y: track.maxY + 42)
         }
+    }
+
+    private func zoneChip(_ zone: CorrelationZone) -> some View {
+        Text(zone.title)
+            .font(.system(size: 9, weight: .bold)).tracking(l10n.tracking(0.6))
+            .foregroundStyle(Theme.onStatus)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Capsule().fill(Theme.correlationColor(zone)))
+    }
+
+    private var monoLabel: some View {
+        Text(L("IN MONO"))
+            .font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(l10n.tracking(1))
+            .foregroundStyle(Theme.tertiary)
+            .lineLimit(1).fixedSize()
+    }
+
+    private func monoReading(_ fold: Float?) -> some View {
+        Text(verbatim: fold.map { MeterScale.signedTenths($0, floor: -39.9) + " dB" } ?? "—")
+            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+            .foregroundStyle(fold.map { $0 < -6 ? Theme.ember : ($0 < -3.5 ? Theme.ochre : Theme.ink) } ?? Theme.tertiary)
+            .lineLimit(1).fixedSize()
     }
 
     /// Middle of a zone on the scale.

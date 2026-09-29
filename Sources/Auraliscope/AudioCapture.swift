@@ -145,6 +145,9 @@ final class AudioCapture {
     private(set) var deliveredChannels: UInt32 = 0
     /// Keeps an output source's process tap and aggregate device alive while capturing.
     private var tap: AnyObject?
+    /// The IOProc reading an output source's tap aggregate, and that aggregate.
+    private var tapProc: AudioDeviceIOProcID?
+    private var tapDevice = AudioDeviceID(0)
 
     init?() {
         guard let ring = channel_ring_create(32_768) else { return nil }
@@ -174,19 +177,12 @@ final class AudioCapture {
         stop()
         guard device.channels > 0 else { throw AudioCaptureError.noInput }
         guard sourceForRole.count == Role.count else { throw AudioCaptureError.operation(LKey("Channel routing needs 16 roles"), -1) }
-        // An output source is read through a private aggregate device holding a tap on that output; from
-        // there on it is captured exactly like an input.
-        var captureDevice = device.device
         if device.output {
             guard #available(macOS 14.2, *) else { throw AudioCaptureError.tapUnavailable }
-            let outputTap = try OutputTap(outputUID: device.uid)
-            tap = outputTap
-            captureDevice = outputTap.aggregateID
-            channels = min(AudioDevices.channelCount(captureDevice, scope: kAudioObjectPropertyScopeInput), 64)
-            guard channels > 0 else { stop(); throw AudioCaptureError.noInput }
-        } else {
-            channels = min(device.channels, 64)
+            return try startTap(device: device, sourceForRole: sourceForRole)
         }
+        channels = min(device.channels, 64)
+        let captureDevice = device.device
         var description = AudioComponentDescription(componentType: kAudioUnitType_Output, componentSubType: kAudioUnitSubType_HALOutput, componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
         guard let component = AudioComponentFindNext(nil, &description) else { throw AudioCaptureError.operation(LKey("Find HAL AudioUnit"), -1) }
         var newUnit: AudioUnit?
@@ -200,41 +196,18 @@ final class AudioCapture {
             try check(AudioUnitSetProperty(newUnit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &disable, UInt32(MemoryLayout<UInt32>.size)), LKey("Disable output"))
             var deviceID = captureDevice
             try check(AudioUnitSetProperty(newUnit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &deviceID, UInt32(MemoryLayout<AudioDeviceID>.size)), LKey("Select input device"))
-            var rateAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var rate = Double(48_000)
-            var rateSize = UInt32(MemoryLayout<Double>.size)
-            try check(AudioObjectGetPropertyData(captureDevice, &rateAddress, 0, nil, &rateSize, &rate), LKey("Read sample rate"))
-            sampleRate = rate
+            sampleRate = try nominalRate(captureDevice)
             // Only the routed inputs cross the HAL. With nothing routed, one channel keeps the stream (and the
             // status line) alive. A driver that refuses the channel map falls back to every input.
             var routing = Self.compactRouting(sourceForRole, deviceChannels: channels)
             if routing.inputs.isEmpty { routing.inputs = [0] }
-            if !applyFormat(newUnit, rate: rate, inputs: routing.inputs) {
+            if !applyFormat(newUnit, rate: sampleRate, inputs: routing.inputs) {
                 routing = (Array(0..<Int32(channels)), sourceForRole.map { $0 >= 0 && $0 < Int32(channels) ? $0 : -1 })
-                try check(setFormat(newUnit, rate: rate, channels: channels), LKey("Set Float32 PCM format"))
+                try check(setFormat(newUnit, rate: sampleRate, channels: channels), LKey("Set Float32 PCM format"))
                 deliveredChannels = channels
             }
             Diagnostics.log("Capture delivers \(deliveredChannels) of \(channels) device inputs")
-            // The unit renders at the device's own IO size; nothing here changes the buffer size that other
-            // clients of the device (a DAW) use.
-            var bufferAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var deviceFrames: UInt32 = 0
-            var bufferSize = UInt32(MemoryLayout<UInt32>.size)
-            var maximumFrames = 4096
-            if AudioObjectGetPropertyData(captureDevice, &bufferAddress, 0, nil, &bufferSize, &deviceFrames) == noErr {
-                maximumFrames = max(4096, min(16_384, Int(deviceFrames) * 2))
-            }
-            allocatedSamples = maximumFrames * Int(deliveredChannels)
-            let storage = UnsafeMutablePointer<Float>.allocate(capacity: allocatedSamples)
-            storage.initialize(repeating: 0, count: allocatedSamples)
-            context.pointee.unit = newUnit
-            context.pointee.storage = storage
-            context.pointee.max_frames = UInt32(maximumFrames)
-            context.pointee.channels = deliveredChannels
-            withUnsafeMutableBytes(of: &context.pointee.source_for_role) { raw in
-                let roles = raw.bindMemory(to: Int32.self)
-                for role in 0..<Role.count { roles[role] = routing.roles[role] }
-            }
+            prepareContext(device: captureDevice, unit: newUnit, roles: routing.roles)
             var callback = AURenderCallbackStruct(inputProc: capture_input_proc, inputProcRefCon: UnsafeMutableRawPointer(context))
             try check(AudioUnitSetProperty(newUnit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callback, UInt32(MemoryLayout<AURenderCallbackStruct>.size)), LKey("Set input callback"))
             try check(AudioUnitInitialize(newUnit), LKey("Initialize audio unit"))
@@ -243,6 +216,68 @@ final class AudioCapture {
         } catch {
             stop()
             throw error
+        }
+    }
+
+    /// An output source is read through a private aggregate device holding a tap on that output, by a plain
+    /// device IOProc (see `capture_tap_io_proc`): macOS then asks only for System Audio Recording. Opened through
+    /// the AUHAL input element, the tap counted as microphone use, so the orange microphone indicator stayed on and
+    /// the microphone permission decided whether the tap read silence, whatever the source.
+    @available(macOS 14.2, *)
+    private func startTap(device: InputDevice, sourceForRole: [Int32]) throws {
+        do {
+            let outputTap = try OutputTap(outputUID: device.uid)
+            tap = outputTap
+            let aggregate = outputTap.aggregateID
+            channels = min(AudioDevices.channelCount(aggregate, scope: kAudioObjectPropertyScopeInput), 64)
+            guard channels > 0 else { throw AudioCaptureError.noInput }
+            sampleRate = try nominalRate(aggregate)
+            // The IOProc sees every channel of the tap; the roles index them directly.
+            deliveredChannels = channels
+            Diagnostics.log("Capture delivers all \(channels) tap channels")
+            prepareContext(device: aggregate, unit: nil,
+                           roles: sourceForRole.map { $0 >= 0 && $0 < Int32(channels) ? $0 : -1 })
+            var procID: AudioDeviceIOProcID?
+            try check(AudioDeviceCreateIOProcID(aggregate, capture_tap_io_proc, UnsafeMutableRawPointer(context), &procID),
+                      LKey("Create output tap"))
+            tapProc = procID
+            tapDevice = aggregate
+            channel_ring_clear(ring)
+            try check(AudioDeviceStart(aggregate, procID), LKey("Start output capture"))
+        } catch {
+            stop()
+            throw error
+        }
+    }
+
+    private func nominalRate(_ device: AudioDeviceID) throws -> Double {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var rate = Double(48_000)
+        var size = UInt32(MemoryLayout<Double>.size)
+        try check(AudioObjectGetPropertyData(device, &address, 0, nil, &size, &rate), LKey("Read sample rate"))
+        return rate
+    }
+
+    /// Storage and routing for the IO callback, sized from the device's IO buffer. The callback renders at the
+    /// device's own IO size; nothing here changes the buffer size that other clients of the device (a DAW) use.
+    private func prepareContext(device: AudioDeviceID, unit: AudioUnit?, roles: [Int32]) {
+        var bufferAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var deviceFrames: UInt32 = 0
+        var bufferSize = UInt32(MemoryLayout<UInt32>.size)
+        var maximumFrames = 4096
+        if AudioObjectGetPropertyData(device, &bufferAddress, 0, nil, &bufferSize, &deviceFrames) == noErr {
+            maximumFrames = max(4096, min(16_384, Int(deviceFrames) * 2))
+        }
+        allocatedSamples = maximumFrames * Int(deliveredChannels)
+        let storage = UnsafeMutablePointer<Float>.allocate(capacity: allocatedSamples)
+        storage.initialize(repeating: 0, count: allocatedSamples)
+        context.pointee.unit = unit
+        context.pointee.storage = storage
+        context.pointee.max_frames = UInt32(maximumFrames)
+        context.pointee.channels = deliveredChannels
+        withUnsafeMutableBytes(of: &context.pointee.source_for_role) { raw in
+            let slots = raw.bindMemory(to: Int32.self)
+            for role in 0..<Role.count { slots[role] = roles[role] }
         }
     }
 
@@ -266,12 +301,21 @@ final class AudioCapture {
         return AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &format, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
     }
 
-    func stop() {
+    /// Returns drops from this capture after the last callback, before clearing its ring for reuse.
+    @discardableResult
+    func stop() -> UInt64 {
         if let unit {
             AudioOutputUnitStop(unit)
             AudioUnitUninitialize(unit)
             AudioComponentInstanceDispose(unit)
             self.unit = nil
+        }
+        // Stopped and destroyed from this thread, the IOProc has run for the last time before storage is freed.
+        if let tapProc {
+            AudioDeviceStop(tapDevice, tapProc)
+            AudioDeviceDestroyIOProcID(tapDevice, tapProc)
+            self.tapProc = nil
+            tapDevice = 0
         }
         if let storage = context.pointee.storage {
             storage.deinitialize(count: allocatedSamples)
@@ -283,7 +327,9 @@ final class AudioCapture {
         tap = nil
         allocatedSamples = 0
         deliveredChannels = 0
+        let dropped = channel_ring_dropped(ring)
         channel_ring_clear(ring)
+        return dropped
     }
 
     private func check(_ status: OSStatus, _ operation: String) throws {
@@ -292,9 +338,9 @@ final class AudioCapture {
 }
 
 /// What every app plays to one output device, as an input: a Core Audio process tap on the device's first
-/// output stream (all processes, this one included), wrapped in a private aggregate device that the HAL
-/// output unit opens like any input. macOS asks once for System Audio Recording permission. The tap does not
-/// alter or delay what the device plays.
+/// output stream (all processes, this one included), wrapped in a private aggregate device whose input an IOProc
+/// reads. macOS asks once for System Audio Recording permission. The tap does not alter or delay what the device
+/// plays.
 @available(macOS 14.2, *)
 final class OutputTap {
     let aggregateID: AudioDeviceID
