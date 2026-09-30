@@ -283,6 +283,7 @@ struct AnalysisBreakTests {
         truePeak()
         displays()
         restoration()
+        failures += ResultChecks.run()
         print(failures == 0 ? "\nAll analysis checks passed" : "\n\(failures) check(s) FAILED")
         exit(failures == 0 ? 0 : 1)
     }
