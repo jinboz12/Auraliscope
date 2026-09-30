@@ -871,7 +871,7 @@ private struct AppearancePane: View {
         SettingsSection(title: L("COLOR")) {
             SettingsRow(title: L("Color theme")) {
                 ThemePicker(selection: Binding(get: { palette.wrappedValue.rawValue },
-                                               set: { palette.wrappedValue = Theme.Palette(rawValue: $0) ?? .sage }))
+                                               set: { palette.wrappedValue = Theme.Palette(rawValue: $0) ?? .standard }))
                     .frame(width: 205, height: 26)
                     .background {
                         if #available(macOS 26, *) {

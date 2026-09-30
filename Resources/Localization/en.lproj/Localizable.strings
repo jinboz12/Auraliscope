@@ -380,3 +380,4 @@
 "Choose a DAW plugin" = "Choose a DAW plugin";
 "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window";
 "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here.";
+"LABS Indigo" = "LABS Indigo";

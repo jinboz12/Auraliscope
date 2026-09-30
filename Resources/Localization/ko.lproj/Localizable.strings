@@ -380,3 +380,4 @@
 "Choose a DAW plugin" = "DAW 플러그인 선택";
 "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "호스트 플러그인 · 설정 → 오디오에서 인서트를 선택하거나 플러그인 창의 버튼을 클릭하세요";
 "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "각 인서트는 DAW 안에서 자체 오디오를 측정하고, Auraliscope LABS는 그 결과를 표시합니다. 플러그인 창의 버튼으로도 여기에서 해당 인서트를 선택할 수 있습니다.";
+"LABS Indigo" = "LABS 인디고";

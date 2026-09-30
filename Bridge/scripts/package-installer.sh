@@ -30,6 +30,9 @@ component() {
     ditto --norsrc "$dist/$bundle" "$root/$bundle"
     find "$root" -name '._*' -delete
     xattr -cr "$root/$bundle"
+    # The external volume reports every folder as owner-only (drwx------); installed that way under root, no user
+    # could open the app or read the plugins. Everyone reads and opens, only the owner writes.
+    chmod -R u+rwX,go+rX,go-w "$root"
     codesign --verify --strict "$root/$bundle"
     pkgbuild --analyze --root "$root" "$stage/$identifier.plist" >/dev/null
     # Installed exactly here: never "upgrade" a copy elsewhere (a test build in Downloads, a build folder).
@@ -38,8 +41,18 @@ component() {
     plutil -replace 0.BundleOverwriteAction -string upgrade "$stage/$identifier.plist"
     local scripts=()
     [[ -d "$stage/scripts-$identifier" ]] && scripts=(--scripts "$stage/scripts-$identifier")
-    pkgbuild --root "$root" --component-plist "$stage/$identifier.plist" --install-location "$location" \
+    pkgbuild --root "$root" --ownership recommended --component-plist "$stage/$identifier.plist" --install-location "$location" \
         --identifier "$identifier" --version "$version" $scripts "$stage/$identifier.pkg" >/dev/null
+    # pkgbuild turns every extended attribute into a "._" entry, and the com.apple.provenance attribute macOS puts on
+    # files written here cannot be removed; installed, those entries break the bundles' sealed signatures. So the
+    # payload is rewritten without attributes (root:wheel, the files' own modes) and the file list to match.
+    local expanded="$stage/expanded-$identifier"
+    pkgutil --expand "$stage/$identifier.pkg" "$expanded"
+    python3 Bridge/scripts/payload-cpio.py "$root" "$expanded/Payload"
+    lsbom "$expanded/Bom" | grep -v '/\._' > "$stage/$identifier.files"
+    rm "$expanded/Bom" "$stage/$identifier.pkg"
+    mkbom -i "$stage/$identifier.files" "$expanded/Bom"
+    pkgutil --flatten "$expanded" "$stage/$identifier.pkg"
     echo "component $identifier $version → $location/$bundle"
 }
 # Hosts and auval see a new or replaced Audio Unit at once when the registrars restart.
@@ -123,7 +136,11 @@ for entry in "com.jinboz.SoundMeterJBZ.Labs.pkg:Auraliscope LABS.app" "com.jinbo
     codesign --verify --strict "$payload"
     diff -r "$stage/root-${part%.pkg}/$bundle" "$payload" >/dev/null
     if grep -q "<relocate>" "$stage/check/pkg/$part/PackageInfo"; then echo "$bundle is relocatable" >&2; exit 1; fi
-    echo "checked $bundle: identical, signature valid, not relocatable"
+    # What the installer writes: every item readable (and every folder openable) by all users, no "._" files.
+    bom="$stage/check/pkg/$part/Bom"
+    if lsbom -p f "$bom" | grep -q '/\._'; then echo "$bundle carries ._ files" >&2; exit 1; fi
+    if lsbom -p M "$bom" | grep -qvE '^.r..r..r'; then echo "$bundle has items other users cannot read" >&2; exit 1; fi
+    echo "checked $bundle: identical, signature valid, not relocatable, readable by all users, no ._ files"
 done
 cp "$stage/$name.pkg" "$dist/"
 find "$dist" -name '._*' -delete

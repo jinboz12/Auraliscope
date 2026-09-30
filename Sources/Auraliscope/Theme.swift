@@ -199,9 +199,13 @@ enum Theme {
     }
 
     enum Palette: String, CaseIterable, Identifiable {
+        /// The Auraliscope LABS icon's slate indigo body: LABS' default, listed first.
+        case labsIndigo
         case starlight, blossomPink, sage, vintageAmber, phosphorGreen, iceBlue, electricViolet, safetyOrange
         case ocean, plum, copper
         var id: String { rawValue }
+        /// LABS' default theme (Auraliscope's is Sage).
+        static let standard = Palette.labsIndigo
         var title: String {
             switch self {
             case .starlight: return L("Starlight")
@@ -215,6 +219,7 @@ enum Theme {
             case .ocean: return L("Ocean & Mist")
             case .plum: return L("Plum & Pearl")
             case .copper: return L("Copper & Linen")
+            case .labsIndigo: return L("LABS Indigo")
             }
         }
         var hex: UInt32 {
@@ -230,6 +235,7 @@ enum Theme {
             case .ocean: return 0x65A6B4
             case .plum: return 0xA883B1
             case .copper: return 0xBE8D62
+            case .labsIndigo: return 0x6B7E97
             }
         }
         var hexLabel: String { String(format: "#%06X", hex) }
@@ -241,11 +247,22 @@ enum Theme {
             case .ocean: return RGB(r: 236/255, g: 246/255, b: 247/255)
             case .plum: return RGB(r: 248/255, g: 239/255, b: 247/255)
             case .copper: return RGB(r: 250/255, g: 241/255, b: 226/255)
+            case .labsIndigo: return RGB(r: 237/255, g: 241/255, b: 248/255)
             default: return RGB(r: 247/255, g: 242/255, b: 235/255)
             }
         }
 
-        static var stored: Palette { Palette(rawValue: UserDefaults.standard.string(forKey: ThemeSettings.paletteKey) ?? "") ?? .sage }
+        static var stored: Palette {
+            let defaults = UserDefaults.standard
+            // Build 64 made LABS Indigo the default: a theme saved by an earlier LABS build gives way to it once;
+            // a theme chosen after that is kept.
+            if !defaults.bool(forKey: adoptedKey) {
+                defaults.set(true, forKey: adoptedKey)
+                defaults.set(standard.rawValue, forKey: ThemeSettings.paletteKey)
+            }
+            return Palette(rawValue: defaults.string(forKey: ThemeSettings.paletteKey) ?? "") ?? standard
+        }
+        private static let adoptedKey = "labsIndigoDefaultAdopted"
     }
 
     /// Everything a palette and an appearance resolve to. `ThemeSettings` replaces it when either changes;

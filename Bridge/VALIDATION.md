@@ -1,5 +1,24 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+## Build 64
+
+- **Installer fix.** Build 63's package installed every bundle as `drwx------ root wheel`, so the app could not be
+  opened and the plugins could not be read by a DAW. The external volume reports every folder as owner-only, and the
+  package kept that. Its payload also carried AppleDouble `._` entries: `pkgbuild` stores each extended attribute as
+  one, and macOS attaches `com.apple.provenance` to files written here, which cannot be removed; inside a bundle these
+  break its sealed signature. `package-installer.sh` now sets modes to owner-writable and readable by all users, and
+  replaces `pkgbuild`'s payload with one written by `payload-cpio.py`: root:wheel, the files' own modes, no attributes.
+  The file list is rebuilt to match. Its self-check fails the build if any payload item is unreadable by other users
+  or is a `._` file. The zips get the same permissions.
+- **LABS Indigo theme**, `#6B7E97`, the slate indigo of the LABS icon's body, with a cool cream. It is the default,
+  listed first. A theme saved by an earlier LABS build switches to it once on first launch; a theme chosen after that
+  is kept.
+- Plugins 0.64, so they replace build 63's.
+
+Checked: release core checks (42), localization (341 keys), the installer's self-check, and an offscreen render in
+the new theme. The build 64 installer was not installed here (installing needs an administrator). The analysis,
+transport and plugin code are build 63's, whose results follow.
+
 ## Build 63 (early test package)
 
 Build 63 is build 3's analysis and protocol, unchanged, with these changes (the rest of this report is build 3's):

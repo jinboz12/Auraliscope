@@ -380,3 +380,4 @@
 "Choose a DAW plugin" = "选择 DAW 插件";
 "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "宿主插件 · 请在“设置 → 音频”中选择一个插入实例，或点击其插件窗口中的按钮";
 "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "每个插入实例在 DAW 内测量自己的音频，Auraliscope LABS 显示其结果。插件窗口中的按钮也可以在这里选择该插入实例。";
+"LABS Indigo" = "LABS 靛蓝";

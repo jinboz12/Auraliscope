@@ -16,6 +16,8 @@ trap 'rm -rf "$stage"' EXIT
 for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     ditto --norsrc "$dist/$bundle" "$stage/$bundle"
     find "$stage/$bundle" -name '._*' -delete
+    # The external volume reports folders as owner-only; unzipped as such, other users could not open the bundle.
+    chmod -R u+rwX,go+rX,go-w "$stage/$bundle"
     codesign --verify --strict "$stage/$bundle"
     ditto -c -k --norsrc --keepParent "$stage/$bundle" "$stage/$bundle.zip"
     mkdir -p "$stage/check"
