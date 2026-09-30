@@ -195,12 +195,13 @@ package enum ResultTag: UInt16 {
     case spectrogramRows = 61      // u32: values per column (512)
     case spectrogram = 62          // f32[n × rows]: n columns, oldest first, dBFS
     case spectrogramLatest = 63    // u64: newest column serial analysed (≥ first + n − 1)
-    case spectrogramDropped = 64   // u64: columns discarded unsent in this generation (a display too slow)
+    case spectrogramDropped = 64   // u64: columns skipped just before `first` because the receiver fell more than
+                                   // the plugin's queue (about 2 s) behind; 0 when contiguous or for a new receiver
     case waveformFirst = 70        // u64
     case waveformColumnRate = 71   // f64: columns per second of audio (240)
     case waveform = 72             // f32[n × channels × 2]: n columns, oldest first, (min, max) per channel
     case waveformLatest = 73       // u64
-    case waveformDropped = 74      // u64
+    case waveformDropped = 74      // u64: likewise
     // Configuration needed to interpret the results
     case fftSize = 80              // u32
     case spectrumBands = 81        // u32

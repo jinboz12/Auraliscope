@@ -16,7 +16,7 @@ ausdk=Bridge/ThirdParty/AudioUnitSDK
 arch=(-arch arm64 -arch x86_64)
 base=(-isysroot "$sdk" -mmacosx-version-min=11.0 $arch -O2 -g0 -fvisibility=hidden -fvisibility-inlines-hidden
       -Wall -Wno-unused-parameter -DABR_PLUGIN_VERSION="\"$ABR_LABEL build $ABR_BUILD\"")
-ours=(-I Sources/BridgeTransport/include -I Bridge/Plugin/Core -I Bridge/Plugin/Editor -I Bridge/Plugin/AU)
+ours=(-I Sources/BridgeTransport/include -I Bridge/Plugin/Core -I Bridge/Plugin/Editor -I Bridge/Plugin/AU -I Bridge/Plugin/Analysis/include)
 vst3_flags=(-std=c++17 -DRELEASE=1 -I "$vst3" -Wno-deprecated-declarations -Wno-unknown-pragmas -Wno-unused-variable
             -Wno-unused-function -Wno-overloaded-virtual -Wno-extra-tokens)
 au_flags=(-std=c++20 -DAUSDK_NO_LOGGING=1 -I "$ausdk/include")  # no os_log from the SDK, the render path included
@@ -25,7 +25,7 @@ editor_au=(-DABR_EDITOR_CLASS=AuraliscopeBridgeEditorAU_${ABR_BUILD} -DABR_AU_VI
 
 # compile <object> <source> <flags…>: rebuilds when the source or any of our headers is newer.
 typeset -a objects_vst3 objects_au pids
-newest_header="$(ls -t Bridge/Plugin/*/*.h Sources/BridgeTransport/include/*.h | head -1)"
+newest_header="$(ls -t Bridge/Plugin/*/*.h Bridge/Plugin/Analysis/include/*.h Sources/BridgeTransport/include/*.h | head -1)"
 compile() {
     local object="$obj/$1" source="$2"; shift 2
     mkdir -p "${object:h}"
@@ -65,7 +65,7 @@ if [[ ! -f "$obj/common/BridgeDiscovery.o" || Sources/BridgeTransport/BridgeDisc
 fi
 objects_vst3+=("$obj/common/BridgeDiscovery.o")
 objects_au+=("$obj/common/BridgeDiscovery.o")
-for part in BridgeCore BridgeSender; do
+for part in BridgeCore BridgeSender BridgeAnalysisHub; do
     compile "common/$part.o" "Bridge/Plugin/Core/$part.cpp" -std=c++17 $ours
     objects_vst3+=("$obj/common/$part.o")
     objects_au+=("$obj/common/$part.o")
@@ -79,11 +79,22 @@ objects_vst3+=("$obj/vst3/BridgeVST3.o" "$obj/vst3/BridgeEditor.o")
 objects_au+=("$obj/au/BridgeAU.o" "$obj/au/BridgeAUView.o" "$obj/au/BridgeEditor.o")
 wait_all
 
+# The shared analysis core (Swift and C), one library per format under its own Swift module name.
+analysis_vst3=.build/bridge/analysis/vst3.a
+analysis_au=.build/bridge/analysis/au.a
+Bridge/scripts/build-analysis-lib.sh AuraliscopeBridgeAnalysisVST3 "$analysis_vst3" >/dev/null
+Bridge/scripts/build-analysis-lib.sh AuraliscopeBridgeAnalysisAU "$analysis_au" >/dev/null
+objects_vst3+=("$analysis_vst3")
+objects_au+=("$analysis_au")
+
 # Assemble and sign on the local disk: the exFAT volume adds "._" files that invalidate signatures.
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-link_flags=(-isysroot "$sdk" -mmacosx-version-min=11.0 $arch -bundle -dead_strip
-            -framework Cocoa -framework AudioToolbox -framework AudioUnit -framework CoreFoundation)
+# The Swift runtime is the system's (/usr/lib/swift); the toolchain folder only supplies the static compatibility
+# shims the Swift objects ask for when targeting macOS 11.
+swift_libs=(-L/usr/lib/swift -L"$sdk/usr/lib/swift" -L"${$(xcrun -f swiftc):h:h}/lib/swift/macosx")
+link_flags=(-isysroot "$sdk" -mmacosx-version-min=11.0 $arch -bundle -dead_strip $swift_libs
+            -framework Cocoa -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework Accelerate)
 bundle() {  # bundle <name.ext> <plist> <exports> <objects…>
     local name="$1" plist="$2" exports="$3"; shift 3
     local contents="$stage/$name/Contents"

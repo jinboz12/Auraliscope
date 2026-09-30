@@ -1,3 +1,5 @@
+import AnalysisCore
+import BridgeTransport
 import Foundation
 
 /// End-to-end check of a DAW plugin source through the real app: discovery, selection, the analysis pipeline and
@@ -26,6 +28,14 @@ import Foundation
 ///   --expect-ambiguous n            do not select: the saved insert must be ambiguous between n connected inserts,
 ///                                   with nothing analysed; then choose the copy (as a person would) and measure it
 ///   --list-bridge-sources           print the plugin instances seen within 1.5 s, then quit
+///   --expect-analysed-min s         at the first measurement the plugin has analysed at least s seconds in this
+///                                   generation (it measured before Labs connected, or while Labs was away)
+///   --compare-reference             compare the plugin's results with Auraliscope's own analysis of the same
+///                                   test signal (997 Hz and 1499 Hz sines at the --expect-peak-db levels)
+///   --then-controls                 afterwards: pause, resume, reset true peak and reset the plugin's measurement
+///                                   from Labs, checking each acknowledgement and its effect
+///
+/// Every measurement also checks that the display shows the plugin's own results: nothing is analysed here.
 ///
 /// Prints one line per step and exits 0 when every expectation holds.
 @MainActor
@@ -77,6 +87,9 @@ enum BridgeSelfTest {
         let measureAtEnd = arguments.contains("--measure-at-end")
         let restore = arguments.contains("--restore")
         let expectedAmbiguity = value(after: "--expect-ambiguous").flatMap(Int.init)
+        let analysedMinimum = value(after: "--expect-analysed-min").flatMap(Double.init)
+        let compareReference = arguments.contains("--compare-reference")
+        let controls = arguments.contains("--then-controls")
         /// Integrated loudness at the end of the first measurement, to check it carries on across breaks.
         var firstIntegrated: Float?
         var failures = 0
@@ -143,7 +156,23 @@ enum BridgeSelfTest {
                        source?.host ?? "?"))
             say(String(format: "peak L %.3f dBFS, R %.3f dBFS · RMS L %.3f dBFS, R %.3f dBFS", db(peaks[0]), db(peaks[1]),
                        db(rms[0]), db(rms[1])))
-            say("dropped frames (status bar): \(model.droppedFrames); receiver lost \(source?.framesLost ?? 0) in \(source?.discontinuities ?? 0) gap(s)")
+            say("unanalysed frames (status bar): \(model.droppedFrames)")
+            if !model.showingBridgeResults { fail("the display is not showing the plugin's results") }
+            if let source, let result = model.latestBridgeResult {
+                let seconds = Double(result.framesAnalysed) / max(1, result.sampleRate)
+                let counters = model.bridgeResultCounters
+                say(String(format: "plugin analysis: generation %u, %.1f s analysed, %@; results received %llu, shown %d, stale %llu, rejected %d; spectrogram gaps %llu, skipped %llu; waveform gaps %llu",
+                           result.generation, seconds, result.measurement == .paused ? "paused" : "measuring",
+                           source.resultsReceived, counters?.received ?? 0, source.resultsStale, counters?.rejected ?? 0,
+                           counters?.spectrogramGaps ?? 0, counters?.spectrogramSkipped ?? 0, counters?.waveformGaps ?? 0))
+                if (counters?.rejected ?? 0) > 0 { fail("results were rejected as malformed") }
+                if let analysedMinimum, firstIntegrated == nil, seconds < analysedMinimum {
+                    fail(String(format: "the plugin had analysed %.1f s, expected at least %.1f s", seconds, analysedMinimum))
+                }
+                if compareReference { compare(result) }
+            } else {
+                fail("no result from the plugin")
+            }
             if let expectedRate, model.sampleRate != expectedRate { fail("sample rate \(model.sampleRate), expected \(expectedRate)") }
             if let expectedChannels, channels != expectedChannels { fail("\(channels) channels, expected \(expectedChannels)") }
             for (channel, expected) in expectedPeaks.enumerated() where channel < 2 {
@@ -210,6 +239,7 @@ enum BridgeSelfTest {
         /// under the same session, without restarting.
         func awaitHold() {
             let session = model.selectedID.bridge, generation = model.captureGeneration
+            let heldResult = model.latestBridgeResult
             var held = false
             if dropConnection {
                 say("breaking the connection")
@@ -222,13 +252,20 @@ enum BridgeSelfTest {
                     say("held: \(self.model.status.text)")
                     if !self.model.running { self.fail("the held analysis stopped") }
                 }
-                return self.model.measurementBreaks >= 1 && self.condition == .streaming
+                return held && self.condition == .streaming
             }) {
-                guard self.model.measurementBreaks >= 1 else { return self.finish("no break counted: \(self.model.status.text)") }
-                if self.dropConnection && !held { self.fail("the held state never showed") }
+                guard held else { return self.finish("the held state never showed: \(self.model.status.text)") }
                 if self.model.selectedID.bridge != session { self.fail("returned under another session") }
-                if self.model.captureGeneration != generation { self.fail("the analysis restarted instead of carrying on") }
-                say("returned under the same session\(held ? " after being held" : ""), analysis carried on: \(self.model.status.text)")
+                if self.model.captureGeneration != generation { self.fail("the display restarted instead of carrying on") }
+                // The plugin went on measuring while Labs was away: the same generation, and more audio analysed.
+                if let before = heldResult, let after = self.model.latestBridgeResult {
+                    say(String(format: "plugin analysis across the gap: generation %u → %u, analysed %.1f s → %.1f s",
+                               before.generation, after.generation, Double(before.framesAnalysed) / before.sampleRate,
+                               Double(after.framesAnalysed) / after.sampleRate))
+                    if after.generation != before.generation { self.fail("the plugin's measurement restarted") }
+                    if after.framesAnalysed <= before.framesAnalysed { self.fail("the plugin did not measure while disconnected") }
+                }
+                say("returned under the same session after being held, measurement carried on: \(self.model.status.text)")
                 self.measureWhenStreaming(then: {
                     self.checkContinuity()
                     self.finish(nil)
@@ -237,6 +274,7 @@ enum BridgeSelfTest {
         }
 
         func afterFirstMeasurement() {
+            if controls { return runControls() }
             if hold { return awaitHold() }
             if reconnect { return awaitReturn() }
             if let nextRate { return awaitRate(nextRate) }
@@ -299,6 +337,123 @@ enum BridgeSelfTest {
                 say("waiting for it to return")
                 self.poll(timeout: 30, until: { self.condition == .streaming }) {
                     self.measureWhenStreaming(then: { self.finish(nil) })
+                }
+            }
+        }
+
+        /// The plugin's measurement against Auraliscope's own analysis (the same shared analysis core) of the test
+        /// signal, generated here at the insert's rate and levels. Steady sines: after the windows fill, every reading
+        /// is independent of where the two analyses started.
+        func compare(_ result: ResultMessage) {
+            let amplitudes = expectedPeaks.map { Float(pow(10, $0 / 20)) }
+            guard !amplitudes.isEmpty else { return fail("--compare-reference needs --expect-peak-db") }
+            let channels = result.channels, rate = result.sampleRate
+            let active = (0..<Role.count).map { channels == 1 ? $0 == Role.left : $0 <= Role.right }
+            guard let pipeline = MeterPipeline(sampleRate: rate, activeRoles: active, detector: FormatDetector(), streamID: 1) else {
+                return fail("could not build the reference analysis")
+            }
+            let seconds = 8.0, block = Int((rate / MeterPipeline.tickRate).rounded())
+            var buffer = [Float](repeating: 0, count: block * channels)
+            var values = [Float](repeating: 0, count: SnapshotSlots.total)
+            var n = 0
+            for tick in 0..<Int(seconds * MeterPipeline.tickRate) {
+                for i in 0..<block {
+                    let time = Double(n + i) / rate
+                    buffer[i * channels] = amplitudes[0] * Float(sin(2 * .pi * 997 * time))
+                    if channels > 1 { buffer[i * channels + 1] = amplitudes[min(1, amplitudes.count - 1)] * Float(sin(2 * .pi * 1499 * time)) }
+                }
+                buffer.withUnsafeBufferPointer {
+                    pipeline.consume(interleaved: $0.baseAddress!, channels: channels, frames: block,
+                                     roles: channels == 1 ? [Role.left] : [Role.left, Role.right])
+                }
+                n += block
+                values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / MeterPipeline.tickRate) }
+            }
+            func db(_ v: Float) -> Double { 20 * log10(Double(max(v, 1e-9))) }
+            var worst = (name: "", delta: 0.0)
+            func check(_ name: String, _ plugin: Double, _ reference: Double, _ tolerance: Double) {
+                let delta = abs(plugin - reference)
+                say(String(format: "  %@: plugin %.3f, reference %.3f (Δ %.3f, tolerance %.3f)", name, plugin, reference, delta, tolerance))
+                if delta > tolerance { fail("\(name) differs from the reference analysis") }
+                if delta > worst.delta { worst = (name, delta) }
+            }
+            say("compared with Auraliscope's own analysis of the same signal:")
+            for c in 0..<channels {
+                let role = c == 0 ? Role.left : Role.right
+                check("peak ch\(c + 1) dBFS", db(result.peak[c]), db(values[SnapshotSlots.peaks + role]), 0.05)
+                check("RMS ch\(c + 1) dBFS", db(result.rms[c]), db(values[SnapshotSlots.rms + role]), 0.05)
+                check("held true peak ch\(c + 1) dBTP", db(result.heldTruePeak[c]), db(values[SnapshotSlots.heldTruePeaks + role]), 0.05)
+            }
+            check("momentary LUFS", Double(result.momentary), Double(values[SnapshotSlots.momentary]), 0.05)
+            check("short-term LUFS", Double(result.shortTerm), Double(values[SnapshotSlots.shortTerm]), 0.05)
+            check("integrated LUFS", Double(result.integrated), Double(values[SnapshotSlots.integrated]), 0.05)
+            check("dominant frequency Hz", Double(result.dominant.first ?? 0), Double(values[SnapshotSlots.peakFrequency]), 1.0)
+            if channels > 1 {
+                check("correlation", Double(result.correlation), Double(values[SnapshotSlots.correlation]), 0.05)
+            }
+            let spectrum = (0..<MeterSnapshot.bandCount).map { abs(Double(result.spectrum[$0]) - Double(values[SnapshotSlots.spectrum + $0])) }
+            let loud = (0..<MeterSnapshot.bandCount).filter { values[SnapshotSlots.spectrum + $0] > -60 }
+            let spectrumDelta = loud.map { spectrum[$0] }.max() ?? 0
+            say(String(format: "  spectrum: %d bands above −60 dBFS, largest difference %.3f dB (tolerance 0.5)", loud.count, spectrumDelta))
+            if spectrumDelta > 0.5 { fail("spectrum differs from the reference analysis") }
+        }
+
+        /// Controls from Labs, each acknowledged by the plugin: pause (nothing accumulates), resume (carries on),
+        /// reset true peak, reset (a new generation, measuring afresh).
+        func runControls() {
+            guard let session = model.selectedID.bridge,
+                  let first = model.bridgeSources.first(where: { $0.sessionKey == session }) else { return finish("no bound insert") }
+            let generation = first.generation
+            func ack(after previous: UInt32, _ check: @escaping (BridgeAck) -> Bool, _ label: String, then next: @escaping () -> Void) {
+                poll(timeout: 5, until: {
+                    guard let s = self.model.bridgeSources.first(where: { $0.sessionKey == session }) else { return false }
+                    return s.acksReceived > previous
+                }) {
+                    guard let s = self.model.bridgeSources.first(where: { $0.sessionKey == session }), s.acksReceived > previous else {
+                        return self.finish("no acknowledgement for \(label)")
+                    }
+                    say("\(label): acknowledged (\(s.lastAck.outcomeName), generation \(s.lastAck.generation), \(s.lastAck.measurement == UInt32(ABR_MEASUREMENT_PAUSED) ? "paused" : "measuring"))")
+                    if s.lastAck.outcome != UInt32(ABR_ACK_DONE) || !check(s.lastAck) { self.fail("\(label): unexpected acknowledgement") }
+                    next()
+                }
+            }
+            var acks: UInt32 { model.bridgeSources.first(where: { $0.sessionKey == session })?.acksReceived ?? 0 }
+            var analysed: UInt64 { model.latestBridgeResult?.framesAnalysed ?? 0 }
+            say("controls: pausing the plugin's measurement from Labs")
+            let a0 = acks
+            model.toggleCapture()
+            ack(after: a0, { $0.measurement == UInt32(ABR_MEASUREMENT_PAUSED) && $0.generation == generation }, "pause") {
+                let frozen = analysed
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    let later = self.model.latestBridgeResult
+                    say(String(format: "while paused: analysed %.2f s → %.2f s, measurement %@", Double(frozen) / (later?.sampleRate ?? 1),
+                               Double(later?.framesAnalysed ?? 0) / (later?.sampleRate ?? 1), later?.measurement == .paused ? "paused" : "measuring"))
+                    if (later?.framesAnalysed ?? 0) != frozen { self.fail("the measurement went on accumulating while paused") }
+                    if !self.model.frozen { self.fail("the display did not hold its picture") }
+                    let a1 = acks
+                    self.model.toggleCapture()
+                    ack(after: a1, { $0.measurement == UInt32(ABR_MEASUREMENT_MEASURING) && $0.generation == generation }, "resume") {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            if analysed <= frozen { self.fail("the measurement did not carry on after resuming") }
+                            let a2 = acks
+                            self.model.resetTruePeak()
+                            ack(after: a2, { $0.generation == generation }, "reset true peak") {
+                                let a3 = acks
+                                let before = self.model.latestBridgeResult?.framesAnalysed ?? 0
+                                self.model.resetMeasurements()
+                                ack(after: a3, { $0.generation == generation + 1 }, "reset") {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                        let r = self.model.latestBridgeResult
+                                        say(String(format: "after reset: generation %u, analysed %.2f s (was %.2f s)", r?.generation ?? 0,
+                                                   Double(r?.framesAnalysed ?? 0) / (r?.sampleRate ?? 1), Double(before) / (r?.sampleRate ?? 1)))
+                                        if r?.generation != generation + 1 { self.fail("results are not of the new generation") }
+                                        if (r?.framesAnalysed ?? .max) >= before { self.fail("the measurement did not start afresh") }
+                                        self.measureWhenStreaming(then: { self.finish(nil) })
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

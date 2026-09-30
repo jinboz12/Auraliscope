@@ -6,17 +6,23 @@
 //   configure / setActive / setOffline   host (non-real-time) threads, while the host is not processing
 //   setBypassed                          any thread, the audio thread included
 //   process                              the host's audio thread: copies into a preallocated ring, nothing else
-//   status / names / state               UI and host threads
+//   status / names / state / commands    UI and host threads
 //
-// Communication with Auraliscope runs on one sender thread per process (shared by every instance of the same
-// binary), which drains each instance's ring into its own socket.
+// Each instance analyses its own audio. Two threads per process (shared by every instance of the same binary) do
+// the rest, never the audio thread:
+//   the analysis thread (BridgeAnalysisHub.cpp) drains each instance's ring into its analyser (the shared analysis
+//     core, Sources/AnalysisCore) and prepares the newest result for sending;
+//   the sender thread (BridgeSender.cpp) talks to Auraliscope Labs: identity, status, results, commands.
+// The analysis runs whether or not Labs is open and whether or not the plugin window is.
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
+#include "BridgeAnalysis.h"
 #include "BridgeProtocol.h"
 #include "RecordRing.h"
 
@@ -31,7 +37,7 @@ struct HostTransport {
 struct CoreStatus {
     bool connected = false;       // a socket to Auraliscope is open and it accepted this plugin's protocol
     bool focusPending = false;    // "Show in Auraliscope" was clicked and not yet delivered
-    bool subscribed = false;      // Auraliscope asked for this instance's audio
+    bool subscribed = false;      // Auraliscope asked for this instance's results
     bool receiverTooOld = false;  // the Auraliscope that answered speaks an older protocol
     bool receiverTooNew = false;  // … a newer one: this plugin needs an update
     uint32_t state = ABR_STATE_INACTIVE;
@@ -40,8 +46,8 @@ struct CoreStatus {
     uint32_t formatEpoch = 0;
     uint32_t maxBlockFrames = 0;
     uint64_t framesProcessed = 0;
-    uint64_t framesSent = 0;
-    uint64_t framesDropped = 0;
+    uint64_t framesDropped = 0;   // live frames the analysis queue could not take
+    uint64_t resultsSent = 0;
     uint32_t interruptions = 0;
     uint32_t transportJumps = 0;
     uint32_t transportFlags = 0;
@@ -51,6 +57,11 @@ struct CoreStatus {
     std::string trackName;        // reported by the host ("" when none)
     std::string instanceTag;      // short form of the persistent ID, to tell inserts apart
     std::string copiedFromTag;    // with ABR_IDENTITY_COPY: short form of the identity the saved state carried
+    // The instance's own measurement.
+    uint32_t measurement = ABR_MEASUREMENT_NONE;
+    bool hasAnalysis = false;     // an analyser exists and has published at least once
+    AbrAnalysisSummary analysis{};
+    uint32_t backlogMs = 0;       // audio waiting for the analysis thread
 };
 
 class BridgeCore {
@@ -60,8 +71,8 @@ public:
     BridgeCore(const BridgeCore &) = delete;
     BridgeCore &operator=(const BridgeCore &) = delete;
 
-    // Host threads, while not processing. A sample-rate or channel change starts a new format epoch;
-    // reactivating with the same format keeps the epoch and marks the next block as a restart.
+    // Host threads, while not processing. A sample-rate or channel change starts a new format epoch (and a new
+    // analysis generation); reactivating with the same format keeps the analysis and marks a break instead.
     void configure(double sampleRate, uint32_t channels, uint32_t maxBlockFrames);
     void setActive(bool active);
     void setOffline(bool offline);
@@ -82,6 +93,8 @@ public:
     CoreStatus status() const;
     // UI thread: asks Auraliscope to make this instance its active source, now or as soon as it connects.
     void requestFocus() noexcept;
+    // UI thread: the plugin window's own controls (ABR_COMMAND_*); carried out by the analysis thread.
+    void requestCommand(uint32_t command);
     std::string saveState() const;
     // Restores the name and the identity. When another live instance of this plugin in this process already
     // uses the saved identity (a duplicated track, pasted settings, a second copy of a project), this instance
@@ -89,17 +102,36 @@ public:
     // can tell the host its state changed.
     bool restoreState(const std::string &state, bool *identityReassigned = nullptr);
 
-    // Sender thread only (see BridgeSender.cpp).
+    // Analysis thread only (BridgeAnalysisHub.cpp). Analyses at most `maxSeconds` of queued audio; returns the
+    // frames analysed.
+    uint32_t analyse(uint64_t nowNs, double maxSeconds);
+    // Sender thread only (BridgeSender.cpp).
     void service(uint64_t nowNs);
     void disconnect();
+    // Analysis thread, when the instance goes: frees the analyser.
+    void releaseAnalysis();
 
 private:
+    struct Command {
+        uint32_t id;            // 0: from the plugin window, not acknowledged over the socket
+        uint32_t code;
+        uint32_t generation;    // expected, 0: any
+    };
+    struct Ack {
+        uint32_t id, code, outcome, generation, measurement;
+    };
+
     uint32_t effectiveState() const noexcept;
     void queue(uint16_t type, const void *payload, uint32_t length);
+    void queueHello();
     void queueStatus(uint64_t nowNs);
     bool readControl();
+    void handleCommand(const uint8_t *payload, uint32_t length);
     bool flush();
-    void drainRing();
+    void sendResult();
+    void sendAcks();
+    void runCommands();
+    bool startGeneration(double sampleRate, uint32_t channels, uint32_t epoch);
 
     const uint32_t format_;
     uint8_t sessionId_[16];
@@ -129,53 +161,93 @@ private:
     // Audio thread state.
     RecordRing ring_;
     uint64_t position_ = 0;
-    uint32_t reasons_ = ABR_AUDIO_STREAM_START;  // pending for the next transmitted block
+    uint32_t reasons_ = ABR_AUDIO_STREAM_START;  // pending for the next captured block
     uint32_t idleMs_ = 0;
-    uint32_t lastToken_ = 0;
     uint64_t lastCallTicks_ = 0;
     uint32_t lastFrames_ = 0;
     HostTransport lastTransport_{};
     double ticksToNs_ = 1;
     std::atomic<uint64_t> lastCallNs_{0};
+    std::atomic<uint64_t> lastLiveNs_{0};
     std::atomic<uint64_t> framesProcessed_{0};
     std::atomic<uint64_t> framesDropped_{0};
     std::atomic<uint32_t> transportFlags_{0};
     std::atomic<uint32_t> interruptions_{0};
     std::atomic<uint32_t> transportJumps_{0};
 
-    // Sender thread state (the atomics are also read by the UI).
-    std::atomic<uint32_t> subscription_{0};     // 0: not transmitting
+    // Analysis thread state. The analyser is created and destroyed on the analysis thread only.
+    AbrAnalyzer *analyzer_ = nullptr;
+    uint32_t analyzerEpoch_ = 0;
+    uint32_t analyzerChannels_ = 0;
+    bool freshGeneration_ = false;  // no audio analysed yet in this generation: nothing to break from
+    bool forceResult_ = false;      // state changed without a tick (command, new generation): send it anyway
+    uint32_t encodedSubscription_ = 0;
+    uint32_t generationCounter_ = 0;
+    uint64_t expectedPosition_ = 0;
+    uint64_t publishedTicks_ = 0;
+    std::unique_ptr<float[]> analysisScratch_;
+    std::atomic<uint32_t> generation_{0};
+    std::atomic<uint32_t> measurement_{ABR_MEASUREMENT_NONE};
+    std::atomic<bool> pausedWanted_{false};
+    std::atomic<uint32_t> lastBreakReasons_{0};
+    std::atomic<uint64_t> framesAnalysed_{0};
+
+    // Shared between threads, each under its own lock (never taken by the audio thread).
+    mutable std::mutex summaryLock_;
+    AbrAnalysisSummary summary_{};
+    bool hasSummary_ = false;
+    std::mutex commandLock_;
+    std::vector<Command> commands_;              // reserved up front; bounded
+    std::vector<Ack> acks_;
+    // The newest RESULT, encoded by the analysis thread for the sender: replaced while unsent, so a slow receiver
+    // gets the latest state, and the columns it has not had are carried again until one is sent.
+    std::mutex mailboxLock_;
+    std::unique_ptr<uint8_t[]> mailbox_;
+    uint32_t mailboxBytes_ = 0;
+    uint32_t mailboxSubscription_ = 0;
+    uint32_t mailboxGeneration_ = 0;
+    uint64_t mailboxSpectrogram_ = 0, mailboxWaveform_ = 0;
+    // Columns delivered to the current subscription (serials of `sentGeneration_`), under `mailboxLock_`.
+    uint32_t sentSubscription_ = 0, sentGeneration_ = 0;
+    uint64_t sentSpectrogram_ = 0, sentWaveform_ = 0;
+
+    // Sender thread state (the atomics are also read by other threads).
+    std::atomic<uint32_t> subscription_{0};     // 0: not sending results
     std::atomic<bool> connected_{false};
     std::atomic<bool> receiverTooOld_{false};
     std::atomic<bool> receiverTooNew_{false};
-    std::atomic<uint64_t> framesSent_{0};
+    std::atomic<uint64_t> resultsSent_{0};
     int fd_ = -1;
     bool welcomed_ = false;
     uint64_t lastAttemptNs_ = 0;
     uint64_t lastStatusNs_ = 0;
     uint32_t lastStatusState_ = 0xFFFFFFFF, lastStatusEpoch_ = 0, lastSettingsSerial_ = 0, lastStatusFlags_ = 0;
+    uint32_t lastStatusGeneration_ = 0, lastStatusMeasurement_ = 0;
     uint32_t sendSequence_ = 0;
-    uint32_t sentFormatEpoch_ = 0;
-    uint32_t senderReasons_ = 0;
-    uint32_t senderIdleMs_ = 0;  // with ABR_AUDIO_AFTER_IDLE in senderReasons_: carried from a discarded record
     std::unique_ptr<uint8_t[]> out_;
     size_t outUsed_ = 0, outSent_ = 0;
-    uint8_t in_[256];
+    uint8_t in_[1024];
     size_t inUsed_ = 0;
-    std::unique_ptr<float[]> scratch_;
 };
 
-// The process-wide sender thread. Instances register on construction and unregister on destruction; the thread
-// runs while at least one instance exists, so unloading the plugin binary never leaves a thread behind.
+// The process-wide threads. Instances register on construction and unregister on destruction; the threads run
+// while at least one instance exists, so unloading the plugin binary never leaves a thread behind.
 void registerCore(BridgeCore *core);
 void unregisterCore(BridgeCore *core);
+void registerAnalysis(BridgeCore *core);
+void unregisterAnalysis(BridgeCore *core);
 
 // Identities claimed by live instances of this binary in this process (see BridgeCore::restoreState).
 // `claimIdentity` returns false, and changes nothing, when another instance holds `id`.
 bool claimIdentity(const BridgeCore *core, const uint8_t id[16]);
 void releaseIdentity(const BridgeCore *core);
 
-// For tests: whether the sender thread is running.
+// For tests: whether the sender thread is running, and the analysis thread.
 bool senderRunning();
+bool analysisRunning();
+// Nanoseconds the analysis thread has spent working since it started (for load measurements).
+uint64_t analysisBusyNs();
+// Tests only: stops (true) or restarts the analysis thread's work, as if it were starved of CPU.
+void holdAnalysisForTesting(bool held);
 
 }  // namespace abr

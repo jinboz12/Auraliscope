@@ -354,6 +354,8 @@
 "%@ · DAW plugin · bypassed in the DAW" = "%@ · DAW 插件 · 已在 DAW 中旁通";
 "%@ · DAW plugin · inactive in the DAW" = "%@ · DAW 插件 · 在 DAW 中未激活";
 "%@ · DAW plugin · no audio: the DAW is not processing it" = "%@ · DAW 插件 · 无音频：DAW 未在处理它";
+"%@ · DAW plugin · measurement paused in the plugin" = "%@ · DAW 插件 · 插件中的测量已暂停";
+"%@ · DAW plugin · results delayed" = "%@ · DAW 插件 · 结果延迟";
 "%@ · DAW plugin · not responding" = "%@ · DAW 插件 · 无响应";
 "%@ · DAW plugin · offline render, not metered" = "%@ · DAW 插件 · 离线渲染，不计量";
 "%@ · DAW plugin · only mono and stereo are supported" = "%@ · DAW 插件 · 仅支持单声道和立体声";

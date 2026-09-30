@@ -1,82 +1,92 @@
 #ifndef AURALISCOPE_BRIDGE_PROTOCOL_H
 #define AURALISCOPE_BRIDGE_PROTOCOL_H
 
-// Auraliscope Bridge local transport, protocol version 2.
+// Auraliscope Bridge local transport, protocol version 3: analysis results, not audio. The full specification,
+// with every field, limit and compatibility rule, is Bridge/PROTOCOL.md.
 //
-// One Unix-domain stream socket per plugin instance. The desktop application listens at
-// `abr_socket_path()`; every plugin instance (VST3 or AU alike) connects as a client. Nothing here depends on a
-// plugin format: the plugin wrappers and the application share this header and nothing else.
+// Each Bridge plugin instance analyses its own audio (Sources/AnalysisCore, on a thread of the plugin) and sends
+// the results; the desktop application only shows them. One Unix-domain stream socket per plugin instance; the
+// application listens at `abr_socket_path()` and every instance (VST3 or AU alike) connects as a client.
 //
-// Every message is a 16-byte `AbrHeader` followed by `length` payload bytes. All integers and samples are
-// little-endian (both ends run on the same Mac; the field is fixed so a later network relay can keep it).
+// Every message is a 16-byte header followed by `length` payload bytes, all little-endian:
 //
-//   plugin → app   HELLO     once, first message after connecting: identity
-//   plugin → app   STATUS    on every change and at least every ABR_STATUS_INTERVAL_MS: state, name, counters
-//   plugin → app   FORMAT    before the first AUDIO of each format epoch: sample rate, channels, layout, sample format
-//   plugin → app   AUDIO     only while subscribed: one block of interleaved samples with its stream position
-//   plugin → app   FOCUS     the user clicked "Show in Auraliscope": make this instance the active source
-//   app → plugin   WELCOME   reply to HELLO: the application's protocol version
-//   app → plugin   SUBSCRIBE (with a subscription number) / UNSUBSCRIBE   start or stop AUDIO for this instance
+//   magic u32 ("ABRG") · type u16 · flags u16 (0) · length u32 · sequence u32 (per connection, per direction)
 //
-// Stream positions count every frame the instance processed live (not bypassed, not offline) in this session,
-// whether or not it was transmitted. A receiver that sees an AUDIO position beyond the end of the previous block
-// has lost exactly the difference. The first block after anything that broke the live stream carries
-// ABR_AUDIO_DISCONTINUITY and a reason bit; see the ABR_AUDIO_AFTER_* flags.
+// Payloads are sequences of tagged fields (BridgeWire.h): tag u16 · kind u8 · flags u8 · count u32 · value, padded
+// to 4 bytes. A receiver skips fields it does not know and ignores known fields of the wrong kind or size, so a
+// minor addition never needs a new protocol version. Only HELLO and WELCOME begin with a fixed prefix (the
+// protocol version), so that both ends of different versions can recognise each other.
 //
-// Every AUDIO block names the subscription it was captured for. A receiver delivers only blocks of its current
-// subscription, so audio queued (in the plugin or the socket) before an unsubscribe is never replayed into a
-// later subscription of the same instance.
+//   plugin → app   HELLO     first message: u32 protocol_version, u32 plugin_format, then fields: identity
+//   plugin → app   STATUS    on every change and at least every ABR_STATUS_INTERVAL_MS: state, names, counters,
+//                            analysis generation and measurement state
+//   plugin → app   RESULT    while subscribed: the newest analysis state plus the spectrogram and waveform columns
+//                            the subscriber has not had (fields: Sources/AnalysisCore/ResultProtocol.swift)
+//   plugin → app   ACK       the outcome of a COMMAND
+//   plugin → app   FOCUS     the user clicked "Show in Auraliscope Labs": make this instance the active source
+//   app → plugin   WELCOME   reply to HELLO: u32 protocol_version, u32 reserved, then fields
+//   app → plugin   SUBSCRIBE / UNSUBSCRIBE   start or stop RESULTs for this instance (a new number each time)
+//   app → plugin   COMMAND   reset, reset true peak, pause or resume the instance's measurement
 //
-// Version 2 changed the HELLO, STATUS, SUBSCRIBE and AUDIO layouts. A receiver lists a plugin of another version
-// as needing an update and does not talk to it further; a plugin that finds an older receiver says so and
-// retries slowly.
+// Results are never replayed: every RESULT names the subscription it answers and carries the plugin's current
+// state, so a receiver drops anything of an earlier subscription and never mistakes queued results for new ones.
 
 #include <stdint.h>
 
-#define ABR_PROTOCOL_VERSION 2u
-#define ABR_MAGIC 0x47524241u  // "ABRG" in memory order
+#define ABR_PROTOCOL_VERSION 3u
+#define ABR_ANALYSIS_SCHEMA 1u         // the RESULT field set (ResultProtocol.swift)
+#define ABR_MAGIC 0x47524241u          // "ABRG" in memory order
 #define ABR_MAX_CHANNELS 2u
 #define ABR_MAX_PAYLOAD (1u << 20)
 #define ABR_STATUS_INTERVAL_MS 250u
+#define ABR_TEXT_MAX 255u              // longest UTF-8 text field, bytes
 
 enum {
     ABR_MSG_HELLO = 1,
     ABR_MSG_STATUS = 2,
-    ABR_MSG_FORMAT = 3,
-    ABR_MSG_AUDIO = 4,
     ABR_MSG_FOCUS = 5,        // no payload
+    ABR_MSG_RESULT = 6,
+    ABR_MSG_ACK = 7,
     ABR_MSG_WELCOME = 16,
     ABR_MSG_SUBSCRIBE = 17,
-    ABR_MSG_UNSUBSCRIBE = 18,
+    ABR_MSG_UNSUBSCRIBE = 18,  // no payload
+    ABR_MSG_COMMAND = 19,
 };
+// Version 2 types, never sent by version 3: FORMAT (3) and AUDIO (4).
 
 // What the plugin is doing with the audio at its insertion point.
 enum {
     ABR_STATE_INACTIVE = 0,   // not activated by the host, or not yet configured
-    ABR_STATE_LIVE = 1,       // real-time processing; audio is transmitted while subscribed
-    ABR_STATE_BYPASSED = 2,   // host or user bypass: audio passes, nothing is transmitted
-    ABR_STATE_OFFLINE = 3,    // offline (bounce/export) render: audio passes, nothing is transmitted
+    ABR_STATE_LIVE = 1,       // real-time processing; the audio is analysed
+    ABR_STATE_BYPASSED = 2,   // host or user bypass: audio passes, nothing is analysed
+    ABR_STATE_OFFLINE = 3,    // offline (bounce/export) render: audio passes, nothing is analysed as live
+};
+
+// The analysis' measurement state.
+enum {
+    ABR_MEASUREMENT_NONE = 0,       // no analysis: never configured, or not mono/stereo
+    ABR_MEASUREMENT_MEASURING = 1,
+    ABR_MEASUREMENT_PAUSED = 2,     // paused by a COMMAND: audio passes and is not accumulated
 };
 
 enum { ABR_FORMAT_VST3 = 1, ABR_FORMAT_AU = 2, ABR_FORMAT_TEST = 99 };
 enum { ABR_LAYOUT_UNKNOWN = 0, ABR_LAYOUT_MONO = 1, ABR_LAYOUT_STEREO = 2 };  // stereo order is L, R
-enum { ABR_SAMPLE_FLOAT32_INTERLEAVED = 1 };
 
-// STATUS flags and AUDIO flags share one namespace.
+// STATUS flags and break reasons.
 enum {
     ABR_TRANSPORT_KNOWN = 1u << 0,         // the host reported its transport state
     ABR_TRANSPORT_PLAYING = 1u << 1,       // … and it was playing
-    ABR_TRANSPORT_POSITION = 1u << 2,      // AUDIO: transport_position is valid
-    ABR_AUDIO_DISCONTINUITY = 1u << 8,     // the audio before this block is missing or is not its predecessor
-    ABR_AUDIO_AFTER_DROP = 1u << 9,        // … frames were dropped (the position gap says how many)
-    ABR_AUDIO_AFTER_IDLE = 1u << 10,       // … the host stopped calling the plugin for idle_ms
+    ABR_TRANSPORT_POSITION = 1u << 2,      // (internal) the block carries a timeline position
+    ABR_AUDIO_DISCONTINUITY = 1u << 8,     // the audio before this point is missing or is not its predecessor
+    ABR_AUDIO_AFTER_DROP = 1u << 9,        // … frames were dropped (the analysis queue was full)
+    ABR_AUDIO_AFTER_IDLE = 1u << 10,       // … the host stopped calling the plugin
     ABR_AUDIO_AFTER_BYPASS = 1u << 11,     // … the insert was bypassed
     ABR_AUDIO_AFTER_OFFLINE = 1u << 12,    // … the host rendered offline in between
     ABR_AUDIO_AFTER_RESTART = 1u << 13,    // … the host deactivated and reactivated the plugin
-    ABR_AUDIO_STREAM_START = 1u << 14,     // first block of this subscription
+    ABR_AUDIO_STREAM_START = 1u << 14,     // first audio of this analysis generation
     ABR_AUDIO_TRANSPORT_JUMP = 1u << 15,   // the host's timeline jumped (locate, loop) while playing: the signal
-                                           // is still continuous, so this alone is not a discontinuity
-    ABR_STATUS_SUBSCRIBED = 1u << 16,      // STATUS: the plugin believes it is transmitting
+                                           // is still continuous, so this alone is not a break
+    ABR_STATUS_SUBSCRIBED = 1u << 16,      // STATUS: the plugin is sending results
 };
 #define ABR_AUDIO_REASONS (ABR_AUDIO_AFTER_DROP | ABR_AUDIO_AFTER_IDLE | ABR_AUDIO_AFTER_BYPASS | \
                            ABR_AUDIO_AFTER_OFFLINE | ABR_AUDIO_AFTER_RESTART | ABR_AUDIO_STREAM_START)
@@ -85,89 +95,101 @@ enum {
 enum {
     ABR_IDENTITY_RESTORED = 1u << 0,   // persistent_id came from the host's saved state (project, preset, undo)
     ABR_IDENTITY_COPY = 1u << 1,       // the saved state carried restored_id, which another live instance of this
-                                       // plugin in this process already uses: this instance is a copy (duplicated
-                                       // track, pasted settings, a second project with the same inserts) and
-                                       // kept an identity of its own
+                                       // plugin in this process already uses: this instance is a copy and kept an
+                                       // identity of its own
+};
+
+// HELLO capabilities: the commands this plugin carries out.
+enum {
+    ABR_CAPABILITY_RESULTS = 1u << 0,
+    ABR_CAPABILITY_RESET = 1u << 1,
+    ABR_CAPABILITY_RESET_TRUE_PEAK = 1u << 2,
+    ABR_CAPABILITY_PAUSE = 1u << 3,
+};
+
+// COMMAND codes and ACK outcomes.
+enum {
+    ABR_COMMAND_RESET = 1,              // start a new analysis generation: every measurement starts afresh
+    ABR_COMMAND_RESET_TRUE_PEAK = 2,    // clear the held true peaks only
+    ABR_COMMAND_PAUSE = 3,              // pause measurement (the shared analysis, for every display)
+    ABR_COMMAND_RESUME = 4,             // resume it, continuing the same measurement
+};
+enum {
+    ABR_ACK_DONE = 0,
+    ABR_ACK_WRONG_SESSION = 1,     // the command named another live instance (an obsolete selection)
+    ABR_ACK_STALE_GENERATION = 2,  // the command expected a generation that is no longer current
+    ABR_ACK_UNSUPPORTED = 3,
+    ABR_ACK_NO_ANALYSIS = 4,       // nothing to act on: no usable format yet
+};
+
+// Field tags, per message type (a RESULT's are in ResultProtocol.swift).
+enum {  // HELLO, after the fixed prefix
+    ABR_HELLO_SESSION_ID = 1,        // bytes[16]: random per plugin instance lifetime
+    ABR_HELLO_PERSISTENT_ID = 2,     // bytes[16]: saved in the DAW project
+    ABR_HELLO_RESTORED_ID = 3,       // bytes[16]: with ABR_IDENTITY_COPY, the identity the saved state carried
+    ABR_HELLO_IDENTITY_FLAGS = 4,    // u32
+    ABR_HELLO_HOST_PID = 5,          // i64
+    ABR_HELLO_HOST_NAME = 6,         // utf8 ≤ 63
+    ABR_HELLO_HOST_BUNDLE_ID = 7,    // utf8 ≤ 95
+    ABR_HELLO_PLUGIN_VERSION = 8,    // utf8 ≤ 31
+    ABR_HELLO_SCHEMA = 9,            // u32: RESULT schema the plugin writes
+    ABR_HELLO_CAPABILITIES = 10,     // u32: ABR_CAPABILITY_*
+};
+enum {  // WELCOME, after the fixed prefix
+    ABR_WELCOME_SCHEMA = 1,          // u32: newest RESULT schema the application reads
+};
+enum {  // STATUS
+    ABR_STATUS_STATE = 1,            // u32: ABR_STATE_*
+    ABR_STATUS_FORMAT_EPOCH = 2,     // u32: changes with the sample rate or channel count (0: never configured)
+    ABR_STATUS_SAMPLE_RATE = 3,      // f64
+    ABR_STATUS_CHANNELS = 4,         // u32
+    ABR_STATUS_LAYOUT = 5,           // u32: ABR_LAYOUT_*
+    ABR_STATUS_MAX_BLOCK = 6,        // u32
+    ABR_STATUS_FLAGS = 7,            // u32: ABR_TRANSPORT_*, ABR_STATUS_SUBSCRIBED
+    ABR_STATUS_FRAMES_PROCESSED = 8, // u64: live frames in this session
+    ABR_STATUS_FRAMES_DROPPED = 9,   // u64: live frames the analysis could not take (its queue was full)
+    ABR_STATUS_INTERRUPTIONS = 10,   // u32: breaks in the live stream (bypass, offline, idle, restart)
+    ABR_STATUS_TRANSPORT_JUMPS = 11, // u32: timeline jumps while playing
+    ABR_STATUS_SOURCE_NAME = 12,     // utf8 ≤ 127: the name set in the plugin, else the host's track name
+    ABR_STATUS_TRACK_NAME = 13,      // utf8 ≤ 127
+    ABR_STATUS_CHANNEL_ID = 14,      // utf8 ≤ 63: the host's unique channel ID, when it gives one
+    ABR_STATUS_GENERATION = 15,      // u32: current analysis generation (0: none)
+    ABR_STATUS_MEASUREMENT = 16,     // u32: ABR_MEASUREMENT_*
+    ABR_STATUS_FRAMES_ANALYSED = 17, // u64: in this generation
+    ABR_STATUS_LAST_BREAK = 18,      // u32: reasons of the newest break the analysis saw
+    ABR_STATUS_BACKLOG_MS = 19,      // u32: audio waiting to be analysed
+    ABR_STATUS_SECONDS_SINCE_AUDIO = 20,  // f64: since the host last delivered live audio (< 0: never)
+};
+enum {  // SUBSCRIBE
+    ABR_SUBSCRIBE_SUBSCRIPTION = 1,  // u32, non-zero: echoed in every RESULT of this subscription
+};
+enum {  // COMMAND
+    ABR_COMMAND_ID = 1,              // u32: chosen by the application, echoed in the ACK
+    ABR_COMMAND_CODE = 2,            // u32: ABR_COMMAND_*
+    ABR_COMMAND_SESSION_ID = 3,      // bytes[16]: the instance it is meant for
+    ABR_COMMAND_GENERATION = 4,      // u32: the generation it is meant for (0: whichever is current)
+};
+enum {  // ACK
+    ABR_ACK_COMMAND_ID = 1,          // u32
+    ABR_ACK_COMMAND_CODE = 2,        // u32
+    ABR_ACK_OUTCOME = 3,             // u32: ABR_ACK_*
+    ABR_ACK_GENERATION = 4,          // u32: the generation after the command
+    ABR_ACK_MEASUREMENT = 5,         // u32: the measurement state after the command
+    ABR_ACK_SESSION_ID = 6,          // bytes[16]: the instance that answered
 };
 
 #pragma pack(push, 4)
 typedef struct {
     uint32_t magic;
     uint16_t type;
-    uint16_t reserved;
+    uint16_t flags;
     uint32_t length;     // payload bytes after this header
     uint32_t sequence;   // per-connection message counter, for debugging
 } AbrHeader;
-
-typedef struct {
-    uint32_t protocol_version;
-    uint32_t plugin_format;        // ABR_FORMAT_*
-    uint8_t session_id[16];        // random per plugin instance lifetime: identifies this live instance
-    uint8_t persistent_id[16];     // saved in the DAW project: the same insert after a reload
-    uint8_t restored_id[16];       // with ABR_IDENTITY_COPY: the identity the saved state carried; else zero
-    uint32_t identity_flags;       // ABR_IDENTITY_*
-    int32_t host_pid;
-    char host_name[64];            // UTF-8, NUL-terminated: the DAW's process name
-    char host_bundle_id[96];       // the DAW's bundle identifier, when it has one
-    char plugin_version[32];
-} AbrHello;
-
-typedef struct {
-    uint32_t state;                // ABR_STATE_*
-    uint32_t format_epoch;         // current format epoch (0 = never configured); changes with rate or channels
-    double sample_rate;
-    uint32_t channels;
-    uint32_t layout;               // ABR_LAYOUT_*
-    uint32_t max_block_frames;
-    uint32_t flags;                // ABR_TRANSPORT_*, ABR_STATUS_SUBSCRIBED
-    uint64_t frames_processed;     // live frames in this session (the stream position of the next frame)
-    uint64_t frames_dropped;       // live frames the plugin could not queue or send while subscribed
-    uint32_t interruptions;        // times the live stream broke (bypass, offline, idle, restart) in this session
-    uint32_t transport_jumps;      // timeline jumps while playing (locate, loop)
-    char source_name[128];         // user-facing name: the name set in the plugin, else the host's track name
-    char track_name[128];          // the host's name for the track or channel, when it gives one
-    char channel_id[64];           // the host's own unique ID for the channel, when it gives one (VST3 hosts)
-} AbrStatus;
-
-typedef struct {
-    uint32_t format_epoch;
-    uint32_t channels;
-    double sample_rate;
-    uint32_t layout;               // ABR_LAYOUT_*
-    uint32_t sample_format;        // ABR_SAMPLE_*
-} AbrFormat;
-
-typedef struct {
-    uint32_t subscription;         // the SUBSCRIBE this block was captured for
-    uint32_t format_epoch;
-    uint64_t position;             // stream position of the first frame
-    uint32_t frames;
-    uint32_t channels;
-    uint32_t flags;                // ABR_AUDIO_*, ABR_TRANSPORT_*
-    uint32_t idle_ms;              // with ABR_AUDIO_AFTER_IDLE: how long the host did not process (capped)
-    int64_t transport_position;    // with ABR_TRANSPORT_POSITION: the host timeline sample of the first frame
-    // followed by frames × channels float32 samples, interleaved
-} AbrAudio;
-
-typedef struct {
-    uint32_t protocol_version;
-    uint32_t reserved;
-} AbrWelcome;
-
-typedef struct {
-    uint32_t subscription;         // non-zero; echoed in every AUDIO of this subscription
-    uint32_t reserved;
-} AbrSubscribe;
 #pragma pack(pop)
-
 _Static_assert(sizeof(AbrHeader) == 16, "header layout");
-_Static_assert(sizeof(AbrHello) == 256, "hello layout");
-_Static_assert(sizeof(AbrStatus) == 376, "status layout");
-_Static_assert(sizeof(AbrFormat) == 24, "format layout");
-_Static_assert(sizeof(AbrAudio) == 40, "audio layout");
-_Static_assert(sizeof(AbrSubscribe) == 8, "subscribe layout");
 
-// Version 1 HELLO began with the same two words, so any version can be recognised from them.
+// HELLO and WELCOME begin with these two words in every protocol version.
 #define ABR_HELLO_MIN_BYTES 8u
 
 #endif

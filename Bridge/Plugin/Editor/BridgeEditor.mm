@@ -148,8 +148,8 @@ NSTextField *heading(NSRect frame, NSString *title) {
     NSString *_format;
     NSTimer *_timer;
     NSTextField *_name, *_headline, *_detail, *_thisMac, *_identity, *_copy, *_rate, *_layout, *_state, *_fresh,
-        *_counters, *_networkSummary, *_network[2];
-    NSButton *_connect, *_scan;
+        *_counters, *_networkSummary, *_network[2], *_loudness, *_levels, *_measured;
+    NSButton *_connect, *_scan, *_reset, *_pause;
     NSView *_dot;
     BOOL _scanning, _scanRequested, _launchFailed;
 }
@@ -248,9 +248,34 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _counters = label(NSMakeRect(14, 69, inner - 28, 14), [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightRegular], tertiary());
     [stream addSubview:_counters];
 
+    // 4. This insert's own measurement: the analysis runs here, in the plugin, whether or not Labs is open.
+    ABR_CARD_CLASS *measurement = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 358, inner, 88)];
+    [self addSubview:measurement];
+    [measurement addSubview:heading(NSMakeRect(14, 11, 200, 12), @"MEASUREMENT")];
+    _loudness = label(NSMakeRect(14, 26, inner - 28 - 150, 22), [NSFont monospacedDigitSystemFontOfSize:15 weight:NSFontWeightMedium], ink());
+    [measurement addSubview:_loudness];
+    _levels = label(NSMakeRect(14, 50, inner - 28, 14), [NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightRegular], secondary());
+    [measurement addSubview:_levels];
+    _measured = label(NSMakeRect(14, 67, inner - 28, 14), [NSFont systemFontOfSize:10], tertiary());
+    [measurement addSubview:_measured];
+    _pause = [NSButton buttonWithTitle:@"" target:self action:@selector(togglePause:)];
+    _pause.bordered = NO;
+    _pause.wantsLayer = YES;
+    _pause.layer.cornerRadius = 10;
+    _pause.frame = NSMakeRect(inner - 14 - 144, 26, 70, 20);
+    _pause.toolTip = @"Pauses this insert's measurement for every display: audio still passes, and is not measured.";
+    [measurement addSubview:_pause];
+    _reset = [NSButton buttonWithTitle:@"" target:self action:@selector(resetMeasurement:)];
+    _reset.bordered = NO;
+    _reset.wantsLayer = YES;
+    _reset.layer.cornerRadius = 10;
+    _reset.frame = NSMakeRect(inner - 14 - 70, 26, 70, 20);
+    _reset.toolTip = @"Starts this insert's measurement afresh (integrated loudness, range, held peaks).";
+    [measurement addSubview:_reset];
+
     // Network, collapsed: a later Auraliscope for iPhone and iPad will be found here. It is only scanned on request,
     // so the DAW's Local Network permission is asked for only by someone looking for it.
-    ABR_CARD_CLASS *network = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 358, inner, 80)];
+    ABR_CARD_CLASS *network = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 454, inner, 80)];
     [self addSubview:network];
     [network addSubview:heading(NSMakeRect(14, 11, 250, 12), @"NETWORK · PREVIEW")];
     _networkSummary = label(NSMakeRect(14, 28, inner - 28 - 110, 14), [NSFont systemFontOfSize:11], secondary());
@@ -266,8 +291,8 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _scan.frame = NSMakeRect(inner - 14 - 100, 24, 100, 20);
     [network addSubview:_scan];
 
-    NSTextField *note = label(NSMakeRect(margin, 446, inner, 14), [NSFont systemFontOfSize:10], tertiary());
-    note.stringValue = @"Audio passes through unchanged. Closing this window does not stop the stream.";
+    NSTextField *note = label(NSMakeRect(margin, 542, inner, 14), [NSFont systemFontOfSize:10], tertiary());
+    note.stringValue = @"Audio passes through unchanged. Closing this window does not stop the measurement.";
     [self addSubview:note];
     [self refresh];
     return self;
@@ -312,6 +337,8 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _name.target = nil;
     _connect.target = nil;
     _scan.target = nil;
+    _reset.target = nil;
+    _pause.target = nil;
 }
 
 // One click: ask Auraliscope Labs to analyse this insert, launching it first when it is not running. The request
@@ -331,6 +358,14 @@ NSTextField *heading(NSRect frame, NSString *title) {
         }
     }
     [self refresh];
+}
+
+- (void)resetMeasurement:(id)sender {
+    _core->requestCommand(ABR_COMMAND_RESET);
+}
+
+- (void)togglePause:(id)sender {
+    _core->requestCommand(_core->status().measurement == ABR_MEASUREMENT_PAUSED ? ABR_COMMAND_RESUME : ABR_COMMAND_PAUSE);
 }
 
 - (void)toggleScan:(id)sender {
@@ -408,14 +443,14 @@ NSTextField *heading(NSRect frame, NSString *title) {
         button = @"Shown in Auraliscope Labs";
         switch (status.state) {
         case ABR_STATE_LIVE:
-            headline = fresh ? @"Analysing this insert" : @"Selected · no audio";
-            detail = fresh ? @"Fresh audio is reaching Auraliscope Labs."
+            headline = fresh ? @"Shown in Auraliscope Labs" : @"Selected · no audio";
+            detail = fresh ? @"This insert's measurements are shown in Auraliscope Labs."
                            : @"The DAW is not processing this insert (stopped or suspended).";
             dot = fresh ? accent() : ochre();
             break;
         case ABR_STATE_BYPASSED:
             headline = @"Selected · bypassed";
-            detail = @"Nothing is sent while the insert is bypassed.";
+            detail = @"Nothing is measured while the insert is bypassed.";
             dot = ochre();
             break;
         case ABR_STATE_OFFLINE:
@@ -431,9 +466,9 @@ NSTextField *heading(NSRect frame, NSString *title) {
         }
     } else {
         headline = @"Connected · not analysed";
-        detail = @"Auraliscope Labs is analysing another source.";
+        detail = @"Auraliscope Labs is showing another source; this insert still measures.";
         dot = heather();
-        button = status.focusPending ? @"Switching…" : @"Analyse this insert";
+        button = status.focusPending ? @"Switching…" : @"Show this insert";
         filled = enabled = !status.focusPending;
     }
     _headline.stringValue = headline;
@@ -475,8 +510,8 @@ NSTextField *heading(NSRect frame, NSString *title) {
     }
     switch (status.state) {
     case ABR_STATE_LIVE: _state.stringValue = @"LIVE"; _state.textColor = accent(); break;
-    case ABR_STATE_BYPASSED: _state.stringValue = @"BYPASSED · NOT SENT"; _state.textColor = ochre(); break;
-    case ABR_STATE_OFFLINE: _state.stringValue = @"OFFLINE RENDER · NOT SENT"; _state.textColor = ochre(); break;
+    case ABR_STATE_BYPASSED: _state.stringValue = @"BYPASSED · NOT MEASURED"; _state.textColor = ochre(); break;
+    case ABR_STATE_OFFLINE: _state.stringValue = @"OFFLINE · NOT MEASURED"; _state.textColor = ochre(); break;
     default: _state.stringValue = @"INACTIVE"; _state.textColor = tertiary(); break;
     }
     const double since = status.secondsSinceProcess;
@@ -484,7 +519,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
         _fresh.stringValue = @"The DAW has not processed this insert yet.";
         _fresh.textColor = tertiary();
     } else if (since < 0.5) {
-        NSString *where = status.subscribed ? @"sent to Auraliscope Labs" : @"passing through, not sent";
+        NSString *where = status.subscribed ? @"measured here, results sent to Auraliscope Labs" : @"measured here";
         _fresh.stringValue = [NSString stringWithFormat:@"Audio is flowing · %@", where];
         _fresh.textColor = status.subscribed && status.state == ABR_STATE_LIVE ? accent() : secondary();
     } else {
@@ -494,12 +529,44 @@ NSTextField *heading(NSRect frame, NSString *title) {
     }
     NSString *transport = !(status.transportFlags & ABR_TRANSPORT_KNOWN) ? @""
         : (status.transportFlags & ABR_TRANSPORT_PLAYING) ? @" · playing" : @" · stopped";
-    _counters.stringValue = [NSString stringWithFormat:@"sent %@ · dropped %@ · breaks %u · block ≤ %u%@", count(status.framesSent),
-                                                       count(status.framesDropped), status.interruptions,
-                                                       status.maxBlockFrames, transport];
+    _counters.stringValue = [NSString stringWithFormat:@"results sent %llu · unanalysed %@ · breaks %u · block ≤ %u%@",
+                                                       (unsigned long long)status.resultsSent, count(status.framesDropped),
+                                                       status.interruptions, status.maxBlockFrames, transport];
     _counters.textColor = status.framesDropped > 0 || status.interruptions > 0 ? ochre() : tertiary();
     _counters.toolTip = @"Breaks: times the live stream stopped and resumed (bypass, offline render, the DAW idle or "
-                        @"restarting the plugin). Auraliscope Labs restarts its short-term analyses at each one.";
+                        @"restarting the plugin); momentary and short-term loudness restart at each one. Unanalysed: "
+                        @"audio the analysis could not keep up with (it still passed through).";
+}
+
+static NSString *lufs(float value) { return value <= -99 ? @"—" : [NSString stringWithFormat:@"%.1f", value]; }
+static NSString *dbfs(float linear) { return linear <= 1e-6f ? @"−∞" : [NSString stringWithFormat:@"%.1f", 20 * std::log10(linear)]; }
+
+// The insert's own measurement, from its analysis thread.
+- (void)refreshMeasurement:(const abr::CoreStatus &)status {
+    const bool paused = status.measurement == ABR_MEASUREMENT_PAUSED;
+    [self style:_pause title:paused ? @"Resume" : @"Pause" filled:paused enabled:status.measurement != ABR_MEASUREMENT_NONE size:11];
+    [self style:_reset title:@"Reset" filled:NO enabled:status.measurement != ABR_MEASUREMENT_NONE size:11];
+    if (!status.hasAnalysis) {
+        _loudness.stringValue = @"I —  ·  M —  ·  S —";
+        _levels.stringValue = status.measurement == ABR_MEASUREMENT_NONE ? @"Measures once the DAW plays mono or stereo audio here."
+                                                                        : @"Waiting for audio.";
+        _measured.stringValue = @"";
+        return;
+    }
+    const AbrAnalysisSummary &a = status.analysis;
+    _loudness.stringValue = [NSString stringWithFormat:@"I %@  ·  M %@  ·  S %@ LUFS", lufs(a.integrated), lufs(a.momentary),
+                                                       lufs(a.short_term)];
+    NSString *peaks = a.channels > 1 ? [NSString stringWithFormat:@"%@ / %@", dbfs(a.peak[0]), dbfs(a.peak[1])] : dbfs(a.peak[0]);
+    NSString *truePeaks = a.channels > 1 ? [NSString stringWithFormat:@"%@ / %@", dbfs(a.held_true_peak[0]), dbfs(a.held_true_peak[1])]
+                                         : dbfs(a.held_true_peak[0]);
+    NSString *range = a.loudness_range < 0 ? @"—" : [NSString stringWithFormat:@"%.1f LU", a.loudness_range];
+    _levels.stringValue = [NSString stringWithFormat:@"peak %@ dBFS · true peak max %@ dBTP · LRA %@", peaks, truePeaks, range];
+    const int seconds = int(a.seconds_analysed);
+    NSString *behind = status.backlogMs > 100 ? [NSString stringWithFormat:@" · %u ms behind", status.backlogMs] : @"";
+    _measured.stringValue = [NSString stringWithFormat:@"%@%d:%02d measured · %u break%@ · generation %u%@",
+                                                       paused ? @"Paused · " : @"", seconds / 60, seconds % 60, a.breaks,
+                                                       a.breaks == 1 ? @"" : @"s", a.generation, behind];
+    _measured.textColor = paused ? ochre() : tertiary();
 }
 
 // The network, collapsed until asked: DNS-SD peers other than this Mac's own receivers.
@@ -541,6 +608,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     [self refreshConnection:status];
     [self refreshIdentity:status];
     [self refreshStream:status];
+    [self refreshMeasurement:status];
     [self refreshNetwork];
 }
 @end

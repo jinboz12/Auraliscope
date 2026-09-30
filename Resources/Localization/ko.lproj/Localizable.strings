@@ -354,6 +354,8 @@
 "%@ · DAW plugin · bypassed in the DAW" = "%@ · DAW 플러그인 · DAW에서 바이패스됨";
 "%@ · DAW plugin · inactive in the DAW" = "%@ · DAW 플러그인 · DAW에서 비활성";
 "%@ · DAW plugin · no audio: the DAW is not processing it" = "%@ · DAW 플러그인 · 오디오 없음: DAW가 처리하지 않음";
+"%@ · DAW plugin · measurement paused in the plugin" = "%@ · DAW 플러그인 · 플러그인에서 측정 일시 정지됨";
+"%@ · DAW plugin · results delayed" = "%@ · DAW 플러그인 · 결과 지연";
 "%@ · DAW plugin · not responding" = "%@ · DAW 플러그인 · 응답 없음";
 "%@ · DAW plugin · offline render, not metered" = "%@ · DAW 플러그인 · 오프라인 렌더링, 측정하지 않음";
 "%@ · DAW plugin · only mono and stereo are supported" = "%@ · DAW 플러그인 · 모노와 스테레오만 지원";

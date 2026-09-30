@@ -1,6 +1,7 @@
-import AudioRing
+import AnalysisCore
 import BridgeTransport
 import Foundation
+import QuartzCore
 
 /// One Auraliscope Bridge plugin instance, as the receiver last heard from it. Plain values: acquisition only,
 /// nothing about how it is shown.
@@ -36,27 +37,41 @@ struct BridgeSource: Equatable {
     let sampleRate: Double
     let channels: Int
     let secondsSinceMessage: Double
+    /// Since the host last gave the insert live audio (the plugin's own clock, aged by the report's delay); nil
+    /// before it ever did.
     let secondsSinceAudio: Double?
-    let framesDelivered: UInt64
-    let framesLost: UInt64
-    /// Breaks reported to the analysis while delivering (`AbrSourceInfo.discontinuities`), and the newest one's
-    /// reasons (ABR_AUDIO_AFTER_*).
-    let discontinuities: UInt64
+    /// Since the newest result arrived here; nil before any.
+    let secondsSinceResult: Double?
+    /// The insert's own analysis: its generation (a new one after a reset or a format change), whether it is
+    /// measuring, how much it has analysed, and how far behind it is.
+    let generation: UInt32
+    let measurement: UInt32
+    let framesAnalysed: UInt64
+    let backlogMs: UInt32
+    /// Reasons (ABR_AUDIO_AFTER_*) of the newest break the insert's analysis saw.
     let lastBreakReasons: UInt32
-    let lastBreakLostFrames: UInt64
-    let lastBreakIdleMs: UInt32
+    /// Live audio the insert's analysis could not keep up with (it still passed through).
     let framesDroppedByPlugin: UInt64
     /// Breaks in the live stream the plugin saw (bypass, offline render, the host idle, a restart), and timeline
     /// jumps while playing.
     let pluginInterruptions: UInt32
     let transportJumps: UInt32
+    let resultsReceived: UInt64
+    let resultsDelivered: UInt64
+    let resultsStale: UInt64
     let delivering: Bool
+    /// Commands the insert answered, and the newest answer.
+    let acksReceived: UInt32
+    let lastAck: BridgeAck
+    let capabilities: UInt32
     /// Grows each time the user clicks "Show in Auraliscope Labs" in this instance's window.
     let focusRequests: UInt32
 
     var sessionKey: String { Self.hex(session) }
     var persistentKey: String { Self.hex(persistent) }
     var copiedFromKey: String? { copiedFrom.map(Self.hex) }
+    /// The insert's measurement is paused (by a command from Labs or its own window).
+    var measurementPaused: Bool { measurement == UInt32(ABR_MEASUREMENT_PAUSED) }
     /// The newest break's reasons, for the diagnostic log.
     var lastBreakReasonNames: String {
         let names: [(Int, String)] = [(ABR_AUDIO_AFTER_DROP, "frames dropped"), (ABR_AUDIO_AFTER_IDLE, "host idle"),
@@ -131,17 +146,24 @@ struct BridgeSource: Equatable {
         sampleRate = info.sample_rate
         channels = Int(info.channels)
         secondsSinceMessage = info.seconds_since_message
-        secondsSinceAudio = info.seconds_since_audio < 0 ? nil : info.seconds_since_audio
-        framesDelivered = info.frames_delivered
-        framesLost = info.frames_lost
-        discontinuities = info.discontinuities
-        lastBreakReasons = info.last_reasons
-        lastBreakLostFrames = info.last_lost_frames
-        lastBreakIdleMs = info.last_idle_ms
+        secondsSinceAudio = info.plugin_seconds_since_audio < 0 ? nil : info.plugin_seconds_since_audio + info.seconds_since_message
+        secondsSinceResult = info.seconds_since_result < 0 ? nil : info.seconds_since_result
+        generation = info.generation
+        measurement = info.measurement
+        framesAnalysed = info.frames_analysed
+        backlogMs = info.backlog_ms
+        lastBreakReasons = info.last_break_reasons
         framesDroppedByPlugin = info.frames_dropped_by_plugin
         pluginInterruptions = info.plugin_interruptions
         transportJumps = info.transport_jumps
+        resultsReceived = info.results_received
+        resultsDelivered = info.results_delivered
+        resultsStale = info.results_stale
         delivering = info.delivering != 0
+        acksReceived = info.acks_received
+        lastAck = BridgeAck(id: info.last_ack_id, command: info.last_ack_command, outcome: info.last_ack_outcome,
+                            generation: info.last_ack_generation, measurement: info.last_ack_measurement)
+        capabilities = info.capabilities
         focusRequests = info.focus_requests
     }
 
@@ -153,16 +175,97 @@ struct BridgeSource: Equatable {
     }
 }
 
+/// A plugin's answer to a command: which one, what came of it (ABR_ACK_*), and the analysis generation and
+/// measurement state after it.
+struct BridgeAck: Equatable {
+    var id: UInt32 = 0
+    var command: UInt32 = 0
+    var outcome: UInt32 = 0
+    var generation: UInt32 = 0
+    var measurement: UInt32 = 0
+
+    var outcomeName: String {
+        switch Int(outcome) {
+        case Int(ABR_ACK_DONE): return "done"
+        case Int(ABR_ACK_WRONG_SESSION): return "refused: another instance"
+        case Int(ABR_ACK_STALE_GENERATION): return "refused: obsolete generation"
+        case Int(ABR_ACK_UNSUPPORTED): return "unsupported"
+        case Int(ABR_ACK_NO_ANALYSIS): return "no analysis yet"
+        default: return "outcome \(outcome)"
+        }
+    }
+}
+
 /// Launched by a plugin's "Open Auraliscope Labs" button: start waiting for that plugin instead of opening the default
 /// output, and skip the welcome sheet.
 let launchedByBridge = CommandLine.arguments.contains("--bridge-launch")
 
+/// Where the selected insert's results land: decoded on the receiver thread and handed to a `ResultAssembler`,
+/// which the display worker reads at its own pace. The lock is held for a decode's hand-over and a snapshot's
+/// assembly only.
+final class ResultInbox {
+    private let lock = NSLock()
+    private let assembler: ResultAssembler
+    /// Distinguishes attachments, so results of an earlier source never continue a later one's stream.
+    private var source = 0
+    private(set) var lastReceived: CFTimeInterval = 0
+    private var silenced = false
+
+    init(streamSeed: UInt32) { assembler = ResultAssembler(streamSeed: streamSeed) }
+
+    /// A new attachment: whatever arrives from now on is a new stream for the displays.
+    func begin() {
+        lock.lock()
+        source += 1
+        lastReceived = 0
+        silenced = false
+        lock.unlock()
+    }
+
+    /// Receiver thread.
+    func take(_ payload: UnsafeRawBufferPointer) {
+        let message = ResultMessage.decode(payload)
+        lock.lock()
+        assembler.receive(message, source: source)
+        lastReceived = CACurrentMediaTime()
+        silenced = false
+        lock.unlock()
+    }
+
+    /// Display worker: the next snapshot into `values`, when there is one. With nothing received for `staleAfter`
+    /// seconds, the instantaneous readings fall to silence first.
+    func publish(into values: inout [Float], staleAfter: Double) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if !silenced, lastReceived > 0, CACurrentMediaTime() - lastReceived > staleAfter {
+            assembler.silenceTransients()
+            silenced = true
+        }
+        guard assembler.publish() else { return false }
+        values = assembler.values
+        return true
+    }
+
+    /// The newest result as received (tests and diagnostics).
+    var latest: ResultMessage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return assembler.latest
+    }
+
+    var counters: (received: Int, rejected: Int, spectrogramGaps: UInt64, spectrogramSkipped: UInt64, waveformGaps: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (assembler.received, assembler.rejected, assembler.spectrogramGaps, assembler.spectrogramSkipped,
+                assembler.waveformGaps)
+    }
+}
+
 /// The application end of the Bridge transport: listens for plugin instances from launch to quit, so they are
-/// discoverable whatever source is being metered, and hands the selected one's PCM to a `ChannelRing`.
+/// discoverable whatever source is being metered, and hands the selected one's analysis results to a
+/// `ResultInbox`. Nothing here receives or analyses audio.
 final class BridgeReceiver {
     private let server: OpaquePointer
-    /// The ring and routing the server thread writes through; changed only while detached.
-    private let sink: UnsafeMutablePointer<ChannelRingSink>
 
     /// Starts listening, or explains why it could not (another copy already receiving, a folder problem…).
     static func start() -> Result<BridgeReceiver, BridgeReceiverError> {
@@ -173,17 +276,9 @@ final class BridgeReceiver {
         return .success(BridgeReceiver(server: server))
     }
 
-    private init(server: OpaquePointer) {
-        self.server = server
-        sink = .allocate(capacity: 1)
-        sink.initialize(to: ChannelRingSink())
-    }
+    private init(server: OpaquePointer) { self.server = server }
 
-    deinit {
-        abr_server_stop(server)
-        sink.deinitialize(count: 1)
-        sink.deallocate()
-    }
+    deinit { abr_server_stop(server) }
 
     func sources() -> [BridgeSource] {
         var infos = [AbrSourceInfo](repeating: AbrSourceInfo(), count: 64)
@@ -191,33 +286,32 @@ final class BridgeReceiver {
         return infos.prefix(min(count, 64)).map(BridgeSource.init)
     }
 
-    /// Asks one instance for its audio (nil: none). Detaches the ring.
+    /// Asks one instance for its results (nil: none).
     func select(_ session: [UInt8]?) {
         if let session { session.withUnsafeBufferPointer { abr_server_select(server, $0.baseAddress) } }
         else { abr_server_select(server, nil) }
     }
 
-    /// Delivers the selected instance's audio of `epoch` into `ring`, its channel n going to every role routed
-    /// to input n, and marks every break in it in the ring (`channel_ring_mark`). The server thread is the ring's
-    /// only producer until `detach`. `markStart`: whether a break just before the first delivered block counts
-    /// (true when this continues an analysis that the break interrupted; false for a fresh one, or one the user
-    /// paused and resumed).
-    func attach(epoch: UInt32, ring: OpaquePointer, sourceForRole: [Int32], markStart: Bool) {
+    /// Delivers the selected instance's results into `inbox` until `detach`. The inbox must outlive the attachment.
+    func attach(_ inbox: ResultInbox) {
         abr_server_detach(server)
-        sink.pointee.ring = ring
-        withUnsafeMutableBytes(of: &sink.pointee.source_for_role) { raw in
-            let roles = raw.bindMemory(to: Int32.self)
-            for role in 0..<min(roles.count, sourceForRole.count) { roles[role] = sourceForRole[role] }
-        }
-        abr_server_attach(server, epoch, { context, samples, frames, channels in
-            channel_ring_sink_write(context, samples, frames, channels)
-        }, { context, reasons, lost, idle in
-            channel_ring_sink_boundary(context, reasons, lost, idle)
-        }, UnsafeMutableRawPointer(sink), markStart ? 1 : 0)
+        inbox.begin()
+        abr_server_attach(server, { context, payload, length in
+            guard let context else { return }
+            Unmanaged<ResultInbox>.fromOpaque(context).takeUnretainedValue()
+                .take(UnsafeRawBufferPointer(start: payload, count: Int(length)))
+        }, Unmanaged.passUnretained(inbox).toOpaque())
     }
 
-    /// After return the server no longer writes to the ring.
+    /// After return the server no longer calls the inbox.
     func detach() { abr_server_detach(server) }
+
+    /// Sends a command (ABR_COMMAND_*) to one instance, for `generation` (0: its current one). Returns the command's
+    /// ID, which its acknowledgement carries (`BridgeSource.lastAck`), or 0 when the instance is not connected.
+    @discardableResult
+    func command(_ session: [UInt8], _ command: Int32, generation: UInt32 = 0) -> UInt32 {
+        session.withUnsafeBufferPointer { abr_server_command(server, $0.baseAddress!, UInt32(command), generation) }
+    }
 
     /// Diagnostics: closes one instance's connection, as a broken connection would be; it reconnects by itself.
     func disconnect(_ session: [UInt8], refusingFor milliseconds: UInt32) {

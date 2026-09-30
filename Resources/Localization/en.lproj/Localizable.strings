@@ -354,6 +354,8 @@
 "%@ · DAW plugin · bypassed in the DAW" = "%@ · DAW plugin · bypassed in the DAW";
 "%@ · DAW plugin · inactive in the DAW" = "%@ · DAW plugin · inactive in the DAW";
 "%@ · DAW plugin · no audio: the DAW is not processing it" = "%@ · DAW plugin · no audio: the DAW is not processing it";
+"%@ · DAW plugin · measurement paused in the plugin" = "%@ · DAW plugin · measurement paused in the plugin";
+"%@ · DAW plugin · results delayed" = "%@ · DAW plugin · results delayed";
 "%@ · DAW plugin · not responding" = "%@ · DAW plugin · not responding";
 "%@ · DAW plugin · offline render, not metered" = "%@ · DAW plugin · offline render, not metered";
 "%@ · DAW plugin · only mono and stereo are supported" = "%@ · DAW plugin · only mono and stereo are supported";

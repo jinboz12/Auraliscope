@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include "BridgePaths.h"
+#include "BridgeWire.h"
 
 #ifndef ABR_PLUGIN_VERSION
 #define ABR_PLUGIN_VERSION "0.1.0-prototype"
@@ -22,11 +23,14 @@
 namespace abr {
 
 namespace {
-constexpr size_t kRingBytes = size_t(1) << 19;     // 512 KB: 1.3 s of 48 kHz stereo, 0.34 s at 192 kHz
-constexpr size_t kOutBytes = size_t(1) << 19;
-constexpr size_t kOutHighWater = size_t(1) << 16;  // stop taking from the ring while this much is unsent
+constexpr size_t kRingBytes = size_t(1) << 20;     // 1 MB: 2.7 s of 48 kHz stereo, 0.68 s at 192 kHz
+constexpr size_t kOutBytes = size_t(1) << 18;
+// Stop queuing results while this much is unsent: with the socket buffers (32 KB each way) a stalled receiver finds
+// at most about ten results waiting, and fresher state replaces the rest in the mailbox.
+constexpr size_t kOutHighWater = size_t(1) << 14;
+constexpr uint32_t kMailboxBytes = 128u * 1024u;   // one RESULT: ~7 KB of state plus up to 24 spectrogram columns
 constexpr uint32_t kChunkFrames = 2048;            // largest record; longer host blocks are split
-constexpr double kLatencyCap = 0.15;               // queued audio older than this is dropped, oldest first
+constexpr size_t kCommandQueue = 32;
 constexpr uint64_t kReconnectNs = 1000000000ull;
 constexpr uint64_t kIncompatibleRetryNs = 5000000000ull;  // a receiver of another protocol version
 constexpr uint64_t kStatusNs = uint64_t(ABR_STATUS_INTERVAL_MS) * 1000000ull;
@@ -72,10 +76,6 @@ bool parseHex(const std::string &text, uint8_t *bytes, size_t count) {
     return true;
 }
 
-void copyName(char *destination, const std::string &source, size_t size) {
-    std::snprintf(destination, size, "%s", source.c_str());
-}
-
 uint64_t nowNs() { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
 
 std::string hostBundleID() {
@@ -85,31 +85,40 @@ std::string hostBundleID() {
     if (identifier) CFStringGetCString(identifier, text, sizeof text, kCFStringEncodingUTF8);
     return text;
 }
+
+uint32_t layoutFor(uint32_t channels) {
+    return channels == 1 ? uint32_t(ABR_LAYOUT_MONO) : channels == 2 ? uint32_t(ABR_LAYOUT_STEREO) : uint32_t(ABR_LAYOUT_UNKNOWN);
+}
 }  // namespace
 
 BridgeCore::BridgeCore(uint32_t pluginFormat)
-    : format_(pluginFormat), ring_(kRingBytes), out_(new uint8_t[kOutBytes]),
-      scratch_(new float[size_t(kChunkFrames) * ABR_MAX_CHANNELS]) {
+    : format_(pluginFormat), ring_(kRingBytes), analysisScratch_(new float[size_t(kChunkFrames) * ABR_MAX_CHANNELS]),
+      mailbox_(new uint8_t[kMailboxBytes]), out_(new uint8_t[kOutBytes]) {
     arc4random_buf(sessionId_, sizeof sessionId_);
     // A fresh random identity cannot collide; claiming it lets a later copy recognise it.
     do { arc4random_buf(persistentId_, sizeof persistentId_); } while (!claimIdentity(this, persistentId_));
     mach_timebase_info_data_t timebase;
     mach_timebase_info(&timebase);
     ticksToNs_ = double(timebase.numer) / double(timebase.denom);
+    commands_.reserve(kCommandQueue);
+    acks_.reserve(kCommandQueue);
+    registerAnalysis(this);
     registerCore(this);
 }
 
 BridgeCore::~BridgeCore() {
-    unregisterCore(this);  // after this the sender thread never touches this instance again
+    unregisterCore(this);      // after this the sender thread never touches this instance again
+    unregisterAnalysis(this);  // … nor the analysis thread
     disconnect();
+    releaseAnalysis();
     releaseIdentity(this);
 }
 
 void BridgeCore::configure(double sampleRate, uint32_t channels, uint32_t maxBlockFrames) {
     std::lock_guard<std::mutex> lock(configLock_);
     uint32_t epoch = uint32_t(formatWord_.load(std::memory_order_relaxed) >> 32);
-    // Only a different format needs a new epoch (Auraliscope rebuilds its analysis for one); reactivating with the
-    // same format keeps the analysis and marks the break instead (see setActive).
+    // Only a different format needs a new epoch (the analysis is rebuilt for one); reactivating with the same
+    // format keeps the analysis and marks the break instead (see setActive).
     if (epoch == 0 || sampleRate != sampleRate_ || channels != channels_) epoch = epoch == 0xFFFFFFFFu ? 1 : epoch + 1;
     sampleRate_ = sampleRate;
     channels_ = channels;
@@ -152,7 +161,8 @@ void BridgeCore::process(const float *const *input, uint32_t channels, uint32_t 
                          const HostTransport &transport) noexcept {
     // mach_absolute_time reads the commpage: no system call.
     const uint64_t ticks = mach_absolute_time();
-    lastCallNs_.store(uint64_t(double(ticks) * ticksToNs_), std::memory_order_relaxed);
+    const uint64_t callNs = uint64_t(double(ticks) * ticksToNs_);
+    lastCallNs_.store(callNs, std::memory_order_relaxed);
     transportFlags_.store(transport.flags & (ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_PLAYING), std::memory_order_relaxed);
 
     // A timeline jump while playing (locate, loop) is metadata: what reaches the insert stays one signal.
@@ -178,48 +188,43 @@ void BridgeCore::process(const float *const *input, uint32_t channels, uint32_t 
     if (idleMs) breaks_.fetch_or(ABR_AUDIO_AFTER_IDLE, std::memory_order_relaxed);
 
     if (effectiveState() != ABR_STATE_LIVE) {
-        // Bypassed, offline and inactive audio is not part of the live stream: the position stands still, and
-        // `breaks_` says why the next live block does not follow the last one.
+        // Bypassed, offline and inactive audio is not part of the live stream: the position stands still, nothing
+        // is analysed, and `breaks_` says why the next live block does not follow the last one.
         if (idleMs) idleMs_ = std::min(kIdleCapMs, idleMs_ + idleMs);
         return;
     }
     const uint32_t breaks = breaks_.exchange(0, std::memory_order_relaxed);
     if (breaks & kInterruptions) interruptions_.fetch_add(1, std::memory_order_relaxed);
-    const uint32_t token = subscription_.load(std::memory_order_acquire);
-    if (token != lastToken_) {
-        // A new subscription starts clean: what happened before it belongs to no stream the receiver sees.
-        lastToken_ = token;
-        reasons_ = ABR_AUDIO_STREAM_START;
-        idleMs_ = 0;
-    } else {
-        reasons_ |= breaks;
-        idleMs_ = std::min(kIdleCapMs, idleMs_ + idleMs);
-    }
+    reasons_ |= breaks;
+    idleMs_ = std::min(kIdleCapMs, idleMs_ + idleMs);
+    lastLiveNs_.store(callNs, std::memory_order_relaxed);
 
     const uint64_t word = formatWord_.load(std::memory_order_acquire);
     const uint32_t epoch = uint32_t(word >> 32);
     bool usable = input && channels >= 1 && channels <= ABR_MAX_CHANNELS && channels == uint32_t(word);
     for (uint32_t channel = 0; usable && channel < channels; ++channel) usable = input[channel] != nullptr;
-    if (token != 0 && usable) {
+    if (usable) {
+        const double rate = rtSampleRate_.load(std::memory_order_relaxed);
         for (uint32_t offset = 0; offset < frames;) {
             const uint32_t count = std::min(kChunkFrames, frames - offset);
-            uint32_t flags = transport.flags & (ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_PLAYING | ABR_TRANSPORT_POSITION);
+            uint32_t flags = transport.flags & (ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_PLAYING);
             if (reasons_) flags |= ABR_AUDIO_DISCONTINUITY | reasons_;
             if (jumped && offset == 0) flags |= ABR_AUDIO_TRANSPORT_JUMP;
-            const AbrAudio header{token, epoch, position_ + offset, count, channels, flags,
-                                  (reasons_ & ABR_AUDIO_AFTER_IDLE) ? idleMs_ : 0u,
-                                  (flags & ABR_TRANSPORT_POSITION) ? transport.position + offset : 0};
+            const CaptureRecord header{epoch, count, channels, flags, (reasons_ & ABR_AUDIO_AFTER_IDLE) ? idleMs_ : 0u, 0,
+                                       position_ + offset, rate};
             if (ring_.write(header, input, offset)) {
                 reasons_ = 0;
                 idleMs_ = 0;
             } else {
+                // The analysis thread is behind by more than the ring holds: this block is lost to the analysis
+                // (the audio itself passes, untouched). The next record's position shows how much.
                 framesDropped_.fetch_add(count, std::memory_order_relaxed);
                 reasons_ |= ABR_AUDIO_AFTER_DROP;
             }
             offset += count;
         }
-    } else if (token != 0) {
-        reasons_ |= ABR_AUDIO_AFTER_DROP;  // subscribed, but this block could not be sent: the receiver sees the gap
+    } else {
+        reasons_ |= ABR_AUDIO_AFTER_DROP;  // not analysable (unexpected channel layout): the analysis sees a gap
     }
     position_ += frames;
     framesProcessed_.store(position_, std::memory_order_relaxed);
@@ -268,18 +273,26 @@ CoreStatus BridgeCore::status() const {
     status.receiverTooNew = receiverTooNew_.load(std::memory_order_relaxed);
     status.state = effectiveState();
     status.framesProcessed = framesProcessed_.load(std::memory_order_relaxed);
-    status.framesSent = framesSent_.load(std::memory_order_relaxed);
     status.framesDropped = framesDropped_.load(std::memory_order_relaxed);
+    status.resultsSent = resultsSent_.load(std::memory_order_relaxed);
     status.interruptions = interruptions_.load(std::memory_order_relaxed);
     status.transportJumps = transportJumps_.load(std::memory_order_relaxed);
     status.transportFlags = transportFlags_.load(std::memory_order_relaxed);
     const uint64_t last = lastCallNs_.load(std::memory_order_relaxed);
     status.secondsSinceProcess = last ? double(nowNs() - std::min(last, nowNs())) / 1e9 : -1;
+    status.measurement = measurement_.load(std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(summaryLock_);
+        status.hasAnalysis = hasSummary_;
+        status.analysis = summary_;
+    }
     std::lock_guard<std::mutex> lock(configLock_);
     status.sampleRate = sampleRate_;
     status.channels = channels_;
     status.maxBlockFrames = maxBlockFrames_;
     status.formatEpoch = uint32_t(formatWord_.load(std::memory_order_relaxed) >> 32);
+    const double bytesPerSecond = std::max(1.0, sampleRate_) * std::max(1u, channels_) * sizeof(float);
+    status.backlogMs = uint32_t(double(ring_.usedBytes()) / bytesPerSecond * 1000);
     status.sourceName = sourceName_;
     status.trackName = trackName_;
     status.instanceTag = hex(persistentId_, 3);
@@ -290,8 +303,14 @@ CoreStatus BridgeCore::status() const {
 
 void BridgeCore::requestFocus() noexcept { focusRequested_.store(true, std::memory_order_release); }
 
+void BridgeCore::requestCommand(uint32_t command) {
+    std::lock_guard<std::mutex> lock(commandLock_);
+    if (commands_.size() < kCommandQueue) commands_.push_back({0, command, 0});
+}
+
 // Plain text, so a project file stays readable and later versions can add keys:
 //   AuraliscopeBridge 1 / id=<32 hex digits> / name=<UTF-8>
+// Live measurements are not saved: a reopened project starts a new measurement (see ARCHITECTURE.md).
 std::string BridgeCore::saveState() const {
     std::lock_guard<std::mutex> lock(configLock_);
     return "AuraliscopeBridge 1\nid=" + hex(persistentId_, 16) + "\nname=" + sourceName_ + "\n";
@@ -335,49 +354,262 @@ bool BridgeCore::restoreState(const std::string &state, bool *identityReassigned
     return true;
 }
 
+// ---- Analysis thread -----------------------------------------------------------------------------------------
+
+bool BridgeCore::startGeneration(double sampleRate, uint32_t channels, uint32_t epoch) {
+    AbrAnalyzer *next = abr_analyzer_create(sampleRate, channels, generationCounter_ + 1, epoch);
+    if (analyzer_) abr_analyzer_destroy(analyzer_);
+    analyzer_ = next;
+    analyzerEpoch_ = epoch;
+    analyzerChannels_ = channels;
+    publishedTicks_ = 0;
+    freshGeneration_ = true;
+    forceResult_ = true;
+    if (!next) {
+        generation_.store(0, std::memory_order_relaxed);
+        measurement_.store(ABR_MEASUREMENT_NONE, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(summaryLock_);
+        hasSummary_ = false;
+        return false;
+    }
+    ++generationCounter_;
+    const bool paused = pausedWanted_.load(std::memory_order_relaxed);
+    abr_analyzer_set_measuring(next, paused ? 0 : 1);
+    generation_.store(generationCounter_, std::memory_order_relaxed);
+    measurement_.store(paused ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
+    framesAnalysed_.store(0, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(summaryLock_);
+    hasSummary_ = false;
+    return true;
+}
+
+void BridgeCore::runCommands() {
+    Command pending[kCommandQueue];
+    size_t count;
+    {
+        std::lock_guard<std::mutex> lock(commandLock_);
+        count = commands_.size();
+        std::copy(commands_.begin(), commands_.end(), pending);
+        commands_.clear();
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const Command &c = pending[i];
+        uint32_t outcome = ABR_ACK_DONE;
+        const uint32_t current = generation_.load(std::memory_order_relaxed);
+        if (c.generation != 0 && c.generation != current) {
+            outcome = ABR_ACK_STALE_GENERATION;
+        } else if (c.code == ABR_COMMAND_PAUSE || c.code == ABR_COMMAND_RESUME) {
+            const bool pause = c.code == ABR_COMMAND_PAUSE;
+            pausedWanted_.store(pause, std::memory_order_relaxed);
+            if (analyzer_) {
+                abr_analyzer_set_measuring(analyzer_, pause ? 0 : 1);
+                measurement_.store(pause ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
+            }
+        } else if (c.code == ABR_COMMAND_RESET) {
+            if (!analyzer_) {
+                outcome = ABR_ACK_NO_ANALYSIS;
+            } else {
+                double rate;
+                uint32_t channels;
+                {
+                    std::lock_guard<std::mutex> lock(configLock_);
+                    rate = sampleRate_;
+                    channels = channels_;
+                }
+                // Audio already queued belongs to the same format; it goes to the new generation.
+                if (!startGeneration(rate, channels, analyzerEpoch_)) outcome = ABR_ACK_NO_ANALYSIS;
+            }
+        } else if (c.code == ABR_COMMAND_RESET_TRUE_PEAK) {
+            if (analyzer_) abr_analyzer_reset_true_peaks(analyzer_);
+            else outcome = ABR_ACK_NO_ANALYSIS;
+        } else {
+            outcome = ABR_ACK_UNSUPPORTED;
+        }
+        forceResult_ = true;
+        if (c.id != 0) {
+            std::lock_guard<std::mutex> lock(commandLock_);
+            if (acks_.size() < kCommandQueue)
+                acks_.push_back({c.id, c.code, outcome, generation_.load(std::memory_order_relaxed),
+                                 measurement_.load(std::memory_order_relaxed)});
+        }
+    }
+}
+
+// Drains the ring into the analyser, oldest first, at most `maxSeconds` of audio per call so one instance with a
+// backlog cannot hold up the others (the hub visits every instance each pass). A record of a new format epoch
+// starts a new generation; a break (a flagged record, or a position gap where the ring was full) is handed to the
+// analysis between the right frames. Then the newest state goes to the mailbox for the sender.
+uint32_t BridgeCore::analyse(uint64_t nowNs, double maxSeconds) {
+    runCommands();
+    const double now = double(nowNs) / 1e9;
+    uint32_t analysed = 0;
+    CaptureRecord header;
+    while (ring_.peek(header)) {
+        if (analysed > 0 && double(analysed) >= header.sampleRate * maxSeconds) break;  // the rest waits a pass
+        if (!analyzer_ || header.formatEpoch != analyzerEpoch_ || header.channels != analyzerChannels_) {
+            if (!startGeneration(header.sampleRate, header.channels, header.formatEpoch)) {
+                ring_.pop(nullptr);  // not analysable (not mono or stereo): the audio still passed untouched
+                continue;
+            }
+        }
+        ring_.pop(analysisScratch_.get());
+        const uint64_t lost = header.position > expectedPosition_ ? header.position - expectedPosition_ : 0;
+        if (!freshGeneration_ && ((header.flags & ABR_AUDIO_DISCONTINUITY) || lost > 0)) {
+            const uint32_t reasons = (header.flags & ABR_AUDIO_REASONS) | (lost ? uint32_t(ABR_AUDIO_AFTER_DROP) : 0u);
+            abr_analyzer_interrupt(analyzer_, lost, header.idleMs, reasons);
+            lastBreakReasons_.store(reasons, std::memory_order_relaxed);
+        }
+        freshGeneration_ = false;
+        abr_analyzer_consume(analyzer_, analysisScratch_.get(), header.frames, header.position, now);
+        expectedPosition_ = header.position + header.frames;
+        analysed += header.frames;
+    }
+    if (!analyzer_) return analysed;
+    if (analysed == 0) abr_analyzer_idle(analyzer_, now);
+
+    const uint64_t ticks = abr_analyzer_ticks(analyzer_);
+    const uint32_t subscription = subscription_.load(std::memory_order_acquire);
+    const bool fresh = ticks != publishedTicks_ || forceResult_;
+    if (fresh) {
+        AbrAnalysisSummary summary;
+        abr_analyzer_summary(analyzer_, &summary);
+        framesAnalysed_.store(summary.frames_analysed, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(summaryLock_);
+        summary_ = summary;
+        hasSummary_ = summary.ticks > 0;
+    }
+    if (subscription != 0 && (fresh || subscription != encodedSubscription_)) {
+        std::lock_guard<std::mutex> lock(mailboxLock_);
+        const uint32_t generation = generation_.load(std::memory_order_relaxed);
+        // Columns already delivered to this subscriber, in this generation, are not sent again.
+        const bool continuing = sentSubscription_ == subscription && sentGeneration_ == generation;
+        uint64_t spectrogram = 0, waveform = 0;
+        const uint32_t bytes = abr_analyzer_encode(analyzer_, mailbox_.get(), kMailboxBytes, subscription,
+                                                   layoutFor(analyzerChannels_), continuing ? sentSpectrogram_ : 0,
+                                                   continuing ? sentWaveform_ : 0, &spectrogram, &waveform);
+        if (bytes) {
+            mailboxBytes_ = bytes;
+            mailboxSubscription_ = subscription;
+            mailboxGeneration_ = generation;
+            mailboxSpectrogram_ = spectrogram;
+            mailboxWaveform_ = waveform;
+        }
+    }
+    encodedSubscription_ = subscription;
+    publishedTicks_ = ticks;
+    forceResult_ = false;
+    return analysed;
+}
+
+void BridgeCore::releaseAnalysis() {
+    if (analyzer_) abr_analyzer_destroy(analyzer_);
+    analyzer_ = nullptr;
+}
+
 // ---- Sender thread -------------------------------------------------------------------------------------------
 
 void BridgeCore::queue(uint16_t type, const void *payload, uint32_t length) {
-    if (outUsed_ + sizeof(AbrHeader) + length > kOutBytes) {
-        // Only audio can fill the buffer (see drainRing), so a control message never finds it full in practice.
-        return;
-    }
+    if (outUsed_ + sizeof(AbrHeader) + length > kOutBytes) return;  // results stop at the high-water mark first
     AbrHeader header{ABR_MAGIC, type, 0, length, sendSequence_++};
     std::memcpy(out_.get() + outUsed_, &header, sizeof header);
     if (length) std::memcpy(out_.get() + outUsed_ + sizeof header, payload, length);
     outUsed_ += sizeof header + length;
 }
 
-void BridgeCore::queueStatus(uint64_t nowNs) {
-    AbrStatus status{};
-    status.state = effectiveState();
-    const uint32_t serial = settingsSerial_.load(std::memory_order_relaxed);
-    status.flags = transportFlags_.load(std::memory_order_relaxed)
-        | (subscription_.load(std::memory_order_relaxed) ? uint32_t(ABR_STATUS_SUBSCRIBED) : 0u);
-    status.frames_processed = framesProcessed_.load(std::memory_order_relaxed);
-    status.frames_dropped = framesDropped_.load(std::memory_order_relaxed);
-    status.interruptions = interruptions_.load(std::memory_order_relaxed);
-    status.transport_jumps = transportJumps_.load(std::memory_order_relaxed);
+void BridgeCore::queueHello() {
+    uint8_t payload[512];
+    abr_put32(payload, ABR_PROTOCOL_VERSION);
+    abr_put32(payload + 4, format_);
+    AbrWriter w = abr_writer(payload + 8, sizeof payload - 8);
+    abr_put_bytes(&w, ABR_HELLO_SESSION_ID, sessionId_, 16);
     {
         std::lock_guard<std::mutex> lock(configLock_);
-        status.format_epoch = uint32_t(formatWord_.load(std::memory_order_relaxed) >> 32);
-        status.sample_rate = sampleRate_;
-        status.channels = channels_;
-        status.layout = channels_ == 1 ? ABR_LAYOUT_MONO : channels_ == 2 ? ABR_LAYOUT_STEREO : ABR_LAYOUT_UNKNOWN;
-        status.max_block_frames = maxBlockFrames_;
-        copyName(status.source_name, sourceName_.empty() ? trackName_ : sourceName_, sizeof status.source_name);
-        copyName(status.track_name, trackName_, sizeof status.track_name);
-        copyName(status.channel_id, channelID_, sizeof status.channel_id);
+        abr_put_bytes(&w, ABR_HELLO_PERSISTENT_ID, persistentId_, 16);
+        abr_put_bytes(&w, ABR_HELLO_RESTORED_ID, restoredId_, 16);
+        abr_put_u32(&w, ABR_HELLO_IDENTITY_FLAGS, identityFlags_);
     }
-    const bool changed = status.state != lastStatusState_ || status.format_epoch != lastStatusEpoch_
-        || serial != lastSettingsSerial_ || status.flags != lastStatusFlags_;
+    abr_put_i64(&w, ABR_HELLO_HOST_PID, getpid());
+    abr_put_text(&w, ABR_HELLO_HOST_NAME, getprogname(), 63);
+    static const std::string bundle = hostBundleID();
+    abr_put_text(&w, ABR_HELLO_HOST_BUNDLE_ID, bundle.c_str(), 95);
+    abr_put_text(&w, ABR_HELLO_PLUGIN_VERSION, ABR_PLUGIN_VERSION, 31);
+    abr_put_u32(&w, ABR_HELLO_SCHEMA, ABR_ANALYSIS_SCHEMA);
+    abr_put_u32(&w, ABR_HELLO_CAPABILITIES, ABR_CAPABILITY_RESULTS | ABR_CAPABILITY_RESET | ABR_CAPABILITY_RESET_TRUE_PEAK
+                | ABR_CAPABILITY_PAUSE);
+    if (!w.overflowed) queue(ABR_MSG_HELLO, payload, uint32_t(8 + w.used));
+}
+
+void BridgeCore::queueStatus(uint64_t nowNs) {
+    const uint32_t state = effectiveState();
+    const uint32_t serial = settingsSerial_.load(std::memory_order_relaxed);
+    const uint32_t flags = transportFlags_.load(std::memory_order_relaxed)
+        | (subscription_.load(std::memory_order_relaxed) ? uint32_t(ABR_STATUS_SUBSCRIBED) : 0u);
+    const uint32_t generation = generation_.load(std::memory_order_relaxed);
+    const uint32_t measurement = measurement_.load(std::memory_order_relaxed);
+    const uint32_t epoch = uint32_t(formatWord_.load(std::memory_order_relaxed) >> 32);
+    const bool changed = state != lastStatusState_ || epoch != lastStatusEpoch_ || serial != lastSettingsSerial_
+        || flags != lastStatusFlags_ || generation != lastStatusGeneration_ || measurement != lastStatusMeasurement_;
     if (!changed && nowNs - lastStatusNs_ < kStatusNs) return;
-    lastStatusState_ = status.state;
-    lastStatusEpoch_ = status.format_epoch;
+    lastStatusState_ = state;
+    lastStatusEpoch_ = epoch;
     lastSettingsSerial_ = serial;
-    lastStatusFlags_ = status.flags;
+    lastStatusFlags_ = flags;
+    lastStatusGeneration_ = generation;
+    lastStatusMeasurement_ = measurement;
     lastStatusNs_ = nowNs;
-    queue(ABR_MSG_STATUS, &status, sizeof status);
+
+    uint8_t payload[1024];
+    AbrWriter w = abr_writer(payload, sizeof payload);
+    abr_put_u32(&w, ABR_STATUS_STATE, state);
+    abr_put_u32(&w, ABR_STATUS_FLAGS, flags);
+    abr_put_u64(&w, ABR_STATUS_FRAMES_PROCESSED, framesProcessed_.load(std::memory_order_relaxed));
+    abr_put_u64(&w, ABR_STATUS_FRAMES_DROPPED, framesDropped_.load(std::memory_order_relaxed));
+    abr_put_u32(&w, ABR_STATUS_INTERRUPTIONS, interruptions_.load(std::memory_order_relaxed));
+    abr_put_u32(&w, ABR_STATUS_TRANSPORT_JUMPS, transportJumps_.load(std::memory_order_relaxed));
+    abr_put_u32(&w, ABR_STATUS_GENERATION, generation);
+    abr_put_u32(&w, ABR_STATUS_MEASUREMENT, measurement);
+    abr_put_u64(&w, ABR_STATUS_FRAMES_ANALYSED, framesAnalysed_.load(std::memory_order_relaxed));
+    abr_put_u32(&w, ABR_STATUS_LAST_BREAK, lastBreakReasons_.load(std::memory_order_relaxed));
+    const uint64_t live = lastLiveNs_.load(std::memory_order_relaxed);
+    abr_put_f64(&w, ABR_STATUS_SECONDS_SINCE_AUDIO, live ? double(nowNs - std::min(live, nowNs)) / 1e9 : -1.0);
+    {
+        std::lock_guard<std::mutex> lock(configLock_);
+        abr_put_u32(&w, ABR_STATUS_FORMAT_EPOCH, epoch);
+        abr_put_f64(&w, ABR_STATUS_SAMPLE_RATE, sampleRate_);
+        abr_put_u32(&w, ABR_STATUS_CHANNELS, channels_);
+        abr_put_u32(&w, ABR_STATUS_LAYOUT, layoutFor(channels_));
+        abr_put_u32(&w, ABR_STATUS_MAX_BLOCK, maxBlockFrames_);
+        const double bytesPerSecond = std::max(1.0, sampleRate_) * std::max(1u, channels_) * sizeof(float);
+        abr_put_u32(&w, ABR_STATUS_BACKLOG_MS, uint32_t(double(ring_.usedBytes()) / bytesPerSecond * 1000));
+        abr_put_text(&w, ABR_STATUS_SOURCE_NAME, (sourceName_.empty() ? trackName_ : sourceName_).c_str(), kNameBytes);
+        abr_put_text(&w, ABR_STATUS_TRACK_NAME, trackName_.c_str(), kNameBytes);
+        abr_put_text(&w, ABR_STATUS_CHANNEL_ID, channelID_.c_str(), 63);
+    }
+    if (!w.overflowed) queue(ABR_MSG_STATUS, payload, uint32_t(w.used));
+}
+
+void BridgeCore::handleCommand(const uint8_t *payload, uint32_t length) {
+    Command command{0, 0, 0};
+    uint8_t session[16] = {};
+    bool haveSession = false;
+    AbrReader r = abr_reader(payload, length);
+    AbrField f;
+    while (abr_next_field(&r, &f)) {
+        if (f.tag == ABR_COMMAND_ID) abr_field_u32(&f, &command.id);
+        else if (f.tag == ABR_COMMAND_CODE) abr_field_u32(&f, &command.code);
+        else if (f.tag == ABR_COMMAND_GENERATION) abr_field_u32(&f, &command.generation);
+        else if (f.tag == ABR_COMMAND_SESSION_ID) haveSession = abr_field_bytes(&f, session, 16);
+    }
+    std::lock_guard<std::mutex> lock(commandLock_);
+    if (!haveSession || std::memcmp(session, sessionId_, 16) != 0) {
+        // Meant for another instance (an obsolete selection): refused here, never carried out.
+        if (command.id != 0 && acks_.size() < kCommandQueue)
+            acks_.push_back({command.id, command.code, ABR_ACK_WRONG_SESSION, generation_.load(std::memory_order_relaxed),
+                             measurement_.load(std::memory_order_relaxed)});
+        return;
+    }
+    if (command.id == 0) command.id = 0xFFFFFFFFu;  // a command from the socket is always acknowledged
+    if (commands_.size() < kCommandQueue) commands_.push_back(command);
 }
 
 bool BridgeCore::readControl() {
@@ -393,26 +625,25 @@ bool BridgeCore::readControl() {
             if (header.magic != ABR_MAGIC || header.length > sizeof in_ - sizeof header) return false;
             if (inUsed_ - offset < sizeof header + header.length) break;
             const uint8_t *payload = in_ + offset + sizeof header;
-            if (header.type == ABR_MSG_WELCOME && header.length >= sizeof(AbrWelcome)) {
-                AbrWelcome welcome;
-                std::memcpy(&welcome, payload, sizeof welcome);
-                receiverTooOld_.store(welcome.protocol_version < ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
-                receiverTooNew_.store(welcome.protocol_version > ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
-                if (welcome.protocol_version != ABR_PROTOCOL_VERSION) return false;
+            if (header.type == ABR_MSG_WELCOME && header.length >= ABR_HELLO_MIN_BYTES) {
+                const uint32_t version = abr_get32(payload);
+                receiverTooOld_.store(version < ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
+                receiverTooNew_.store(version > ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
+                if (version != ABR_PROTOCOL_VERSION) return false;
                 welcomed_ = true;
                 connected_.store(true, std::memory_order_relaxed);
             } else if (!welcomed_) {
                 return false;  // nothing but WELCOME may come first
-            } else if (header.type == ABR_MSG_SUBSCRIBE && header.length >= sizeof(AbrSubscribe)) {
-                AbrSubscribe subscribe;
-                std::memcpy(&subscribe, payload, sizeof subscribe);
-                if (subscribe.subscription != 0) {
-                    senderReasons_ = 0;  // a new stream: nothing of it lost yet
-                    senderIdleMs_ = 0;
-                    subscription_.store(subscribe.subscription, std::memory_order_release);
-                }
+            } else if (header.type == ABR_MSG_SUBSCRIBE) {
+                AbrReader r = abr_reader(payload, header.length);
+                AbrField f;
+                uint32_t subscription = 0;
+                while (abr_next_field(&r, &f)) if (f.tag == ABR_SUBSCRIBE_SUBSCRIPTION) abr_field_u32(&f, &subscription);
+                if (subscription != 0) subscription_.store(subscription, std::memory_order_release);
             } else if (header.type == ABR_MSG_UNSUBSCRIBE) {
                 subscription_.store(0, std::memory_order_release);
+            } else if (header.type == ABR_MSG_COMMAND) {
+                handleCommand(payload, header.length);
             }
             offset += sizeof header + header.length;
         }
@@ -431,65 +662,52 @@ bool BridgeCore::flush() {
     return true;
 }
 
-// Moves queued records to the socket. Drop policy when Auraliscope cannot keep up: queued audio older than
-// kLatencyCap is discarded oldest first, so what does arrive is recent; if the sender thread itself stalls long
-// enough for the ring to fill, the audio thread drops the newest blocks instead of waiting. Either way the next
-// transmitted block carries ABR_AUDIO_AFTER_DROP and its position shows exactly how much was lost.
-// Records of another subscription or format epoch are discarded unsent: they belong to no stream the receiver
-// is waiting for.
-void BridgeCore::drainRing() {
-    double rate;
-    uint32_t channels, epoch;
-    {
-        std::lock_guard<std::mutex> lock(configLock_);
-        rate = sampleRate_;
-        channels = channels_;
-        epoch = uint32_t(formatWord_.load(std::memory_order_relaxed) >> 32);
+// Moves the newest encoded result to the socket, if the receiver is keeping up. When it is not, the mailbox is
+// replaced by fresher state on the analysis thread, and the columns it has not had wait in the analyser (bounded:
+// the oldest are dropped, and counted, when a display falls more than about 2 s behind).
+void BridgeCore::sendResult() {
+    if (outUsed_ - outSent_ > kOutHighWater) return;
+    if (outUsed_ + sizeof(AbrHeader) + kMailboxBytes > kOutBytes) {
+        if (outSent_ == 0) return;
+        std::memmove(out_.get(), out_.get() + outSent_, outUsed_ - outSent_);
+        outUsed_ -= outSent_;
+        outSent_ = 0;
     }
-    const uint32_t token = subscription_.load(std::memory_order_acquire);
-    const size_t latencyBytes = size_t(std::max(1.0, rate) * std::max(1u, channels) * sizeof(float) * kLatencyCap);
-    const bool sending = fd_ >= 0 && welcomed_ && token != 0;
-    AbrAudio header;
-    while (ring_.peek(header)) {
-        const bool stale = !sending || header.subscription != token || header.format_epoch != epoch
-            || header.channels != channels;
-        const bool late = ring_.usedBytes() > latencyBytes + RecordRing::recordBytes(header.frames, header.channels);
-        if (stale || late) {
-            ring_.pop(nullptr);
-            if (late && !stale) {
-                framesDropped_.fetch_add(header.frames, std::memory_order_relaxed);
-                // The break this record announced (idle, bypass…) still happened: the next record sent says so.
-                senderReasons_ |= ABR_AUDIO_AFTER_DROP | (header.flags & ABR_AUDIO_REASONS);
-                if (header.flags & ABR_AUDIO_AFTER_IDLE) senderIdleMs_ = std::min(kIdleCapMs, senderIdleMs_ + header.idle_ms);
-            }
-            continue;
-        }
-        const size_t bytes = size_t(header.frames) * header.channels * sizeof(float);
-        if (outUsed_ - outSent_ > kOutHighWater || outUsed_ + 2 * sizeof(AbrHeader) + sizeof(AbrFormat) + sizeof header + bytes > kOutBytes) {
-            if (outSent_ == 0) break;  // the socket is backed up: leave the rest queued (and capped) for later
-            std::memmove(out_.get(), out_.get() + outSent_, outUsed_ - outSent_);
-            outUsed_ -= outSent_;
-            outSent_ = 0;
-            continue;
-        }
-        if (sentFormatEpoch_ != header.format_epoch) {
-            AbrFormat format{header.format_epoch, channels, rate,
-                             channels == 1 ? uint32_t(ABR_LAYOUT_MONO) : uint32_t(ABR_LAYOUT_STEREO),
-                             ABR_SAMPLE_FLOAT32_INTERLEAVED};
-            queue(ABR_MSG_FORMAT, &format, sizeof format);
-            sentFormatEpoch_ = header.format_epoch;
-        }
-        ring_.pop(scratch_.get());
-        if (senderReasons_) header.flags |= ABR_AUDIO_DISCONTINUITY | senderReasons_;
-        if (senderReasons_ & ABR_AUDIO_AFTER_IDLE) header.idle_ms = std::min(kIdleCapMs, header.idle_ms + senderIdleMs_);
-        senderReasons_ = 0;
-        senderIdleMs_ = 0;
-        AbrHeader message{ABR_MAGIC, ABR_MSG_AUDIO, 0, uint32_t(sizeof header + bytes), sendSequence_++};
-        std::memcpy(out_.get() + outUsed_, &message, sizeof message);
-        std::memcpy(out_.get() + outUsed_ + sizeof message, &header, sizeof header);
-        std::memcpy(out_.get() + outUsed_ + sizeof message + sizeof header, scratch_.get(), bytes);
-        outUsed_ += sizeof message + sizeof header + bytes;
-        framesSent_.fetch_add(header.frames, std::memory_order_relaxed);
+    const uint32_t subscription = subscription_.load(std::memory_order_acquire);
+    std::lock_guard<std::mutex> lock(mailboxLock_);
+    if (mailboxBytes_ == 0) return;
+    if (mailboxSubscription_ != subscription) {
+        mailboxBytes_ = 0;  // encoded for a subscription that has ended
+        return;
+    }
+    queue(ABR_MSG_RESULT, mailbox_.get(), mailboxBytes_);
+    sentSubscription_ = mailboxSubscription_;
+    sentGeneration_ = mailboxGeneration_;
+    sentSpectrogram_ = mailboxSpectrogram_;
+    sentWaveform_ = mailboxWaveform_;
+    mailboxBytes_ = 0;
+    resultsSent_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void BridgeCore::sendAcks() {
+    Ack pending[kCommandQueue];
+    size_t count;
+    {
+        std::lock_guard<std::mutex> lock(commandLock_);
+        count = acks_.size();
+        std::copy(acks_.begin(), acks_.end(), pending);
+        acks_.clear();
+    }
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t payload[128];
+        AbrWriter w = abr_writer(payload, sizeof payload);
+        abr_put_u32(&w, ABR_ACK_COMMAND_ID, pending[i].id);
+        abr_put_u32(&w, ABR_ACK_COMMAND_CODE, pending[i].code);
+        abr_put_u32(&w, ABR_ACK_OUTCOME, pending[i].outcome);
+        abr_put_u32(&w, ABR_ACK_GENERATION, pending[i].generation);
+        abr_put_u32(&w, ABR_ACK_MEASUREMENT, pending[i].measurement);
+        abr_put_bytes(&w, ABR_ACK_SESSION_ID, sessionId_, 16);
+        if (!w.overflowed) queue(ABR_MSG_ACK, payload, uint32_t(w.used));
     }
 }
 
@@ -500,7 +718,6 @@ void BridgeCore::disconnect() {
     subscription_.store(0, std::memory_order_release);
     connected_.store(false, std::memory_order_relaxed);
     outUsed_ = outSent_ = inUsed_ = 0;
-    sentFormatEpoch_ = 0;
     lastStatusState_ = 0xFFFFFFFF;
 }
 
@@ -510,7 +727,6 @@ void BridgeCore::service(uint64_t nowNs) {
         lastAttemptNs_ = 0;  // reconnect now, announcing the new identity
     }
     if (fd_ < 0) {
-        drainRing();  // discards whatever was queued before the connection went away
         // A pending "Show in Auraliscope" retries every 200 ms: the user may just have launched the app. A
         // receiver of another protocol version is retried slowly: it will not change until it is updated.
         const bool incompatible = receiverTooOld_.load(std::memory_order_relaxed) || receiverTooNew_.load(std::memory_order_relaxed);
@@ -523,9 +739,9 @@ void BridgeCore::service(uint64_t nowNs) {
         if (abr_socket_path(address.sun_path, sizeof address.sun_path) != 0) return;
         const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) return;
-        // A small kernel buffer keeps the drop policy in charge: a large one would quietly queue seconds of audio
-        // ahead of a stalled receiver. 128 KB is 0.34 s of 48 kHz stereo, 85 ms at 192 kHz.
-        int on = 1, buffer = 128 * 1024;
+        // A small kernel buffer keeps the latest-state policy in charge: a large one would quietly queue old
+        // results ahead of a stalled receiver.
+        int on = 1, buffer = 32 * 1024;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);  // a vanished receiver must not signal the DAW
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof buffer);
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
@@ -537,27 +753,15 @@ void BridgeCore::service(uint64_t nowNs) {
             return;
         }
         fd_ = fd;
-        AbrHello hello{};
-        hello.protocol_version = ABR_PROTOCOL_VERSION;
-        hello.plugin_format = format_;
-        std::memcpy(hello.session_id, sessionId_, 16);
-        {
-            std::lock_guard<std::mutex> lock(configLock_);
-            std::memcpy(hello.persistent_id, persistentId_, 16);
-            std::memcpy(hello.restored_id, restoredId_, 16);
-            hello.identity_flags = identityFlags_;
-        }
-        hello.host_pid = getpid();
-        std::snprintf(hello.host_name, sizeof hello.host_name, "%s", getprogname());
-        static const std::string bundle = hostBundleID();
-        std::snprintf(hello.host_bundle_id, sizeof hello.host_bundle_id, "%s", bundle.c_str());
-        std::snprintf(hello.plugin_version, sizeof hello.plugin_version, "%s", ABR_PLUGIN_VERSION);
-        queue(ABR_MSG_HELLO, &hello, sizeof hello);
+        queueHello();
     }
     if (!readControl()) { disconnect(); return; }
     queueStatus(nowNs);
     if (welcomed_ && focusRequested_.exchange(false, std::memory_order_acq_rel)) queue(ABR_MSG_FOCUS, nullptr, 0);
-    drainRing();
+    if (welcomed_) {
+        sendAcks();
+        sendResult();
+    }
     if (!flush()) disconnect();
 }
 

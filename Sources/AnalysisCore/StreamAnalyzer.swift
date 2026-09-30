@@ -11,7 +11,7 @@ import Foundation
 /// Results are latest-state (levels, loudness, spectrum, stereo image) plus two ordered series the displays keep a
 /// history of: spectrogram columns (30 per second of audio) and waveform columns (240 per second). Each series has a
 /// serial per generation and a bounded queue, so a display that falls behind loses the oldest columns, visibly
-/// (`dropped`), and never makes this object grow or wait.
+/// (a gap in the serials, and a `dropped` count in the next result), and never makes this object grow or wait.
 package final class StreamAnalyzer {
     package static let schemaVersion: UInt32 = 1
     /// Columns kept for a display that falls behind: about 2 s of each series.
@@ -47,12 +47,10 @@ package final class StreamAnalyzer {
     private var spectrogramRing: [Float]
     private var spectrogramCount = 0
     package private(set) var spectrogramLatest: UInt64 = 0
-    package private(set) var spectrogramDropped: UInt64 = 0
     private var lastSpectrogramSerial: Float = 0
     private var waveformRing: [Float]
     private var waveformCount = 0
     package private(set) var waveformLatest: UInt64 = 0
-    package private(set) var waveformDropped: UInt64 = 0
     private var lastWaveSerial = 0
     private let waveformStride: Int
     package private(set) var sequence: UInt64 = 0
@@ -159,7 +157,7 @@ package final class StreamAnalyzer {
                 (ring.baseAddress! + slot * rows).update(from: source.baseAddress! + SnapshotSlots.spectrogram, count: rows)
             }
         }
-        if spectrogramCount == Self.spectrogramCapacity { spectrogramDropped += 1 } else { spectrogramCount += 1 }
+        spectrogramCount = min(spectrogramCount + 1, Self.spectrogramCapacity)
     }
 
     /// The newest `newest` columns of the snapshot's waveform window, the insert's channels only.
@@ -173,7 +171,7 @@ package final class StreamAnalyzer {
                 waveformRing[slot * waveformStride + channel * 2] = values[source + role * 2]
                 waveformRing[slot * waveformStride + channel * 2 + 1] = values[source + role * 2 + 1]
             }
-            if waveformCount == Self.waveformCapacity { waveformDropped += 1 } else { waveformCount += 1 }
+            waveformCount = min(waveformCount + 1, Self.waveformCapacity)
         }
     }
 
@@ -271,7 +269,8 @@ package final class StreamAnalyzer {
         }
         w.f32s(ResultTag.spectrogram.rawValue, columns)
         w.u64(ResultTag.spectrogramLatest.rawValue, spectrogramLatest)
-        w.u64(ResultTag.spectrogramDropped.rawValue, spectrogramDropped)
+        // Columns this receiver will never get: skipped because they left the queue before they could be sent.
+        w.u64(ResultTag.spectrogramDropped.rawValue, afterSpectrogram > 0 ? spectrogramFirst - afterSpectrogram - 1 : 0)
 
         let waveformFirst = max(afterWaveform + 1, oldestWaveform)
         let waveformColumns = waveformLatest >= waveformFirst
@@ -285,7 +284,7 @@ package final class StreamAnalyzer {
         }
         w.f32s(ResultTag.waveform.rawValue, envelope)
         w.u64(ResultTag.waveformLatest.rawValue, waveformLatest)
-        w.u64(ResultTag.waveformDropped.rawValue, waveformDropped)
+        w.u64(ResultTag.waveformDropped.rawValue, afterWaveform > 0 ? waveformFirst - afterWaveform - 1 : 0)
 
         w.u32(ResultTag.fftSize.rawValue, UInt32(SpectrumAnalyzer.fftSize))
         w.u32(ResultTag.spectrumBands.rawValue, UInt32(MeterSnapshot.bandCount))

@@ -1,7 +1,7 @@
 #pragma once
 
 // Single-producer, single-consumer ring of audio records between the host's audio thread (producer) and the
-// Bridge sender thread (consumer). Each record is an `AbrAudio` header followed by its interleaved samples.
+// Bridge analysis thread (consumer). Each record is a `CaptureRecord` header followed by its interleaved samples.
 // The memory is allocated once, before any audio callback, and never resized. The producer never waits: when a
 // record does not fit, `write` returns false and the caller counts the block as dropped.
 
@@ -14,6 +14,19 @@
 
 namespace abr {
 
+// One block of live audio as the audio thread captured it. Private to the plugin: it never leaves the process.
+struct CaptureRecord {
+    uint32_t formatEpoch;
+    uint32_t frames;
+    uint32_t channels;
+    uint32_t flags;              // ABR_AUDIO_* break reasons (with ABR_AUDIO_DISCONTINUITY), ABR_TRANSPORT_*
+    uint32_t idleMs;             // with ABR_AUDIO_AFTER_IDLE: how long the host did not process
+    uint32_t reserved;
+    uint64_t position;           // stream position of the first frame (live frames processed in this session)
+    double sampleRate;           // of this record's format epoch
+};
+static_assert(sizeof(CaptureRecord) % 4 == 0, "records keep samples 4-byte aligned");
+
 class RecordRing {
 public:
     // `capacity` must be a power of two and a multiple of 4.
@@ -23,12 +36,12 @@ public:
     RecordRing &operator=(const RecordRing &) = delete;
 
     static constexpr size_t recordBytes(uint32_t frames, uint32_t channels) {
-        return sizeof(AbrAudio) + size_t(frames) * channels * sizeof(float);
+        return sizeof(CaptureRecord) + size_t(frames) * channels * sizeof(float);
     }
 
     // Audio thread. Interleaves `channels` planar buffers straight into the ring: no allocation, no lock, no
     // system call. Returns false (and writes nothing) when the record does not fit.
-    bool write(const AbrAudio &header, const float *const *planar, uint32_t offset) noexcept {
+    bool write(const CaptureRecord &header, const float *const *planar, uint32_t offset) noexcept {
         const size_t need = recordBytes(header.frames, header.channels);
         const uint64_t w = write_.load(std::memory_order_relaxed);
         const uint64_t r = read_.load(std::memory_order_acquire);
@@ -47,7 +60,7 @@ public:
     }
 
     // Sender thread. Reads the next record's header without consuming it.
-    bool peek(AbrAudio &header) const noexcept {
+    bool peek(CaptureRecord &header) const noexcept {
         const uint64_t r = read_.load(std::memory_order_relaxed);
         const uint64_t w = write_.load(std::memory_order_acquire);
         if (w - r < sizeof header) return false;
@@ -57,7 +70,7 @@ public:
 
     // Sender thread. Copies the next record's samples to `samples` (when non-null) and consumes it.
     void pop(float *samples) noexcept {
-        AbrAudio header;
+        CaptureRecord header;
         if (!peek(header)) return;
         const uint64_t r = read_.load(std::memory_order_relaxed);
         const size_t bytes = size_t(header.frames) * header.channels * sizeof(float);

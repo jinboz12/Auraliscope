@@ -1,5 +1,6 @@
 #include "BridgeServer.h"
 #include "BridgePaths.h"
+#include "BridgeWire.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -14,6 +15,11 @@
 
 #define MAX_CLIENTS 64
 #define POLL_MS 50
+#define MAX_PENDING_COMMANDS 8
+
+typedef struct {
+    uint32_t id, code, generation;
+} PendingCommand;
 
 typedef struct {
     int fd;
@@ -24,9 +30,11 @@ typedef struct {
     bool drop;                    // abr_server_disconnect asked for it to be closed (under AbrServer.lock)
     bool subscribed;              // what the server last told the plugin
     uint64_t subscribed_selection; // the selection generation that SUBSCRIBE belongs to
-    uint32_t subscription;        // the number sent with that SUBSCRIBE (0: none); other audio is stale
+    uint32_t subscription;        // the number sent with that SUBSCRIBE (0: none); other results are stale
     uint32_t send_sequence;
-    _Atomic uint64_t last_message_ns, last_audio_ns;  // read by abr_server_sources on another thread
+    _Atomic uint64_t last_message_ns, last_result_ns;  // read by abr_server_sources on another thread
+    PendingCommand commands[MAX_PENDING_COMMANDS];  // to send (under AbrServer.lock)
+    uint32_t pending_commands;
     AbrSourceInfo info;           // guarded by AbrServer.lock
 } Client;
 
@@ -46,16 +54,10 @@ struct AbrServer {
     uint8_t refused[16];          // abr_server_disconnect: this session is turned away until refused_until
     uint64_t refused_until;
     uint32_t next_subscription;   // server thread only
-    pthread_mutex_t sink_lock;    // held while the sink runs; guards the delivery state below
-    AbrSink sink;
-    AbrBoundary boundary;
+    uint32_t next_command;        // under `lock`
+    pthread_mutex_t sink_lock;    // held while the sink runs
+    AbrResultSink sink;
     void *sink_context;
-    uint32_t sink_epoch;
-    bool mark_start;
-    uint64_t attach_generation;
-    uint64_t delivery_generation; // attach generation of the newest delivered block
-    bool have_expectation;        // the selected instance delivered since it was selected
-    uint64_t expected_position;   // end of its newest delivered block
 };
 
 static uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
@@ -113,8 +115,8 @@ static void close_client(AbrServer *server, uint32_t index) {
 
 // Control messages are a few bytes; a plugin whose socket cannot take them is not reading and is dropped.
 static bool send_message(Client *client, uint16_t type, const void *payload, uint32_t length) {
-    uint8_t message[sizeof(AbrHeader) + 64];
-    if (length > 64) return false;
+    uint8_t message[sizeof(AbrHeader) + 128];
+    if (length > 128) return false;
     AbrHeader header = {ABR_MAGIC, type, 0, length, client->send_sequence++};
     memcpy(message, &header, sizeof header);
     if (length) memcpy(message + sizeof header, payload, length);
@@ -122,65 +124,119 @@ static bool send_message(Client *client, uint16_t type, const void *payload, uin
     return sent == (ssize_t)(sizeof header + length);
 }
 
-static void copy_string(char *destination, const char *source, size_t size) {
-    memcpy(destination, source, size);
-    destination[size - 1] = 0;
-}
-
-// Hands one block to the sink, telling the boundary callback first when it does not continue the audio before
-// it: the plugin said so (ABR_AUDIO_DISCONTINUITY and its reasons), or its stream position skipped frames.
-static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *audio, const float *samples) {
+// Hands one RESULT of the current subscription to the sink. The server reads only the subscription field; the
+// sink decodes the rest (Sources/AnalysisCore/ResultProtocol.swift).
+static void deliver_result(AbrServer *server, Client *client, const uint8_t *payload, uint32_t length) {
+    uint32_t subscription = 0;
+    bool found = false;
+    AbrReader reader = abr_reader(payload, length);
+    AbrField field;
+    while (!found && abr_next_field(&reader, &field))
+        if (field.tag == 1) found = abr_field_u32(&field, &subscription);  // ResultTag.subscription
+    atomic_store_explicit(&client->last_result_ns, now_ns(), memory_order_relaxed);
     pthread_mutex_lock(&server->lock);
-    bool selected = client->info.selected;
-    uint32_t channels = client->info.channels;
-    uint32_t epoch = client->info.format_epoch;
-    client->info.frames_received += audio->frames;
-    bool current = client->subscription != 0 && audio->subscription == client->subscription;
-    if (!current) client->info.frames_stale += audio->frames;
+    client->info.results_received++;
+    const bool selected = client->info.selected;
+    const bool current = found && client->subscription != 0 && subscription == client->subscription;
+    if (!found) client->info.results_malformed++;
+    else if (!current) client->info.results_stale++;
     pthread_mutex_unlock(&server->lock);
-    atomic_store_explicit(&client->last_audio_ns, now_ns(), memory_order_relaxed);
-    // Queued before an unsubscribe, or for a selection that has since changed: never replayed.
+    // Sent for an earlier subscription, or for a selection that has since changed: never replayed.
     if (!selected || !current) return;
-
-    uint64_t delivered = 0, discarded = 0, lost = 0, gaps = 0;
-    uint32_t reasons = 0, idle = 0;
+    bool delivered = false;
     pthread_mutex_lock(&server->sink_lock);
-    if (server->sink && server->sink_epoch == audio->format_epoch && epoch == audio->format_epoch
-        && channels == audio->channels) {
-        const bool first = server->delivery_generation != server->attach_generation;
-        server->delivery_generation = server->attach_generation;
-        if (audio->flags & ABR_AUDIO_DISCONTINUITY) reasons = audio->flags & ABR_AUDIO_REASONS;
-        if (server->have_expectation && audio->position > server->expected_position) {
-            lost = audio->position - server->expected_position;
-            reasons |= ABR_AUDIO_AFTER_DROP;
-        }
-        // The first block after an attach without `mark_start` opens a fresh or deliberately continued analysis.
-        if (first && !server->mark_start) reasons = 0, lost = 0;
-        if (reasons) {
-            gaps = 1;
-            idle = (audio->flags & ABR_AUDIO_AFTER_IDLE) ? audio->idle_ms : 0;
-            if (server->boundary) server->boundary(server->sink_context, reasons, lost, idle);
-        }
-        server->have_expectation = true;
-        server->expected_position = audio->position + audio->frames;
-        server->sink(server->sink_context, samples, audio->frames, audio->channels);
-        delivered = audio->frames;
-    } else if (server->sink) {
-        discarded = audio->frames;  // attached, but for another format: the owner has yet to reconfigure
+    if (server->sink) {
+        server->sink(server->sink_context, payload, length);
+        delivered = true;
     }
     pthread_mutex_unlock(&server->sink_lock);
-
-    pthread_mutex_lock(&server->lock);
-    client->info.frames_delivered += delivered;
-    client->info.frames_discarded += discarded;
-    client->info.frames_lost += lost;
-    client->info.discontinuities += gaps;
-    if (gaps) {
-        client->info.last_reasons = reasons;
-        client->info.last_lost_frames = lost;
-        client->info.last_idle_ms = idle;
+    if (delivered) {
+        pthread_mutex_lock(&server->lock);
+        client->info.results_delivered++;
+        pthread_mutex_unlock(&server->lock);
     }
-    pthread_mutex_unlock(&server->lock);
+}
+
+static void read_hello(AbrSourceInfo *info, const uint8_t *payload, uint32_t length) {
+    AbrReader reader = abr_reader(payload + ABR_HELLO_MIN_BYTES, length - ABR_HELLO_MIN_BYTES);
+    AbrField f;
+    int64_t pid = 0;
+    while (abr_next_field(&reader, &f)) {
+        switch (f.tag) {
+        case ABR_HELLO_SESSION_ID: abr_field_bytes(&f, info->session_id, 16); break;
+        case ABR_HELLO_PERSISTENT_ID: abr_field_bytes(&f, info->persistent_id, 16); break;
+        case ABR_HELLO_RESTORED_ID: abr_field_bytes(&f, info->restored_id, 16); break;
+        case ABR_HELLO_IDENTITY_FLAGS: abr_field_u32(&f, &info->identity_flags); break;
+        case ABR_HELLO_HOST_PID: if (abr_field_i64(&f, &pid)) info->host_pid = (int32_t)pid; break;
+        case ABR_HELLO_HOST_NAME: abr_field_text(&f, info->host_name, sizeof info->host_name); break;
+        case ABR_HELLO_HOST_BUNDLE_ID: abr_field_text(&f, info->host_bundle_id, sizeof info->host_bundle_id); break;
+        case ABR_HELLO_PLUGIN_VERSION: abr_field_text(&f, info->plugin_version, sizeof info->plugin_version); break;
+        case ABR_HELLO_SCHEMA: abr_field_u32(&f, &info->schema); break;
+        case ABR_HELLO_CAPABILITIES: abr_field_u32(&f, &info->capabilities); break;
+        default: break;  // a later addition: skipped
+        }
+    }
+}
+
+static void read_status(AbrSourceInfo *info, const uint8_t *payload, uint32_t length) {
+    AbrReader reader = abr_reader(payload, length);
+    AbrField f;
+    while (abr_next_field(&reader, &f)) {
+        switch (f.tag) {
+        case ABR_STATUS_STATE: abr_field_u32(&f, &info->state); break;
+        case ABR_STATUS_FORMAT_EPOCH: abr_field_u32(&f, &info->format_epoch); break;
+        case ABR_STATUS_SAMPLE_RATE: abr_field_f64(&f, &info->sample_rate); break;
+        case ABR_STATUS_CHANNELS: abr_field_u32(&f, &info->channels); break;
+        case ABR_STATUS_LAYOUT: abr_field_u32(&f, &info->layout); break;
+        case ABR_STATUS_MAX_BLOCK: abr_field_u32(&f, &info->max_block_frames); break;
+        case ABR_STATUS_FLAGS: abr_field_u32(&f, &info->status_flags); break;
+        case ABR_STATUS_FRAMES_PROCESSED: abr_field_u64(&f, &info->frames_processed); break;
+        case ABR_STATUS_FRAMES_DROPPED: abr_field_u64(&f, &info->frames_dropped_by_plugin); break;
+        case ABR_STATUS_INTERRUPTIONS: abr_field_u32(&f, &info->plugin_interruptions); break;
+        case ABR_STATUS_TRANSPORT_JUMPS: abr_field_u32(&f, &info->transport_jumps); break;
+        case ABR_STATUS_SOURCE_NAME: abr_field_text(&f, info->source_name, sizeof info->source_name); break;
+        case ABR_STATUS_TRACK_NAME: abr_field_text(&f, info->track_name, sizeof info->track_name); break;
+        case ABR_STATUS_CHANNEL_ID: abr_field_text(&f, info->channel_id, sizeof info->channel_id); break;
+        case ABR_STATUS_GENERATION: abr_field_u32(&f, &info->generation); break;
+        case ABR_STATUS_MEASUREMENT: abr_field_u32(&f, &info->measurement); break;
+        case ABR_STATUS_FRAMES_ANALYSED: abr_field_u64(&f, &info->frames_analysed); break;
+        case ABR_STATUS_LAST_BREAK: abr_field_u32(&f, &info->last_break_reasons); break;
+        case ABR_STATUS_BACKLOG_MS: abr_field_u32(&f, &info->backlog_ms); break;
+        case ABR_STATUS_SECONDS_SINCE_AUDIO: abr_field_f64(&f, &info->plugin_seconds_since_audio); break;
+        default: break;
+        }
+    }
+}
+
+static void read_ack(AbrSourceInfo *info, const uint8_t *payload, uint32_t length) {
+    AbrReader reader = abr_reader(payload, length);
+    AbrField f;
+    uint32_t id = 0, code = 0, outcome = 0, generation = 0, measurement = 0;
+    while (abr_next_field(&reader, &f)) {
+        switch (f.tag) {
+        case ABR_ACK_COMMAND_ID: abr_field_u32(&f, &id); break;
+        case ABR_ACK_COMMAND_CODE: abr_field_u32(&f, &code); break;
+        case ABR_ACK_OUTCOME: abr_field_u32(&f, &outcome); break;
+        case ABR_ACK_GENERATION: abr_field_u32(&f, &generation); break;
+        case ABR_ACK_MEASUREMENT: abr_field_u32(&f, &measurement); break;
+        default: break;
+        }
+    }
+    info->acks_received++;
+    info->last_ack_id = id;
+    info->last_ack_command = code;
+    info->last_ack_outcome = outcome;
+    info->last_ack_generation = generation;
+    info->last_ack_measurement = measurement;
+}
+
+static bool send_welcome(Client *client) {
+    uint8_t payload[64];
+    abr_put32(payload, ABR_PROTOCOL_VERSION);
+    abr_put32(payload + 4, 0);
+    AbrWriter w = abr_writer(payload + 8, sizeof payload - 8);
+    abr_put_u32(&w, ABR_WELCOME_SCHEMA, ABR_ANALYSIS_SCHEMA);
+    return send_message(client, ABR_MSG_WELCOME, payload, (uint32_t)(8 + w.used));
 }
 
 // Returns false on a protocol violation.
@@ -190,26 +246,23 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
     switch (header->type) {
     case ABR_MSG_HELLO: {
         if (client->greeted || header->length < ABR_HELLO_MIN_BYTES) return false;
-        uint32_t words[2];
-        memcpy(words, payload, sizeof words);
-        if (words[0] != ABR_PROTOCOL_VERSION) {
+        const uint32_t version = abr_get32(payload), format = abr_get32(payload + 4);
+        if (version != ABR_PROTOCOL_VERSION) {
             // Another version: listed, so Auraliscope can say which plugin needs an update, but never selected.
-            // A newer plugin hears this receiver's version and says so itself; an older one (version 1) does not
-            // wait for a reply, so none is sent and it stays connected instead of reconnecting every second.
+            // A newer plugin hears this receiver's version and says so itself; an older one reads the version at
+            // the start of the WELCOME, says so, and retries slowly (version 1 does not wait for a reply, so none
+            // is sent to it and it stays connected instead of reconnecting every second).
             pthread_mutex_lock(&server->lock);
-            client->info.protocol_version = words[0];
-            client->info.plugin_format = words[1];
+            client->info.protocol_version = version;
+            client->info.plugin_format = format;
             client->incompatible = true;
             pthread_mutex_unlock(&server->lock);
-            if (words[0] > ABR_PROTOCOL_VERSION) {
-                AbrWelcome welcome = {ABR_PROTOCOL_VERSION, 0};
-                if (!send_message(client, ABR_MSG_WELCOME, &welcome, sizeof welcome)) return false;
-            }
+            if (version >= 2 && !send_welcome(client)) return false;
             return true;
         }
-        if (header->length < sizeof(AbrHello)) return false;
-        AbrHello hello;
-        memcpy(&hello, payload, sizeof hello);
+        AbrSourceInfo hello;
+        memset(&hello, 0, sizeof hello);
+        read_hello(&hello, payload, header->length);
         pthread_mutex_lock(&server->lock);
         const bool refused = now_ns() < server->refused_until && memcmp(server->refused, hello.session_id, 16) == 0;
         pthread_mutex_unlock(&server->lock);
@@ -220,73 +273,39 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
         memcpy(info->persistent_id, hello.persistent_id, 16);
         memcpy(info->restored_id, hello.restored_id, 16);
         info->identity_flags = hello.identity_flags;
-        info->protocol_version = hello.protocol_version;
+        info->protocol_version = version;
         info->compatible = 1;
-        info->plugin_format = hello.plugin_format;
+        info->plugin_format = format;
         info->host_pid = hello.host_pid;
-        copy_string(info->host_name, hello.host_name, sizeof info->host_name);
-        copy_string(info->host_bundle_id, hello.host_bundle_id, sizeof info->host_bundle_id);
-        copy_string(info->plugin_version, hello.plugin_version, sizeof info->plugin_version);
+        info->schema = hello.schema;
+        info->capabilities = hello.capabilities;
+        memcpy(info->host_name, hello.host_name, sizeof info->host_name);
+        memcpy(info->host_bundle_id, hello.host_bundle_id, sizeof info->host_bundle_id);
+        memcpy(info->plugin_version, hello.plugin_version, sizeof info->plugin_version);
+        info->plugin_seconds_since_audio = -1;
         pthread_mutex_unlock(&server->lock);
-        AbrWelcome welcome = {ABR_PROTOCOL_VERSION, 0};
-        if (!send_message(client, ABR_MSG_WELCOME, &welcome, sizeof welcome)) return false;
+        if (!send_welcome(client)) return false;
         pthread_mutex_lock(&server->lock);
         client->greeted = true;
         pthread_mutex_unlock(&server->lock);
         return true;
     }
-    case ABR_MSG_STATUS: {
-        if (!client->greeted || header->length < sizeof(AbrStatus)) return false;
-        AbrStatus status;
-        memcpy(&status, payload, sizeof status);
+    case ABR_MSG_STATUS:
+        if (!client->greeted) return false;
         pthread_mutex_lock(&server->lock);
-        AbrSourceInfo *info = &client->info;
-        info->state = status.state;
-        info->status_flags = status.flags;
-        // FORMAT is authoritative for audio; STATUS carries the same numbers so an unsubscribed instance is
-        // described too.
-        if (status.format_epoch >= info->format_epoch) {
-            info->format_epoch = status.format_epoch;
-            info->sample_rate = status.sample_rate;
-            info->channels = status.channels;
-            info->layout = status.layout;
-        }
-        info->max_block_frames = status.max_block_frames;
-        info->frames_processed = status.frames_processed;
-        info->frames_dropped_by_plugin = status.frames_dropped;
-        info->plugin_interruptions = status.interruptions;
-        info->transport_jumps = status.transport_jumps;
-        copy_string(info->source_name, status.source_name, sizeof info->source_name);
-        copy_string(info->track_name, status.track_name, sizeof info->track_name);
-        copy_string(info->channel_id, status.channel_id, sizeof info->channel_id);
+        read_status(&client->info, payload, header->length);
         pthread_mutex_unlock(&server->lock);
         return true;
-    }
-    case ABR_MSG_FORMAT: {
-        if (!client->greeted || header->length < sizeof(AbrFormat)) return false;
-        AbrFormat format;
-        memcpy(&format, payload, sizeof format);
-        if (format.channels == 0 || format.channels > ABR_MAX_CHANNELS
-            || format.sample_format != ABR_SAMPLE_FLOAT32_INTERLEAVED
-            || !(format.sample_rate >= 8000 && format.sample_rate <= 768000)) return false;
+    case ABR_MSG_RESULT:
+        if (!client->greeted) return false;
+        deliver_result(server, client, payload, header->length);
+        return true;
+    case ABR_MSG_ACK:
+        if (!client->greeted) return false;
         pthread_mutex_lock(&server->lock);
-        client->info.format_epoch = format.format_epoch;
-        client->info.sample_rate = format.sample_rate;
-        client->info.channels = format.channels;
-        client->info.layout = format.layout;
+        read_ack(&client->info, payload, header->length);
         pthread_mutex_unlock(&server->lock);
         return true;
-    }
-    case ABR_MSG_AUDIO: {
-        if (!client->greeted || header->length < sizeof(AbrAudio)) return false;
-        AbrAudio audio;
-        memcpy(&audio, payload, sizeof audio);
-        if (audio.channels == 0 || audio.channels > ABR_MAX_CHANNELS
-            || header->length != sizeof audio + (uint64_t)audio.frames * audio.channels * sizeof(float)) return false;
-        // The payload sits at a 4-byte boundary after the 16-byte header, so the samples are float-aligned.
-        deliver_audio(server, client, &audio, (const float *)(payload + sizeof audio));
-        return true;
-    }
     case ABR_MSG_FOCUS:
         if (!client->greeted) return false;
         pthread_mutex_lock(&server->lock);
@@ -337,7 +356,7 @@ static void accept_clients(AbrServer *server) {
         if (fd < 0) return;
         int on = 1;
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
-        int buffer = 128 * 1024;  // see the sender: small buffers keep latency bounded under overload
+        int buffer = 32 * 1024;  // see the sender: small buffers keep stale results from queuing up
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buffer, sizeof buffer);
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
         if (!peer_is_same_user(fd) || server->count >= MAX_CLIENTS) { close(fd); continue; }
@@ -377,8 +396,10 @@ static void reconcile_subscriptions(AbrServer *server) {
             if (wanted) {
                 if (++server->next_subscription == 0) server->next_subscription = 1;
                 subscription = server->next_subscription;
-                AbrSubscribe subscribe = {subscription, 0};
-                sent = send_message(client, ABR_MSG_SUBSCRIBE, &subscribe, sizeof subscribe);
+                uint8_t payload[16];
+                AbrWriter w = abr_writer(payload, sizeof payload);
+                abr_put_u32(&w, ABR_SUBSCRIBE_SUBSCRIPTION, subscription);
+                sent = send_message(client, ABR_MSG_SUBSCRIBE, payload, (uint32_t)w.used);
             } else {
                 sent = send_message(client, ABR_MSG_UNSUBSCRIBE, NULL, 0);
             }
@@ -393,6 +414,29 @@ static void reconcile_subscriptions(AbrServer *server) {
             pthread_mutex_unlock(&server->lock);
             client->subscribed = wanted;
             client->subscribed_selection = selection;
+        }
+        // Commands waiting for this instance.
+        PendingCommand commands[MAX_PENDING_COMMANDS];
+        pthread_mutex_lock(&server->lock);
+        const uint32_t pending = client->greeted ? client->pending_commands : 0;
+        memcpy(commands, client->commands, pending * sizeof commands[0]);
+        uint8_t session[16];
+        memcpy(session, client->info.session_id, 16);
+        if (client->greeted) client->pending_commands = 0;
+        pthread_mutex_unlock(&server->lock);
+        bool failed = false;
+        for (uint32_t c = 0; c < pending && !failed; ++c) {
+            uint8_t payload[96];
+            AbrWriter w = abr_writer(payload, sizeof payload);
+            abr_put_u32(&w, ABR_COMMAND_ID, commands[c].id);
+            abr_put_u32(&w, ABR_COMMAND_CODE, commands[c].code);
+            abr_put_bytes(&w, ABR_COMMAND_SESSION_ID, session, 16);
+            abr_put_u32(&w, ABR_COMMAND_GENERATION, commands[c].generation);
+            failed = !send_message(client, ABR_MSG_COMMAND, payload, (uint32_t)w.used);
+        }
+        if (failed) {
+            close_client(server, i);
+            continue;
         }
         ++i;
     }
@@ -501,11 +545,10 @@ uint32_t abr_server_sources(AbrServer *server, AbrSourceInfo *out, uint32_t capa
             AbrSourceInfo *info = &out[listed];
             *info = client->info;
             const uint64_t message = atomic_load_explicit(&client->last_message_ns, memory_order_relaxed);
-            const uint64_t audio = atomic_load_explicit(&client->last_audio_ns, memory_order_relaxed);
+            const uint64_t result = atomic_load_explicit(&client->last_result_ns, memory_order_relaxed);
             info->seconds_since_message = message && now > message ? (double)(now - message) / 1e9 : 0;
-            info->seconds_since_audio = audio ? (now > audio ? (double)(now - audio) / 1e9 : 0) : -1;
-            info->delivering = info->selected && server->sink != NULL && server->sink_epoch == info->format_epoch;
-            info->delivered_epoch = info->selected && server->sink ? server->sink_epoch : 0;
+            info->seconds_since_result = result ? (now > result ? (double)(now - result) / 1e9 : 0) : -1;
+            info->delivering = info->selected && server->sink != NULL;
         }
         ++listed;
     }
@@ -534,10 +577,6 @@ void abr_server_disconnect(AbrServer *server, const uint8_t *session_id, uint32_
 }
 
 void abr_server_select(AbrServer *server, const uint8_t *session_id) {
-    abr_server_detach(server);
-    pthread_mutex_lock(&server->sink_lock);
-    server->have_expectation = false;  // a new selection: its positions have nothing to continue
-    pthread_mutex_unlock(&server->sink_lock);
     pthread_mutex_lock(&server->lock);
     server->has_selection = session_id != NULL;
     if (session_id) memcpy(server->selected, session_id, 16);
@@ -545,34 +584,41 @@ void abr_server_select(AbrServer *server, const uint8_t *session_id) {
     for (uint32_t i = 0; i < server->count; ++i) {
         Client *client = server->clients[i];
         client->info.selected = client->greeted && session_id && memcmp(session_id, client->info.session_id, 16) == 0;
-        // Whatever is in flight now was captured for the previous selection: stale from this moment, until the
-        // server thread sends the new subscription.
+        // Whatever is in flight now was sent for the previous selection: stale from this moment, until the server
+        // thread sends the new subscription.
         client->subscription = 0;
     }
     pthread_mutex_unlock(&server->lock);
     wake(server);
 }
 
-void abr_server_attach(AbrServer *server, uint32_t format_epoch, AbrSink sink, AbrBoundary boundary, void *context,
-                       int mark_start) {
+void abr_server_attach(AbrServer *server, AbrResultSink sink, void *context) {
     pthread_mutex_lock(&server->sink_lock);
-    pthread_mutex_lock(&server->lock);
     server->sink = sink;
-    server->boundary = boundary;
     server->sink_context = context;
-    server->sink_epoch = format_epoch;
-    server->mark_start = mark_start != 0;
-    server->attach_generation++;
-    pthread_mutex_unlock(&server->lock);
     pthread_mutex_unlock(&server->sink_lock);
 }
 
 void abr_server_detach(AbrServer *server) {
     pthread_mutex_lock(&server->sink_lock);
-    pthread_mutex_lock(&server->lock);
     server->sink = NULL;
-    server->boundary = NULL;
     server->sink_context = NULL;
-    pthread_mutex_unlock(&server->lock);
     pthread_mutex_unlock(&server->sink_lock);
+}
+
+uint32_t abr_server_command(AbrServer *server, const uint8_t *session_id, uint32_t command, uint32_t generation) {
+    uint32_t id = 0;
+    pthread_mutex_lock(&server->lock);
+    for (uint32_t i = 0; i < server->count; ++i) {
+        Client *client = server->clients[i];
+        if (!client->greeted || memcmp(client->info.session_id, session_id, 16) != 0) continue;
+        if (client->pending_commands == MAX_PENDING_COMMANDS) break;
+        if (++server->next_command == 0) server->next_command = 1;
+        id = server->next_command;
+        client->commands[client->pending_commands++] = (PendingCommand){id, command, generation};
+        break;
+    }
+    pthread_mutex_unlock(&server->lock);
+    if (id) wake(server);
+    return id;
 }
