@@ -1,3 +1,4 @@
+import AnalysisCore
 import AppKit
 import QuartzCore
 import SwiftUI

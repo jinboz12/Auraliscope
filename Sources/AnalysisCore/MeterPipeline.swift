@@ -1,38 +1,38 @@
-import AudioRing
+import AnalysisKernels
 import Foundation
 
 /// Float offsets of one published snapshot inside the C11 triple buffer (`METER_SNAPSHOT_FLOATS`).
-enum SnapshotSlots {
-    static let spectrum = 0
-    static let peaks = 64
-    static let rms = peaks + Role.count
-    static let truePeaks = rms + Role.count
-    static let heldPeaks = truePeaks + Role.count
-    static let heldTruePeaks = heldPeaks + Role.count
-    static let momentary = heldTruePeaks + Role.count
-    static let shortTerm = momentary + 1
-    static let integrated = momentary + 2
-    static let range = momentary + 3
-    static let sequence = momentary + 4
-    static let stream = momentary + 5
-    static let peakFrequency = momentary + 6
-    static let peakLevel = momentary + 7
-    static let format = momentary + 8
-    static let waveSerial = momentary + 9
-    static let correlation = momentary + 10
-    static let spectrogramSerial = momentary + 11
-    static let spectrogram = momentary + 12
-    static let bandCorrelation = spectrogram + MeterSnapshot.spectrogramBandCount
-    static let bandWidth = bandCorrelation + StereoBands.groups.count
-    static let bandBalance = bandWidth + StereoBands.groups.count
-    static let bandLevel = bandBalance + StereoBands.groups.count
-    static let bandPoints = bandLevel + StereoBands.groups.count
-    static let roleBandPower = bandPoints + StereoBands.scopeFloats
-    static let notes = roleBandPower + StereoBands.roleFloats
-    static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
-    static let breaks = waveform + WaveformEnvelope.publishedFloats
-    static let missing = breaks + 1
-    static let total = missing + 1
+package enum SnapshotSlots {
+    package static let spectrum = 0
+    package static let peaks = 64
+    package static let rms = peaks + Role.count
+    package static let truePeaks = rms + Role.count
+    package static let heldPeaks = truePeaks + Role.count
+    package static let heldTruePeaks = heldPeaks + Role.count
+    package static let momentary = heldTruePeaks + Role.count
+    package static let shortTerm = momentary + 1
+    package static let integrated = momentary + 2
+    package static let range = momentary + 3
+    package static let sequence = momentary + 4
+    package static let stream = momentary + 5
+    package static let peakFrequency = momentary + 6
+    package static let peakLevel = momentary + 7
+    package static let format = momentary + 8
+    package static let waveSerial = momentary + 9
+    package static let correlation = momentary + 10
+    package static let spectrogramSerial = momentary + 11
+    package static let spectrogram = momentary + 12
+    package static let bandCorrelation = spectrogram + MeterSnapshot.spectrogramBandCount
+    package static let bandWidth = bandCorrelation + StereoBands.groups.count
+    package static let bandBalance = bandWidth + StereoBands.groups.count
+    package static let bandLevel = bandBalance + StereoBands.groups.count
+    package static let bandPoints = bandLevel + StereoBands.groups.count
+    package static let roleBandPower = bandPoints + StereoBands.scopeFloats
+    package static let notes = roleBandPower + StereoBands.roleFloats
+    package static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
+    package static let breaks = waveform + WaveformEnvelope.publishedFloats
+    package static let missing = breaks + 1
+    package static let total = missing + 1
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -58,29 +58,29 @@ enum SnapshotSlots {
 /// loudness range keep their blocks, the held peaks keep their maxima, the waterfall and the waveform keep their
 /// history (with a notch at the break). Every break is counted in the snapshot, with the time known missing, so
 /// a reading that spans breaks never passes for one continuous measurement.
-final class MeterPipeline {
-    static let tickRate = 60.0
+package final class MeterPipeline {
+    package static let tickRate = 60.0
     /// Ticks per level window and per waterfall column: 1/30 s.
-    static let windowTicks = 2
+    package static let windowTicks = 2
     /// With no audio for this many ticks (100 ms) the input reads as silence.
-    static let staleTicks = 6
+    package static let staleTicks = 6
     /// Time constant of the L/R correlation integrator, in seconds.
-    static let correlationTime = 0.25
+    package static let correlationTime = 0.25
     private static let correlationDecay = exp(-1 / (tickRate * correlationTime))
 
-    let loudness: LoudnessAnalyzer
-    let spectrum: SpectrumAnalyzer
-    let waveform: WaveformEnvelope
-    let splitter: StereoBandSplitter
+    package let loudness: LoudnessAnalyzer
+    package let spectrum: SpectrumAnalyzer
+    package let waveform: WaveformEnvelope
+    package let splitter: StereoBandSplitter
     private var detector: FormatDetector
     private let streamID: Float
     private let sampleRate: Double
     /// Breaks since the analysis started, and the seconds of audio known to be missing at them.
-    private(set) var breaks = 0
-    private(set) var missingSeconds = 0.0
+    package private(set) var breaks = 0
+    package private(set) var missingSeconds = 0.0
     /// Spatial monitoring: spectrum and waterfall sum every routed role; otherwise they show L and R.
     /// Set by the owner; takes effect once every routed role has a full FFT window (≤ 170 ms).
-    var spatialSpectrum = false {
+    package var spatialSpectrum = false {
         didSet { spectrum.recordsSpatial = spatialSpectrum }
     }
     private var analysedSpatial = false
@@ -111,9 +111,9 @@ final class MeterPipeline {
     private var planar = [Float](repeating: 0, count: Role.count * MeterPipeline.planarCapacity)
     private let planarRoles: [Int]
     /// Loudest sample peak of the newest tick, for the "signal confirmed" diagnostic.
-    private(set) var newestPeak: Float = 0
+    package private(set) var newestPeak: Float = 0
 
-    init?(sampleRate: Double, activeRoles: [Bool], detector: FormatDetector, streamID: UInt32) {
+    package init?(sampleRate: Double, activeRoles: [Bool], detector: FormatDetector, streamID: UInt32) {
         guard let spectrum = SpectrumAnalyzer(sampleRate: sampleRate, recording: activeRoles),
               let loudness = LoudnessAnalyzer(sampleRate: sampleRate, activeRoles: activeRoles),
               let splitter = StereoBandSplitter(sampleRate: sampleRate) else { return nil }
@@ -128,7 +128,7 @@ final class MeterPipeline {
         planarRoles = (0..<Role.count).filter { $0 == Role.left || $0 == Role.right || ($0 < activeRoles.count && activeRoles[$0]) }
     }
 
-    func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
+    package func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard !frames.isEmpty else { return }
         // One de-interleave for every analysis: the routed roles, and L and R, which the spectrum and the band
         // splitter always read (they hold silence when unrouted).
@@ -144,7 +144,7 @@ final class MeterPipeline {
 
     /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing
     /// and the source did not deliver for `idleMilliseconds`, where the producer knows.
-    func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
+    package func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
         loudness.interrupt()
         spectrum.interrupt()
         splitter.interrupt()
@@ -177,7 +177,7 @@ final class MeterPipeline {
     }
 
     /// Clears the held true peaks only (the TRUE PEAK reading's reset); held sample peaks stay.
-    func resetTruePeaks() {
+    package func resetTruePeaks() {
         for role in 0..<Role.count { heldTruePeak[role] = 0 }
     }
 
@@ -234,7 +234,7 @@ final class MeterPipeline {
 
     /// Closes the current tick and writes a full snapshot (`SnapshotSlots.total` floats) to `v`.
     /// `now` is in seconds on any monotonic clock; it paces the format detector.
-    func publish(into v: UnsafeMutablePointer<Float>, now: Double) {
+    package func publish(into v: UnsafeMutablePointer<Float>, now: Double) {
         tick += 1
         head = (head + 1) % Self.staleTicks
         loudness.take(into: &slices[head])

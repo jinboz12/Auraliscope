@@ -1,4 +1,5 @@
 import AVFoundation
+import AnalysisCore
 import AppKit
 import AudioRing
 import Combine

@@ -1,3 +1,4 @@
+import AnalysisCore
 import Foundation
 
 // A fixed 512 × 512 image. The GPU receives only the newest 512-byte column per analysis tick.

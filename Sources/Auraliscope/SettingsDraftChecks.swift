@@ -1,3 +1,4 @@
+import AnalysisCore
 import AppKit
 
 extension SettingsDraft {

@@ -1,3 +1,4 @@
+import AnalysisCore
 import Foundation
 import QuartzCore
 

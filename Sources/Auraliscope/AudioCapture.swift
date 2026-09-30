@@ -1,3 +1,4 @@
+import AnalysisCore
 import AudioToolbox
 import CoreAudio
 import Foundation

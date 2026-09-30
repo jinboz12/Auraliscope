@@ -1,3 +1,4 @@
+import AnalysisCore
 import Foundation
 
 /// Deterministic synthetic programme for `--demo`, window snapshots and the offscreen preview.
