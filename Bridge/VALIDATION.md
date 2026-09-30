@@ -1,21 +1,29 @@
 # Auraliscope Bridge / Auraliscope Labs 1.3dev: validation report
 
-Prototype build: Auraliscope Labs 1.3dev build 1 with Auraliscope Bridge 1.3dev build 1 (VST3 and AUv2), branch
-`claude/auraliscope-daw-bridge-187076` from `a004a5b`. Mac: Apple M1 Max, macOS 27.2, Xcode 27.0. All logs are in
-`.build/bridge/validation/` (not committed). Tests used the deterministic signal L = 997 Hz at 0.5 (−6.021 dBFS),
-R = 1499 Hz at 0.25 (−12.041 dBFS); a swapped, duplicated or scaled channel cannot pass.
+Build: Auraliscope Labs 1.3dev build 2 with Auraliscope Bridge 1.3dev build 2 (VST3 and AUv2), protocol version 2,
+branch `claude/auraliscope-daw-bridge-187076` (started from `a004a5b`; Auraliscope 1.2.2, `10e35cd`, merged in).
+Mac: Apple M1 Max, macOS 27.2, Xcode 27.0. Logs are in `.build/bridge/validation/` (not committed). Tests use the
+deterministic signal L = 997 Hz at 0.5 (−6.021 dBFS), R = 1499 Hz at 0.25 (−12.041 dBFS); a swapped, duplicated or
+scaled channel cannot pass.
 
-The evidence is kept apart by kind: **build**, **automated validation**, **test host** (the real plugin binaries
-loaded by `Bridge/Tools/HostHarness`, not a DAW), and **DAW runtime** (REAPER 7.80).
+The evidence is kept apart by kind: **automated** (unit and transport tests, validators), **test host** (the real
+plugin binaries in `Bridge/Tools/HostHarness`, not a DAW), and **DAW runtime** (REAPER 7.80 scripted; Logic Pro 12.4
+and Cubase 15.0.30 driven through their user interface). Timing figures are measurements on this Mac, not guarantees;
+the guarantees are structural (what the audio thread does and does not do) and are listed separately.
 
-## Build
+## Host compatibility matrix
 
-| Item | Result |
-|---|---|
-| VST3 bundle, universal arm64 + x86_64, exports only `GetPluginFactory`, `bundleEntry`, `bundleExit` | built, ad hoc signed, `codesign --verify --strict` passes |
-| AU bundle, universal, exports only `BridgeAUFactory` | built, signed, verified |
-| Auraliscope Labs.app (`com.jinboz.SoundMeterJBZ.Labs`, 1.3dev build 1, beta icon) | built, signed, identity checked in the binary |
-| Existing app sources | still build; `Resources/Info.plist` and `scripts/` unchanged |
+| Host (format) | Loads, names the insert | Live stream exact | Transport stop | Bypass | Deactivate | Offline render | Duplicate / copy | Project reopened | Unload / reload |
+|---|---|---|---|---|---|---|---|---|---|
+| REAPER 7.80 (VST3) | yes; track name and channel ID (`IInfoListener`) | yes, 0 lost | keeps processing: streaming silence | stops calling: "no audio" | — | offline, nothing sent live; bounce = source (≤ 7.5·10⁻⁸) | copy flagged; Labs stays on the original | original restored by itself | original found again (channel ID) |
+| REAPER 7.80 (AU) | yes; track name (`ContextName`) | yes, 0 lost | same | same | — | same | same | same | original found again (known copy) |
+| Logic Pro 12.4 (AU) | yes, after Logic's own AU validation; track name; runs in `AUHostingServiceXPC_arrow` | yes, 0 lost | stops calling: "no audio", one break on resume | stops calling: "no audio" | — | offline, nothing sent live; bounce = source outside Logic's own clicks | pasted insert flagged as copy | original restored by itself | not tested |
+| Cubase 15.0.30 (VST3) | yes; track name | yes, 0 lost | keeps processing: streaming silence | **"bypassed"** (the plugin's bypass parameter) | "inactive", then streaming | offline, nothing sent live; export = source (≤ 7.5·10⁻⁸) | duplicated track flagged as copy | original restored by itself | not tested |
+| Ableton Live 12.4.5 Lite (VST3) | not tested: a macOS Local Network permission prompt for Live blocks its window (see below) | | | | | | | | |
+| FL Studio, GarageBand | not tested (GarageBand is sandboxed: see ARCHITECTURE.md) | | | | | | | | |
+
+"Live stream exact" means peaks −6.021 / −12.041 dBFS and integrated loudness −7.76 LUFS measured by Labs' own
+pipeline, with no frames lost. Every host passed the audio through unchanged.
 
 ## Automated validation
 
@@ -23,85 +31,107 @@ loaded by `Bridge/Tools/HostHarness`, not a DAW), and **DAW runtime** (REAPER 7.
 |---|---|
 | Steinberg VST3 validator, extensive (`-e`) | **537 passed, 0 failed** |
 | `auval -v aufx Abrg Jnbz` and `auval -strict` | **AU VALIDATION SUCCEEDED** (both) |
-| Transport tests (`test-transport.sh`: plugin core and receiver, private socket) | **37/37**, five consecutive runs |
-| Existing core checks (`scripts/test.sh`) | **31/31** |
-| Localization checker | **PASS**, 315 keys in en, zh-Hans, ko |
+| Transport tests (`test-transport.sh`: plugin core and receiver, private socket) | **69/69**; clean under ThreadSanitizer (`ABR_SANITIZE=thread`) |
+| Analysis tests (`test-analysis.sh`: break marks, each analyser at a break, restoration rules) | **47/47** |
+| Release core checks (`scripts/test.sh`, unchanged from 1.2.2) | **42/42** |
+| Localization checker | **PASS**, 331 keys in en, zh-Hans, ko |
 
-The transport tests cover: discovery and metadata of several instances; bit-exact stereo and mono; nothing sent before
-subscription; worst `process()` 7.7–27 µs; a 1 s receiver stall (plugin dropped 21 056 frames, receiver counted exactly
-21 056 lost in 1 gap, delivery recovered to real time, audio thread never waited); format change (audio of the new
-epoch held back until re-attached, then exact at 96 kHz mono); bypass and offline (nothing sent, position frozen,
-discontinuity flagged on resume); state save/restore; receiver restart and plugin reconnection; instance removal;
-one-click focus; DNS-SD advertise, find, resolve (TXT keys) and removal.
+The transport tests cover discovery and metadata of several instances; bit-exact stereo and mono; nothing sent before
+subscription; subscription numbers (audio queued before an unsubscribe or an A → B → A re-selection is never
+replayed); a one-second receiver stall (the plugin drops, the receiver counts exactly the frames lost, the audio
+thread never waits); a host pause announced by a block that was itself discarded as late is still reported, with its
+idle time; format changes held back until re-attached; bypass, offline, restart and idle breaks with their reasons;
+a timeline jump counted but not a break; identity (restored, copied, reidentified); 1,600 instances created and
+destroyed on 8 threads (the lifecycle deadlock); a receiver of another protocol version; one-click focus; DNS-SD.
+
+The analysis tests compare each analyser across a break with the uninterrupted case: K-weighting, momentary and
+short-term restart; integrated loudness and loudness range carry on; true peak is never measured across the cut; the
+spectrum window never mixes both sides; the waveform notch; the snapshot's break count and missing time. The
+restoration rules are tested case by case (same session, single holder, copies, known copies, two DAWs, channel ID,
+saved-context tie-breaks, selections saved by build 1).
+
+## Structural guarantees (audio thread)
+
+`BridgeCore::process` reads atomics, compares the host transport with the previous block, and when the insert is live
+and subscribed copies the block into a preallocated ring. It performs no allocation, takes no lock, makes no system
+call and does no logging (the AudioUnitSDK's own logging is compiled out with `AUSDK_NO_LOGGING`). Everything else
+runs on one sender thread per plugin binary. Measured worst `process()`: under 35 µs per 256-frame block in the
+test host, and it does not grow during a one-second receiver stall.
 
 ## Test host (real binaries, no DAW)
 
-`e2e-probe.sh`: the test host plays the built VST3 or installed AU; the standalone receiver compares every sample.
+`e2e-probe.sh`: **10/10**: VST3 and AU at 44.1, 48, 96 and 192 kHz, mono and stereo, blocks 64–1024, several
+instances with the 2nd or 3rd selected, and the editor opened and closed while streaming. Plugin output identical to
+input; received audio bit-exact; 0 lost.
 
-| Case | Plugin output | Received |
-|---|---|---|
-| VST3 stereo 48 kHz, block 256 | identical to input | ~287 k frames bit-exact, L 0.5000 / R 0.2500, 0 lost |
-| VST3 mono 44.1 kHz, block 128 | identical | bit-exact, 1 ch |
-| VST3 stereo 96 kHz, block 512 | identical | bit-exact |
-| AU stereo 48 kHz / mono 48 kHz (block 64) / stereo 192 kHz (block 1024) | identical | bit-exact, 0 lost |
-| 3 VST3 / 3 AU instances, receiver selects the 2nd / 3rd | identical | exactly that instance's level (½ / ¼) |
-| VST3 and AU editor opened, captured, closed during streaming | identical | continuous, bit-exact |
+`e2e-app.sh`: **9/9** scenarios through Labs' own analysis (`--bridge-selftest`): reconnection, mono AU, three
+instances, rate change mid-stream, the five plugin states, Labs quit and relaunched during playback, a duplicated
+insert (ambiguous until chosen, then the chosen copy is measured), the same live instance re-identifying (analysis
+carries on, break counted), and the connection dropped for 1.5 s (measurement held, then carried on with integrated
+loudness unchanged at −7.76 LUFS).
 
-`e2e-app.sh`: the same binaries into Auraliscope Labs, checked by its own analysis pipeline (`--bridge-selftest`).
+## DAW runtime
 
-| Scenario | Result |
-|---|---|
-| VST3 stereo 48 kHz; plugin removed, same insert returns (same project ID, new session) | peaks L −6.021, R −12.041 dBFS; "disconnected · waiting"; resumed by itself; same peaks; 0 dropped |
-| AU mono 44.1 kHz | 1 ch, 44.1 kHz, L −6.021 dBFS, R silent |
-| Three instances, "Multi 2" selected | L −12.041, R −18.062 dBFS |
-| AU 48 kHz → 96 kHz mid-stream | analysis rebuilt at 96 kHz; peaks unchanged |
-| Live, bypass, offline, host stops calling, live | streaming → bypassed → offline → no audio → streaming |
-| Labs quit and relaunched during playback | host output bit-identical throughout; second launch streams again |
-| One click in the plugin window with Labs not running | Labs launched from ~/Applications, connected, selected the insert; window read "Streaming to Auraliscope Labs", 325 k frames sent, 0 dropped |
-| Scan card | "This Mac · Auraliscope Labs 1.3dev · connected"; simulated iPad (DNS-SD beacon, this Mac only) listed as "Auraliscope for iPadOS 1.4" |
+### REAPER 7.80 (evaluation), private profile, silent virtual device: `e2e-reaper.sh`, all passed
 
-Existing sources in the Labs build: input capture self-test on Pro Tools Audio Bridge 6 (scrambled routing) **PASS**;
-synthetic input/output removal and return **6/6 PASS**. The output-tap self-test reads silence from this shell, and
-so does the unmodified `a004a5b` build: System Audio Recording is not granted to this launch context. Not a
-regression, but not verified here (see manual steps).
+For each format: the live script (play, plugin window opened and closed, FX bypass, stop, play, quit), an offline
+render, the identity script, and a reopen of the saved project.
 
-## DAW runtime: REAPER 7.80 (evaluation), private profile, silent virtual device
+- **Live:** peaks −6.021 / −12.041 dBFS at 48 kHz, 0 lost; states streaming → no audio (FX bypass) → streaming
+  (stop keeps REAPER processing) → measurement held (REAPER quit).
+- **Offline render:** reported offline, no audio delivered as live (REAPER creates the insert live and flags offline
+  before rendering); the render equals the source within 7.5·10⁻⁸ (24-bit step 1.2·10⁻⁷).
+- **Identity and transport:** the analysed track is duplicated while playing (the copy flagged, Labs stays on the
+  original); a loop and a locate are counted as 6 timeline jumps and are not breaks; the project goes to 44.1 kHz and
+  back (analysis rebuilt each time, one restart break each); the original insert is unloaded and reloaded: Labs holds
+  the measurement, then finds the original again: VST3 by REAPER's channel ID, AU because the copy was seen being
+  made. The saved project holds two distinct identities.
+- **Reopen:** the project reopened, Labs found the original insert by itself (not the copy) and measured it.
 
-`e2e-reaper.sh`. REAPER discovered and loaded both formats (VST3 via its scan, AU via the system registry) and passed
-the track name to the plugin (VST3 `IInfoListener`, AU `ContextName`).
+### Logic Pro 12.4 (AU), a new project from the test AIFF, driven through its interface
 
-| Format | Live (with Auraliscope Labs) | Offline render |
-|---|---|---|
-| VST3 | peaks −6.021 / −12.041 dBFS at 48 kHz, 0 lost; plugin window opened and closed without interruption; states streaming → no audio (FX bypass) → streaming (stop keeps REAPER processing) → disconnected (quit) | reported offline only, no audio delivered as live; bounce equals source within 7.5·10⁻⁸ (24-bit step 1.2·10⁻⁷) |
-| AU | same as VST3 | same; REAPER creates the AU live and flags offline ~0.1 s later, before rendering |
+Logic validated and listed the plugin (Audio FX ▸ Auraliscope Bridge ▸ Stereo / Dual Mono). Logic hosts it out of
+process (`AUHostingServiceXPC_arrow`); the connection, the host name ("Logic Pro") and the track name all work from
+there. Live: exact, 0 lost; stop and bypass both stop Logic calling the plugin ("no audio"), one break on resume.
+Bounce (offline, Normalize off): reported offline throughout, nothing delivered as live. The bounced file differs
+from the source only where Logic's metronome click and a start transient are printed into it; a bounce with the
+Bridge bypassed has the same differences, and every sample outside them equals the source within 2 LSB at 24 bits.
+(The new project also puts Mastering Assistant on the Stereo Out, which was bypassed for the comparison.) Copy: the
+Bridge Option-dragged to the Stereo Out carries the original's state; it was flagged as a copy (both instances share
+the XPC host process, so the plugin's registry sees both). Reopen: saved, Logic quit, reopened; Labs found the
+original by itself.
 
-REAPER's FX bypass stops calling the plugin instead of using its bypass parameter, so Labs shows "no audio: the DAW is
-not processing it" rather than "bypassed" (the bypassed state was verified through the test host).
+### Cubase 15.0.30 (VST3), a new empty project in a test folder, driven through its interface
+
+Listed under Analyzer. Live: exact, 0 lost. Stop: Cubase keeps processing (streaming silence). The bypass button uses
+the plugin's bypass parameter, so Labs shows **bypassed**; the on/off button deactivates the plugin (**inactive**),
+and reactivating resumes streaming. Audio Mixdown (not real time): reported offline, nothing delivered as live, and
+the export equals the source within 7.5·10⁻⁸. Project ▸ Duplicate Tracks: the copy ("bridge-test-48k (D)") flagged,
+Labs stays on the original. Reopen: saved, Cubase quit, reopened; Labs found the original by itself.
+
+### Ableton Live 12.4.5 Lite: not tested
+
+On launch, Live rescanned all plugins and macOS asked whether "Ableton Live 12 Lite" may find devices on local
+networks. That prompt blocks input to Live, and answering it changes a privacy setting, which was left to the user.
+The prompt was not caused by the Bridge: the Bridge browses the network only after its Scan button is clicked.
 
 ## Not verified here
 
-- **Logic Pro, Cubase 15, Ableton Live 12 Lite, FL Studio:** installed but not driven. There is no command-line
-  automation for them in this environment, and GUI automation was unavailable. Follow the manual steps in
-  README.md. AU validation passing is what Logic's plug-in manager requires.
-- **Real iOS devices:** there is no iOS app yet. Discovery was checked with a local-only DNS-SD beacon; browsing a real
-  network and the Local Network permission prompt in each DAW were not exercised.
-- **Output-tap source** in Labs (needs System Audio Recording permission for Labs itself).
-- **Intel Macs:** the plugins are universal but ran on arm64 only.
+- Ableton Live (above), FL Studio, GarageBand; unloading and reloading an insert in Logic or Cubase.
+- Real iOS devices: there is no iOS app. Discovery was checked with a local-only DNS-SD beacon.
+- The production transport with a team signature (`probe-sandbox-transport.sh` was run ad hoc signed only).
+- Intel Macs: the plugins are universal but ran on arm64 only.
+- The output-tap source in Labs (needs System Audio Recording permission for Labs itself).
 
-## Known limitations and open issues
+## Known limitations
 
-1. Labs is not sandboxed (see ARCHITECTURE.md, "Sandbox finding"); a sandboxed release needs a team-signed
-   rendezvous (app group or XPC). Sandboxed hosts (GarageBand) cannot connect.
-2. Mono and stereo only. Wider buses are refused by the plugin (VST3 arrangement, AU channel info); Labs shows other
-   counts as "only mono and stereo are supported".
-3. Copies of a track share the saved project ID; Labs lists each copy, but after a reload it resumes with the first
-   copy to connect.
-4. One analysed instance at a time; others are listed and idle (they send status, not audio).
-5. A host that never flags offline rendering would stream a bounce faster than real time; the drop policy keeps the
-   DAW safe, but Labs would meter it as live. REAPER flags it for both formats.
-6. The 128 KB socket buffers and 150 ms queue bound latency. On a heavily loaded Mac, analysis may show gaps (counted
-   in the status bar), never back-pressure into the DAW.
-7. The plugin window is English only; Labs strings are localized (en, zh-Hans, ko).
-8. Not notarized; first launch of Labs from Finder needs right-click ▸ Open. The plugins load in the tested hosts
-   ad hoc signed.
-9. Labs launched by a plugin may briefly show "Waiting for the DAW plugin to connect…" (under a second).
+1. Labs is not sandboxed; the release is. See ARCHITECTURE.md, "Production transport", for the recommended carrier.
+2. Mono and stereo only; other bus widths are refused.
+3. Two DAWs (or two processes of one host) holding the same project cannot see each other's copies: Labs tells them
+   apart by host and context, or says the choice is ambiguous.
+4. One analysed insert at a time; the others send status only.
+5. A host that never flags offline rendering would stream a bounce faster than real time; the drop policy protects
+   the DAW, but Labs would meter it as live. REAPER, Logic and Cubase all flag it.
+6. Hosts differ in how they express stop and bypass (see the matrix); Labs reports what reaches the insert.
+7. The plugin window is English only; Labs is localized (en, zh-Hans, ko).
+8. Ad hoc signed, not notarized.

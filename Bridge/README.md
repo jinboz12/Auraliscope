@@ -109,18 +109,21 @@ transport feasibility test (ARCHITECTURE.md, "Production transport").
 uses a private REAPER profile in `.build/bridge/reaper-profile` and the silent "Pro Tools Audio Bridge 2-A" device, so
 your REAPER settings and speakers are untouched.
 
-### Manual checks in other DAWs
+### Checks in other DAWs
 
-For each of Logic Pro (AU), Cubase (VST3), Ableton Live (VST3 and AU) and FL Studio (VST3):
+REAPER is scripted (`e2e-reaper.sh`). Logic Pro (AU) and Cubase 15 (VST3) were checked by hand on build 2; the steps
+and results are in [VALIDATION.md](VALIDATION.md), with the host compatibility matrix. To repeat them, or to check
+Ableton Live or FL Studio:
 
-1. Rescan plugins; confirm **Auraliscope Bridge** is listed under JINBOZ.
-2. Insert it on a stereo track playing `.build/bridge/reaper-profile/bridge-test-48k.wav` (made by
-   `python3 Bridge/Tools/make-test-wav.py out.wav 48000 30`): L 997 Hz at −6.02 dBFS, R 1499 Hz at −12.04 dBFS.
-3. Click **Open Auraliscope Labs**: Labs comes forward streaming this insert. Peaks must read L −6.0, R −12.0, and
-   the stream heading must show the project's sample rate.
-4. Repeat on a mono track: one channel, on L.
-5. Close the plugin window: the stream continues. Bypass the plugin: Labs shows bypassed or no audio. Stop the
-   transport: note whether the host keeps processing (streaming silence) or stops (no audio). Bounce/export: Labs
-   shows offline render, and the bounce equals the source.
-6. Quit Labs during playback: the DAW plays on without a glitch. Reopen Labs: the insert returns by itself.
-7. Insert a second Bridge on another track: both are listed; the one-click button switches between them.
+1. Use a new, disposable project. Import `bridge-test-48k.aiff` (make one with
+   `python3 Bridge/Tools/make-test-wav.py out.wav 48000 120`, then `afconvert -f AIFF -d BEI24@48000 out.wav
+   bridge-test-48k.aiff`): L 997 Hz at −6.02 dBFS, R 1499 Hz at −12.04 dBFS.
+2. Insert **Auraliscope Bridge** on that track and run
+   `"experimental-dist/Auraliscope Labs 1.3dev build 2/Auraliscope Labs.app/Contents/MacOS/Auraliscope" --diagnostic
+   --bridge-selftest bridge-test-48k --expect-peak-db -6.02,-12.04 --watch 40 --log-sources` while playing: it
+   measures, then prints every state the insert goes through (stop, bypass, deactivate) and the plugin list.
+3. Bounce or export offline while `.build/bridge/tools/ReceiverProbe --seconds 30 --trace 1` runs (Labs closed): the
+   insert must report offline with no audio, and `python3 Bridge/Tools/check-render.py <file.wav>` must pass (turn off
+   normalization and anything on the master bus).
+4. Duplicate the track while step 2 watches: the copy is listed as "copy of #…", and Labs stays on the original.
+5. Save, quit the DAW, reopen, and run step 2 with `--restore` instead of the track name: Labs must find the original.
