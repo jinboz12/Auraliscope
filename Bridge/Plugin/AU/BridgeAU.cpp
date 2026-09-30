@@ -12,6 +12,7 @@
 #include <AudioUnitSDK/AUEffectBase.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -89,7 +90,7 @@ public:
         Float64 sample = 0, cycleStart = 0, cycleEnd = 0;
         if (CallHostTransportState(&playing, &changed, &sample, &cycling, &cycleStart, &cycleEnd) == noErr) {
             transport.flags = ABR_TRANSPORT_KNOWN | ABR_TRANSPORT_POSITION | (playing ? uint32_t(ABR_TRANSPORT_PLAYING) : 0u);
-            transport.position = int64_t(sample);
+            transport.position = int64_t(std::llround(sample));  // a fractional sample count, in some hosts
         }
         core_->process(planar, channels, frames, transport);
         return noErr;

@@ -157,8 +157,9 @@ void BridgeCore::process(const float *const *input, uint32_t channels, uint32_t 
 
     // A timeline jump while playing (locate, loop) is metadata: what reaches the insert stays one signal.
     const uint32_t both = transport.flags & lastTransport_.flags;
-    const bool jumped = (both & ABR_TRANSPORT_PLAYING) && (both & ABR_TRANSPORT_POSITION)
-        && transport.position != lastTransport_.position + int64_t(lastFrames_);
+    // One sample of slack: hosts that report a floating-point position round it either way.
+    const int64_t drift = transport.position - (lastTransport_.position + int64_t(lastFrames_));
+    const bool jumped = (both & ABR_TRANSPORT_PLAYING) && (both & ABR_TRANSPORT_POSITION) && (drift > 1 || drift < -1);
     if (jumped) transportJumps_.fetch_add(1, std::memory_order_relaxed);
 
     // The host did not call for longer than the last block lasted plus a margin: the audio of that time never
