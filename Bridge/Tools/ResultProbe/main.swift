@@ -5,6 +5,9 @@
 //
 //   ResultProbe [--seconds s] [--verify <name> --instance i] [--subscribe-after s] [--controls] [--trace]
 //
+// --trace without --verify   once a second, every instance's state and how much its analysis has measured; at the
+//                            end, whether any instance measured while it reported an offline render (it must not)
+//
 // --subscribe-after s   list only for s seconds, then subscribe: the plugin must already have analysed that long
 // --controls            pause, resume, reset true peak and reset the instance, checking each acknowledgement
 //
@@ -101,6 +104,10 @@ var selected: AbrSourceInfo?
 var listed = Set<String>()
 var subscribedAt = 0.0
 var newest: AbrSourceInfo?
+var lastTrace = -1.0
+var offlineSeen = false
+var analysedWhileOffline: UInt64 = 0
+var lastAnalysed: [String: (frames: UInt64, offline: Bool)] = [:]
 while CFAbsoluteTimeGetCurrent() - start < seconds {
     for info in sources(server) {
         let name = string(info.source_name)
@@ -119,6 +126,25 @@ while CFAbsoluteTimeGetCurrent() - start < seconds {
         say("subscribed to \"\(verify)\"")
     }
     if let s = selected, let info = sources(server).first(where: { $0.connection_serial == s.connection_serial }) { newest = info }
+    if trace, verify == nil {
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        if elapsed - lastTrace >= 1 {
+            lastTrace = elapsed
+            for info in sources(server) {
+                let name = string(info.source_name), analysed = info.frames_analysed
+                let state = ["inactive", "live", "bypassed", "offline"][Int(min(info.state, 3))]
+                say(String(format: "%5.1f s  %@  %@  generation %u  analysed %.2f s", elapsed, name, state, info.generation,
+                           Double(analysed) / max(1, info.sample_rate)))
+                if info.state == UInt32(ABR_STATE_OFFLINE) {
+                    offlineSeen = true
+                    if let previous = lastAnalysed[name], analysed > previous.frames, previous.offline {
+                        analysedWhileOffline += analysed - previous.frames
+                    }
+                }
+                lastAnalysed[name] = (analysed, info.state == UInt32(ABR_STATE_OFFLINE))
+            }
+        }
+    }
     if trace, let s = selected, let info = sources(server).first(where: { $0.connection_serial == s.connection_serial }) {
         say(String(format: "state %u, generation %u, measurement %u, analysed %.2f s, results %llu", info.state, info.generation,
                    info.measurement, Double(info.frames_analysed) / max(1, info.sample_rate), info.results_received))
@@ -167,6 +193,9 @@ if controls, let target = selected {
 abr_server_detach(server)
 guard let verify else {
     abr_server_stop(server)
+    if trace {
+        say("offline render seen: \(offlineSeen ? "yes" : "no"); frames analysed while offline: \(analysedWhileOffline)")
+    }
     exit(0)
 }
 guard let target = selected else {

@@ -401,6 +401,9 @@ void BridgeCore::runCommands() {
         } else if (c.code == ABR_COMMAND_PAUSE || c.code == ABR_COMMAND_RESUME) {
             const bool pause = c.code == ABR_COMMAND_PAUSE;
             pausedWanted_.store(pause, std::memory_order_relaxed);
+            // A pause from a display lasts while that display is connected (see disconnect); one from the plugin
+            // window lasts until it is resumed.
+            pausedByDisplay_.store(pause && c.id != 0, std::memory_order_relaxed);
             if (analyzer_) {
                 abr_analyzer_set_measuring(analyzer_, pause ? 0 : 1);
                 measurement_.store(pause ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
@@ -712,6 +715,9 @@ void BridgeCore::sendAcks() {
 }
 
 void BridgeCore::disconnect() {
+    // The display that paused the measurement is gone (quit, crashed, or the connection broke): the pause goes
+    // with it, so a measurement is never left paused by nobody.
+    if (fd_ >= 0 && pausedByDisplay_.exchange(false, std::memory_order_relaxed)) requestCommand(ABR_COMMAND_RESUME);
     if (fd_ >= 0) close(fd_);
     fd_ = -1;
     welcomed_ = false;

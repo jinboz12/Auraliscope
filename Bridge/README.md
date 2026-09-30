@@ -1,19 +1,22 @@
 # Auraliscope Labs 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
 Auraliscope Bridge is an audio effect (VST3 and AUv2) that you insert on a DAW track, bus or master. It passes the
-audio through unchanged and hands a copy to **Auraliscope Labs**, the 1.3dev test build of Auraliscope, which
-analyses and shows it exactly like any other source. The DAW is the plugin host; nothing here hosts plugins.
+audio through unchanged and **measures it itself**, with Auraliscope's own analysis compiled into the plugin:
+levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. **Auraliscope Labs**, the 1.3dev test
+build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
+interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-This is an experimental branch (`claude/auraliscope-daw-bridge-187076`, started from `a004a5b`, "Release Auraliscope 1.1
-(build 51)", with Auraliscope 1.2.2 (build 62, `10e35cd`) merged in for build 2). It is not merged, tagged or
-released. See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works and
+Build 3 is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
+branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
+`10e35cd`) as the application baseline. It is not merged, tagged or released. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
 [VALIDATION.md](VALIDATION.md) for what was tested.
 
 ## What you get
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope Labs.app | `experimental-dist/Auraliscope Labs 1.3dev build 2/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope Labs.app | `experimental-dist/Auraliscope Labs 1.3dev build 3/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -33,7 +36,8 @@ Bridge/scripts/build-plugins.sh
 Bridge/scripts/build-labs-app.sh
 ```
 
-Other scripts: `fetch-sdks.sh` (VST3 SDK 3.8.0 build 66, MIT; AudioUnitSDK 1.4.0, Apache-2.0), `build-validator.sh`
+`build-plugins.sh` also builds the shared analysis core into each plugin (`build-analysis-lib.sh`: Swift and C, one
+static library per format; the Swift runtime is the system's). Other scripts: `fetch-sdks.sh` (VST3 SDK 3.8.0 build 66, MIT; AudioUnitSDK 1.4.0, Apache-2.0), `build-validator.sh`
 (Steinberg's VST3 validator), `build-tools.sh` (test host, probe, discovery beacon), `Bridge/App/Icon/make-labs-icon.sh`
 (regenerates the Labs icon from the release icon export).
 
@@ -59,19 +63,28 @@ them up (REAPER: Preferences ▸ Plug-ins ▸ Re-scan; Logic: Plug-in Manager).
    Settings ▸ Audio ▸ Source ▸ *DAW plugins · Auraliscope Bridge*.
 3. The name you type in the plugin window (saved with the DAW project) is what Labs lists; left empty, the host's
    track name is used when the host provides it (REAPER does).
-4. The plugin window says whether **this insert** is the one Labs analyses (and why not, with one click to make it
-   so), whether fresh audio is arriving, and how often the stream was interrupted.
+4. The plugin window says whether **this insert** is the one Labs shows (and why not, with one click to make it so),
+   whether fresh audio is arriving, and **its own measurement**: integrated, momentary and short-term loudness, peaks,
+   true-peak maximum, loudness range, time measured and breaks, with **Pause** and **Reset**. Every insert measures
+   from the moment the DAW plays audio through it, whether or not Labs or the plugin window is open.
 5. **Network · Preview**, collapsed at the bottom of the plugin window, scans the local network only when you click
    **Scan**. It lists Auraliscope receivers it finds, but iPhone and iPad receivers cannot receive analysis yet.
    macOS may then ask to let the DAW find devices on the local network.
 
 The Labs status line says what the selected insert is doing: streaming, no audio (the DAW stopped calling the
 plugin: transport stopped in some hosts, FX bypassed in REAPER), bypassed, offline render (not metered), inactive,
-disconnected with the measurement held (it continues if the same plugin instance reconnects), or waiting for the
-saved insert to return (also after the project is reopened). If several inserts could be the saved one (a duplicated
-track, the project open twice) Labs says so and analyses none until you choose. Breaks in the audio (dropped frames,
-the DAW not processing, bypass, render, reconnection) restart momentary and short-term loudness and the spectrum,
-keep integrated loudness, loudness range and held peaks, and show in the status bar as "Interrupted N×".
+measurement paused in the plugin, results delayed, disconnected with the measurement held (the plugin measures on;
+Labs carries on when the same instance reconnects), or waiting for the saved insert to return (also after the
+project is reopened). If several inserts could be the saved one (a duplicated track, the project open twice) Labs
+says so and shows none until you choose. Breaks in the audio (the analysis falling behind, the DAW not processing,
+bypass, render, restart) restart momentary and short-term loudness and the spectrum, keep integrated loudness,
+loudness range and held peaks, and show in the status bar as "Interrupted N×". A dropped connection is not a break:
+the plugin measured throughout.
+
+**Controls.** In Labs, **Pause Capture** on a DAW source pauses the insert's measurement (nothing accumulates; resume
+carries on without a break, as Auraliscope's pause does) and holds Labs' picture; the pause lasts while Labs is
+connected. **Reset** starts the insert's measurement afresh; clicking **TRUE PEAK** clears its held true peak. The
+plugin window's Pause and Reset act on the same measurement.
 
 ## Verify
 
@@ -87,7 +100,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope Labs 1.3dev build 2/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope Labs 1.3dev build 3/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz
@@ -102,10 +115,13 @@ Bridge/scripts/e2e-app.sh
 Bridge/scripts/e2e-reaper.sh
 ```
 
-`test-transport.sh` takes `ABR_SANITIZE=thread` (or `address`). `probe-sandbox-transport.sh` is the production
-transport feasibility test (ARCHITECTURE.md, "Production transport").
+`test-transport.sh` takes `ABR_SANITIZE=thread` (or `address`). `probe-analysis-link.sh` is the feasibility check for
+linking the analysis core into both formats; `measure-resources.sh <baseline.vst3>` measures the analysis' CPU and
+memory against a plugin without it (build 2); `probe-sandbox-transport.sh` is the production transport feasibility
+test (ARCHITECTURE.md, "Production transport").
 
-`e2e-probe.sh`, `e2e-app.sh` and `e2e-reaper.sh` need Labs and REAPER to be closed (they run their own receiver or copy of Labs). `e2e-reaper.sh`
+`e2e-probe.sh` uses a private socket and can run beside Labs. `e2e-app.sh` and `e2e-reaper.sh` need Labs and REAPER
+to be closed (they run their own copy of Labs). `e2e-reaper.sh`
 uses a private REAPER profile in `.build/bridge/reaper-profile` and the silent "Pro Tools Audio Bridge 2-A" device, so
 your REAPER settings and speakers are untouched.
 
@@ -119,11 +135,11 @@ Ableton Live or FL Studio:
    `python3 Bridge/Tools/make-test-wav.py out.wav 48000 120`, then `afconvert -f AIFF -d BEI24@48000 out.wav
    bridge-test-48k.aiff`): L 997 Hz at −6.02 dBFS, R 1499 Hz at −12.04 dBFS.
 2. Insert **Auraliscope Bridge** on that track and run
-   `"experimental-dist/Auraliscope Labs 1.3dev build 2/Auraliscope Labs.app/Contents/MacOS/Auraliscope" --diagnostic
+   `"experimental-dist/Auraliscope Labs 1.3dev build 3/Auraliscope Labs.app/Contents/MacOS/Auraliscope" --diagnostic
    --bridge-selftest bridge-test-48k --expect-peak-db -6.02,-12.04 --watch 40 --log-sources` while playing: it
    measures, then prints every state the insert goes through (stop, bypass, deactivate) and the plugin list.
-3. Bounce or export offline while `.build/bridge/tools/ReceiverProbe --seconds 30 --trace 1` runs (Labs closed): the
-   insert must report offline with no audio, and `python3 Bridge/Tools/check-render.py <file.wav>` must pass (turn off
+3. Bounce or export offline while `.build/bridge/tools/ResultProbe --seconds 30 --trace` runs (Labs closed): the
+   insert must report offline with nothing analysed while it is (`frames analysed while offline: 0`), and `python3 Bridge/Tools/check-render.py <file.wav>` must pass (turn off
    normalization and anything on the master bus).
 4. Duplicate the track while step 2 watches: the copy is listed as "copy of #…", and Labs stays on the original.
 5. Save, quit the DAW, reopen, and run step 2 with `--restore` instead of the track name: Labs must find the original.

@@ -189,6 +189,7 @@ private:
     std::atomic<uint32_t> generation_{0};
     std::atomic<uint32_t> measurement_{ABR_MEASUREMENT_NONE};
     std::atomic<bool> pausedWanted_{false};
+    std::atomic<bool> pausedByDisplay_{false};  // paused by a COMMAND over the connection (not the plugin window)
     std::atomic<uint32_t> lastBreakReasons_{0};
     std::atomic<uint64_t> framesAnalysed_{0};
 

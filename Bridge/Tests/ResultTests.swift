@@ -212,6 +212,14 @@ enum ResultChecks {
         a.publish()
         check(a.spectrogramSkipped == UInt64(34 - ResultAssembler.spectrogramLag),
               "a burst of 34 columns keeps the newest \(ResultAssembler.spectrogramLag) (\(a.spectrogramSkipped) skipped for latency)")
+        // Bounded while nobody publishes (a paused display): only what could still be shown is kept.
+        let idle = ResultAssembler()
+        for n in 0..<200 {
+            idle.receive(message(spectrogram: [UInt64(n + 1)], waveform: (0..<8).map { UInt64(n * 8 + $0 + 1) }), source: 1)
+        }
+        check(idle.spectrogramSkipped == UInt64(200 - ResultAssembler.spectrogramLag)
+                  && idle.waveformSkipped == UInt64(1600 - StreamAnalyzer.waveformCapacity),
+              "with no display reading, the queues stay bounded (\(ResultAssembler.spectrogramLag) and \(StreamAnalyzer.waveformCapacity) columns)")
         // A new generation is a new stream: histories clear.
         a.receive(message(generation: 2, spectrogram: [1]), source: 1)
         a.publish()

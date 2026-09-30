@@ -1,232 +1,176 @@
-# Auraliscope Bridge: architecture note
+# Auraliscope Bridge 1.3dev build 3: architecture note
+
+Plugin-side analysis with result-only delivery. The DAW hosts the Bridge (VST3 or AUv2) on a track, bus or master;
+**the Bridge analyses its own audio**; Auraliscope Labs shows the results. Labs still analyses physical inputs and
+system audio itself, with the same code.
 
 ```
-DAW audio thread ──► Bridge core (per insert) ──► record ring (512 KB, SPSC, preallocated)
-                                                        │  (no syscalls, locks or allocation above this line)
-                     sender thread (one per plugin binary, every 5 ms) ──► Unix socket (one per insert)
-                                                        │
-Auraliscope Labs:    receiver thread (BridgeServer.c) ──► ChannelRing (the same ring device capture feeds)
-                                                        │
-                     DSPWorker / MeterPipeline (unchanged) ──► snapshots ──► Metal canvases and readouts
+DAW audio thread ─► BridgeCore::process ─► capture ring (1 MB per insert, SPSC, preallocated)
+                      (audio passes through untouched; no allocation, lock, syscall or analysis above this line)
+                                                 │
+analysis thread (one per plugin binary) ─► StreamAnalyzer = MeterPipeline (shared analysis core, Swift)
+                                                 │  newest RESULT in a one-slot mailbox; ordered columns queued
+sender thread (one per plugin binary) ─► Unix socket (protocol 3: HELLO, STATUS, RESULT, ACK) ◄─ SUBSCRIBE, COMMAND
+                                                 │
+Auraliscope Labs: receiver thread ─► ResultInbox (decode) ─► ResultAssembler ─► 60 Hz ResultWorker
+                                                 ─► the same snapshot triple buffer ─► every canvas and readout, unchanged
 ```
 
-## Components and responsibilities
+## Revisions
 
-| Concern | Where |
+| | Commit |
 |---|---|
-| Plugin formats | `Bridge/Plugin/VST3/BridgeVST3.cpp` (VST3 SDK `SingleComponentEffect`), `Bridge/Plugin/AU/BridgeAU.cpp` (AudioUnitSDK `AUEffectBase`). Thin: they translate host calls to the core. |
-| Format-independent plugin behaviour | `Bridge/Plugin/Core/` — `BridgeCore` (identity, settings, state machine, audio-thread capture, socket client), `RecordRing`, `BridgeSender.cpp` (the process-wide sender thread). |
-| Plugin window | `Bridge/Plugin/Editor/BridgeEditor.mm`, shared by both formats. |
-| Protocol and transport | `Sources/BridgeTransport/include/BridgeProtocol.h` (wire format), `BridgePaths.h` (rendezvous), `BridgeServer.c` (receiver), `BridgeDiscovery.c` (DNS-SD scan). No VST3 or AU types. |
-| Source acquisition in the app | `Sources/Auraliscope/BridgeSource.swift` (value types + receiver wrapper), `BridgeRestoration.swift` (which connected insert is the saved one), DAW-source lifecycle in `MeterModel.swift` (`startBridge`, `pollBridge`, `followBound`, `findSaved`). |
-| Analysis | `MeterPipeline`, `LoudnessAnalyzer`, `SpectrumAnalyzer`… as in the release, plus break handling: `ChannelRing` break marks (`channel_ring_mark`, `channel_ring_read_marked`) and `interrupt` in each analyser. |
-| Visualisation | Unchanged, plus a *DAW plugins* section in Settings ▸ Audio ▸ Source and new status texts. |
+| Application baseline | Auraliscope 1.2.2 (build 62), `10e35cd`, the committed 1.2.2 release (merged into the prototype as `3b34185`) |
+| Prototype baseline (audio streaming, protocol 2, Labs build 2) | `7f7e733`, branch `claude/auraliscope-daw-bridge-187076` (prototype first committed as `4d690bf` on `a004a5b`, Auraliscope 1.1) |
+| This architecture (protocol 3, Labs build 3) | branch `claude/bridge-plugin-analysis`, from `7f7e733` |
 
-## Framework choice
+The prototype branch is left as it was, so build 2 stays reproducible. Uncommitted work in the primary checkout is
+neither used nor touched.
 
-The VST3 SDK (3.8, MIT since Oct 2025) and Apple's AudioUnitSDK (Apache-2.0), used directly. JUCE would have been
-quicker for the UI but is AGPLv3 or commercially licensed, and Auraliscope has no open-source licence. The two SDKs
-only require their notices (`Bridge/THIRD_PARTY_NOTICES.md`, copied into both bundles). No CMake: the build scripts
-compile the needed SDK sources with clang.
+## Shared analysis core
 
-AUv2 rather than AUv3: every installed host loads AUv2, AUv2 runs in the host process like VST3 (so both share the
-core and the socket client unchanged), and AUv3 would need an app extension container and a sandboxed transport.
+| Target | What | Depends on |
+|---|---|---|
+| `Sources/AnalysisKernels` (C) | frame types and DSP kernels: true-peak scan, K-weighting, band filters, packed FFT powers | nothing |
+| `Sources/AnalysisCore` (Swift) | `LoudnessAnalyzer`, `SpectrumAnalyzer`, `WaveformEnvelope`, `FormatDetector`, `MeterPipeline` and its snapshot layout (moved unchanged from the app), plus `StreamAnalyzer` (pushed audio, audio-clocked ticks, result encoding), `ResultProtocol` (RESULT fields) and `ResultAssembler` (results back into snapshots) | Foundation, Accelerate, AnalysisKernels; **no AppKit, SwiftUI, Core Audio or views** |
 
-## Transport
+The app's `DSPWorker` runs `MeterPipeline` for devices and system audio, as before; the plugins run the same
+`MeterPipeline` through `StreamAnalyzer`. There is one analyser, compiled into three binaries. `package` access keeps
+it internal to the Swift package.
 
-A Unix-domain stream socket per plugin instance, at
-`~/Library/Application Support/Auraliscope Bridge/bridge-v1.sock` (the real home folder of the user). Labs listens;
-plugins connect. Chosen because:
+**Integration with the C++ plugins** (proved first, `probe-analysis-link.sh`): `build-analysis-lib.sh` compiles the
+core with a narrow C interface (`Bridge/Plugin/Analysis/BridgeAnalysis.h`, `BridgeAnalysisABI.swift`) into a
+universal static library per format, each under its **own Swift module name** (`AuraliscopeBridgeAnalysisVST3`,
+`…AU`). Swift mangles type names with the module, so a host that loads both plugins has no duplicate classes (checked:
+both loaded and run in one process, no Objective-C class clash). The Swift runtime is the system's (`/usr/lib/swift`,
+ABI-stable since macOS 10.14.4; the plugins target macOS 11); nothing is bundled. Swift code runs only on the
+analysis thread: never on a host's audio thread.
 
-- Discovery, liveness and cleanup come for free: a connection is an instance, and a closed connection (plugin
-  removed, DAW quit or crashed) is seen at once. No stale shared-memory segments.
-- Control flows both ways on the same connection (subscribe, unsubscribe, focus).
-- Bandwidth is small (48 kHz stereo float = 384 KB/s) and only the selected instance streams.
-- Access is scoped to the user: the folder is created `0700` and refused if another user owns it or it is a
-  symbolic link; the socket is `0600`; both ends check the peer's user ID with `getpeereid`.
+Equivalence: fed the same audio in irregular host blocks, `StreamAnalyzer` publishes the same snapshots as the
+desktop pipeline fed one tick at a time: mono bit-identical; stereo identical except the L/R correlation sums, whose
+different summation order differs in float rounding (≤ 2.2·10⁻¹⁰).
 
-Messages (protocol version 2, little-endian, 16-byte header): HELLO (session ID, persistent ID, restored ID and
-identity flags, host name, bundle ID and pid, plugin format and version), STATUS (state, format epoch, rate, channels,
-layout, block size, transport flags and position, counters, source, track and channel names, at least every
-250 ms), FORMAT (per format epoch), AUDIO (subscription, epoch, stream position, flags and break reasons, idle time,
-interleaved float32), FOCUS; from the app, WELCOME, SUBSCRIBE (with a subscription number) and UNSUBSCRIBE. Unknown
-types are ignored. A plugin of another protocol version is listed by Labs as needing an update and never selected; a
-version 1 plugin is not answered, so it stays connected instead of reconnecting every second.
+## Ownership
 
-**Subscriptions.** Every SUBSCRIBE carries a new number, and every AUDIO block the number it was captured for. The
-receiver delivers only blocks of its current subscription, so audio queued in the plugin or the socket before an
-unsubscribe or a quick re-selection (A → B → A) is never replayed as live. The format epoch and channel count are
-packed in one atomic word, so the audio thread never pairs a new epoch with an old channel count.
+| Owned by the Bridge (shared by every display) | Owned by one display |
+|---|---|
+| The measurement: levels, true peak, loudness (M, S, I, LRA), spectrum, stereo image, the spectrogram and waveform series | Interpolation, damping and drawing |
+| Its generation (reset), pause and resume, the true-peak hold | Frozen picture while that display is paused; its own scroll and zoom; display options |
+| Break detection and accounting | Status wording, localisation |
+| Identity (session, persistent ID, copies), name (saved in the project) | Which insert it shows, and restoring that choice |
 
-## Insert identity
+**What Labs' controls do** (documented in the UI help and here, and unchanged in meaning from the release):
 
-Each insert has a **session ID** (random, for the life of this plugin instance) and a **persistent ID** (saved with
-the DAW project in the plugin state). A process-wide registry in the plugin binary knows which persistent IDs live
-instances hold:
+- **Pause Capture** on a Bridge source pauses **the Bridge's measurement** (COMMAND PAUSE) and holds Labs' picture.
+  This is the release's pause: measurement stops accumulating and resumes without a break. Because the measurement
+  is the Bridge's, the pause applies to every display of that insert; the plugin window shows it and can resume it.
+  A pause lasts while the display that made it is connected: when Labs chooses another source it resumes the insert,
+  and if Labs quits, crashes or loses the connection the plugin resumes by itself. A pause made in the plugin window
+  lasts until it is resumed there or by a display.
+- **Reset** sends RESET: the Bridge starts a new generation; every display sees a new stream.
+- **Clicking TRUE PEAK** sends RESET_TRUE_PEAK.
+- **Display-only pause** (freezing one display while the Bridge measures on) is not a separate control in this
+  milestone. It is what a second display would do; the protocol already separates it (a display can simply stop
+  drawing without sending PAUSE).
 
-- State restored into a new instance (project opened, plugin reloaded, undo) keeps its persistent ID and is flagged
-  RESTORED.
-- State whose ID another live instance already holds (a duplicated track, pasted settings, a preset of this insert,
-  a second copy of the project in the same DAW) gets a new persistent ID and is flagged COPY, with the ID it was
-  copied from. So a saved project never holds two inserts with the same ID (checked in REAPER for both formats).
-- The host's own channel identity is reported when the host gives one (VST3 `IInfoListener` channel UID, e.g.
-  REAPER's track GUID), with the track name (VST3 `IInfoListener`, AU `ContextName`).
-
-Hosts in other processes cannot see each other's registry, so two DAWs running the same project each hold the ID.
-
-## Finding the saved insert again (`BridgeRestoration`)
-
-Labs saves the chosen insert with its context (persistent ID, session, name, track name, channel ID, host bundle ID,
-plugin format) and the copies it saw being made of it. When it is not connected, the rule is never to pick one of
-several possible inserts by chance:
-
-1. The same live instance (same session) is it: Labs restarted, or the connection came back.
-2. Otherwise the only insert holding the saved persistent ID, with no copy of it connected, is it (project reopened,
-   plugin reloaded). A copy never inherits the selection. Copies seen appearing while the saved insert was bound are
-   known not to be it and do not count (the host unloaded and reloaded the original beside its copy).
-3. With several claimants (holders in two DAWs, or unknown copies beside the holder), the saved context may single
-   one holder out: the host channel ID alone when both have one, otherwise plugin format, host, source and track
-   names together.
-4. Anything else is **ambiguous**: analysis stops, the status says how many inserts could be it, and nothing is
-   analysed until the person chooses one (in the source list, or with the plugin window's one-click button).
-
-A new instance found by rule 2 or 3 is bound after a one-second settle (a project still loading may bring more
-claimants) and stays provisional for five seconds: a claimant arriving meanwhile makes it ambiguous.
-
-### Sandbox finding and the production transport
-
-An ad hoc signed, sandboxed process can neither `bind` nor `connect` to a Unix socket outside its container, even with
-file temporary-exception entitlements and the network entitlements (tested on this Mac, macOS 27). So Labs is not
-sandboxed, while the release Auraliscope is. See "Production transport" below for the recommendation and the
-feasibility test.
+Every command names its target session and, optionally, the generation it expects; the plugin acknowledges each one
+with its outcome and the resulting generation and measurement state, and refuses (without acting) a command for
+another instance or an obsolete generation.
 
 ## Real-time behaviour
 
-The audio callback (`BridgeCore::process`) reads a few atomics, and when the insert is live and subscribed
-interleaves the block straight into the ring (`RecordRing::write`: two memcpy-sized copies at most, no allocation, no
-lock, no system call). Everything else — sockets, status, format messages — runs on the sender thread. The ring and
-all buffers are allocated when the plugin is created. Measured worst `process()` time on a real-time thread: under
-35 µs per 256-frame block (harness), 7.7 µs through a one-second receiver stall (transport test).
+`BridgeCore::process` (host audio thread) reads atomics, compares the host transport with the previous block, and when
+the insert is live copies the block into the insert's capture ring (at most two `memcpy`s per chunk of ≤ 2048 frames).
+No allocation, lock, system call, logging or analysis. The ring, the analysis scratch, the result mailbox and the
+output buffer are allocated when the instance is created; the analyser (Swift) is created on the analysis thread when
+the first audio of a format arrives. Measured worst `process()`: 34–45 µs per 256-frame block in the test host,
+unchanged by a 3.5 s analysis stall or a 3 s receiver stall.
 
-Drop policy when Auraliscope cannot keep up:
-1. The sender keeps at most 150 ms of audio queued; older records are discarded, oldest first, so what arrives is
-   recent.
-2. The socket buffers are small (128 KB), so the kernel cannot hide seconds of backlog.
-3. If the sender thread itself stalls until the ring is full, the audio thread drops the newest block.
+## Scheduling and bounds
 
-Every block carries its stream position (live frames processed in this session), and the first block after any loss
-is flagged. The receiver counts exactly the frames lost (the transport test: plugin dropped 21 056, receiver counted
-21 056 in one gap) and Labs adds them to the status bar's dropped-frames count.
+One analysis thread per plugin binary (`BridgeAnalysisHub.cpp`), at the user-initiated QoS, below every real-time
+audio thread: analysis load can delay only analysis.
 
-## Analysis at breaks
+- **Every 5 ms** it visits every instance, starting one further along each pass (no instance is always served last).
+- **Per visit** an instance analyses at most **50 ms** of its queued audio: a large block, a high rate or a backlog
+  cannot hold the others up.
+- **Per pass** it stops after **8 ms** of work; the next pass continues from the instance it did not reach.
+- **If the analysis falls behind** by more than an instance's ring (1 MB: 2.7 s at 48 kHz stereo, 0.68 s at 192 kHz)
+  the audio thread drops the newest audio **from the analysis only** (never from the output), counts it
+  ("unanalysed"), and the analysis marks a break with the time missing.
 
-A break is any point where the delivered audio does not continue the audio before it: frames dropped, the host not
-processing (idle longer than a block plus 350 ms, or three blocks), bypass, offline render, deactivate/reactivate,
-or the connection coming back. The plugin sets the reasons on the first live block after the break; the receiver adds
-position gaps; Labs marks the exact frame in `ChannelRing`, and the analysis thread splits its reads there and calls
-`MeterPipeline.interrupt` between the two parts:
+Ticks are clocked by the audio: every 1/60 s of audio (rounded per tick, exact on average) closes a tick and publishes
+a snapshot. A host that renders ahead in bursts therefore produces bursts of results, each describing exactly its
+audio. When the host stops calling the plugin, the analyser ticks on the clock for up to 9 ticks (meters fall to
+silence), then rests.
 
-| Restarts at a break | Carries on |
-|---|---|
-| K-weighting filter state, the 100 ms block being built, momentary and short-term loudness | integrated loudness (its gated blocks), loudness range |
-| spectrum FFT window (no transform mixes audio from both sides) | held peak and true-peak maxima |
-| band splitter, correlation and stereo balance | the waveform history, with a notch of 12–48 columns at the break |
-| true-peak interpolator (never measured across the cut, so a break cannot make a false over) | |
+Measured cost (`measure-resources.sh`, `Bridge/VALIDATION.md`): see the resource table in the validation report.
 
-The status bar reads "Interrupted N× · x s missing" (`SnapshotSlots.breaks`, `.missing`). A timeline jump (loop,
-locate) is not a break: the insert's input stays one signal, and only a counter records it. The user's pause and
-resume keep the release behaviour: resuming continues the same measurement, and no break is marked for the paused
-time.
+## Result delivery
 
-## States and policies
+Specified in [PROTOCOL.md](PROTOCOL.md). In short: while a display is subscribed, the analysis thread encodes the
+newest state after every tick into a one-slot mailbox (a newer one replaces an unsent one); the sender thread moves it
+to the socket when the connection has room (16 KB high-water mark, 32 KB socket buffers). Spectrogram and waveform
+columns are serial-numbered per generation and kept in bounded queues (64 and 512 columns, about 2 s); each result
+carries the columns after the last one sent to this subscriber. A subscriber more than about 2 s behind sees a gap,
+and the count of skipped columns; nothing is ever sent twice or replayed into a later subscription.
 
-| Situation | Plugin state | Transmission | Labs shows |
-|---|---|---|---|
-| Real-time processing | LIVE | while selected | streaming |
-| Host bypass reported to the plugin (VST3 `kIsBypass` parameter, AU `BypassEffect`) | BYPASSED | none; position stands still; next live block flagged | bypassed |
-| Host stops calling the plugin (REAPER FX bypass; transport stop in some hosts) | LIVE | none arrives | no audio (after 0.5 s) |
-| Transport stopped but host keeps processing (REAPER) | LIVE | silence streams | streaming |
-| Offline render (VST3 `kOffline`, AU `OfflineRender`) | OFFLINE | none: offline audio is never presented as live | offline render, not metered |
-| Not activated / not initialised | INACTIVE | none | inactive |
-| No message for 2 s | — | — | not responding |
-| Connection closed, analysis running | — | — | disconnected, measurement held in case this plugin instance reconnects; continues (with a break) if the same session returns |
-| Connection closed, nothing measured yet | — | — | disconnected, waiting for it to return |
+In Labs, `ResultInbox` decodes on the receiver thread; `ResultWorker` publishes one snapshot per display tick from
+`ResultAssembler`: the newest state; at most one spectrogram column per tick, skipping ahead when more than 8 wait (the
+waterfall stays within about 0.27 s of real time); waveform columns into the 64-column window the waveform display
+reads; a gap leaves blank columns (spectrogram) or a flat notch (waveform). After 0.3 s without results the
+instantaneous readings fall to silence and the measured values stay.
 
-Transport position changes (loop, locate) are metadata only: they neither reset analysis nor mark a discontinuity,
-because the analysed signal is what reaches the insert, not the timeline. (A host that stops processing around a
-locate for longer than the idle threshold does produce a break, as it should: audio was missing.) Audio always passes
-through unchanged, whatever the state and whether Auraliscope is running.
+## Lifecycle
 
-## Source lifecycle in Labs
+| Event | Bridge measurement | Labs |
+|---|---|---|
+| Activation (first audio of a format) | a new generation starts | a new stream |
+| Deactivate and reactivate, same format | carries on; one **restart** break | carries on |
+| Sample-rate or channel change | a new generation (no result mixes formats) | rebuilds its display for the new rate |
+| Plugin window opened or closed | nothing changes | — |
+| Transport stop (host keeps processing) | measures the silence | streaming |
+| Host stops calling the plugin (stop in some hosts, suspension) | idle ticks, then rest; a **host idle** break when audio returns (idle > block + 350 ms) | "no audio" |
+| Seek, loop | nothing (a timeline jump is counted, not a break) | — |
+| Bypass | not measured; a **bypass** break when live again | "bypassed" |
+| Offline render / freeze | **not measured** (a bounce is not live audio); an **offline** break when live again | "offline render, not metered" |
+| Analysis queue overflow | a **frames dropped** break with the time missing | "Interrupted N×" |
+| Labs quits, crashes or disconnects | measures on | — |
+| Labs reconnects | — | the first result is the current state (same generation); up to 2 s of waveform history arrives, the waterfall resumes from now |
+| Labs away longer | — | the same: the measurement covers everything since the generation began |
+| Reset (Labs or plugin window) | a new generation | a new stream |
+| Plugin removed, DAW quits | gone | "disconnected, measurement held"; waits for the same insert |
+| Project reopened | a new instance, a new measurement (live measurements are not saved in the project) | finds the saved insert (below) and shows its new measurement |
+| Instance duplicated | the copy keeps an identity of its own and measures separately | never inherits the selection |
 
-- The receiver runs from launch to quit, so inserts are listed whatever source is being metered. Selecting one
-  subscribes to it; only that insert streams.
-- Labs builds a new pipeline at the insert's own sample rate and routing (mono: input 1 → L; stereo: L, R). A new
-  format epoch (sample-rate or channel change, re-activation) restarts the pipeline; audio of the new epoch is
-  held back until then, so analysers never interpret audio of another format.
-- The selection is saved with its context (above). When the insert disconnects, Labs keeps it selected, holds the
-  measurement and waits; the same session returning continues it, a new instance of the saved insert starts afresh,
-  and an ambiguous choice waits for the person.
-- One click in the plugin window (FOCUS) selects that insert and brings the meter window forward; if Labs is not
-  running, the plugin launches it with `--bridge-launch` (no default-output capture, no welcome sheet) and the
-  request is delivered as soon as the connection is up.
+Integrated loudness and loudness range carry on across breaks and count only analysed audio; momentary, short-term,
+filters, FFT and true-peak interpolation restart at a break. Each result carries the number of breaks and the audio
+known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
+continuous measurement.
 
-## Scanning (this Mac and the local network)
+## Insert identity and restoration (unchanged from build 2)
 
-The plugin window (440 × 466) answers, top to bottom: which Labs it talks to; whether **this insert** is the one
-Labs analyses (with one click to make it so, or the reason it cannot be: bypassed, offline, another insert chosen,
-ambiguous); whether fresh audio is arriving (frames sent, dropped, age of the newest block); and how many times the
-stream was interrupted and why.
+Each insert has a session ID (this instance's life) and a persistent ID (saved with the project). A process-wide
+registry flags a copy (duplicated track, pasted settings) and gives it an identity of its own. Labs saves the chosen
+insert with its context and restores it only when it is certain: the same live session; otherwise the only holder of
+the saved identity with no unknown copy connected; otherwise the saved context (host channel ID, or format, host, and
+names) singling one out; **otherwise it is ambiguous**, nothing is shown, and the person chooses. Rules and tests:
+`BridgeRestoration.swift`, `AnalysisBreakTests.swift`. Two DAWs (or processes) holding the same project cannot see each
+other's copies; Labs tells them apart by context or says the choice is ambiguous.
 
-- **This Mac:** the socket connection (authoritative), plus the running applications, to report Labs starting up, or
-  the release Auraliscope running (which does not receive DAW audio).
-- **Network · Preview**, a collapsed card at the bottom: DNS-SD browsing for `_auraliscope._tcp` (`BridgeDiscovery.h`
-  defines the TXT keys: `proto`, `platform`, `app`, `ver`, `role`, `transport`) runs only when the person clicks
-  **Scan**, and the card says that iPhone and iPad receivers cannot receive analysis yet. The macOS Local Network
-  prompt (made on behalf of the DAW) therefore appears only after that click. `Bridge/Tools/DiscoveryBeacon.c` stands
-  in for an iOS device.
+## Towards iOS
 
-## Towards iOS: the analysis-result boundary
+The boundary is already the one an iOS app needs: results, not audio. `AnalysisCore` has no macOS-only dependency
+(Foundation, Accelerate), so an iOS app can compile `ResultProtocol` and `ResultAssembler` (and the snapshot
+layout its displays would read) unchanged; the RESULT format is carrier-independent. Not implemented: a network
+carrier (framing unchanged; it needs discovery, which exists as a preview; pairing; encryption and authentication; and
+probably compressed columns: a RESULT is about 7 KB, 60 per second, ≈ 430 KB/s per insert uncompressed, which a LAN
+carries but a quantised form would cut by 3–4×). Multiple displays: the plugin sends to one subscriber per
+connection today; a relay or several connections would each get their own subscription and column cursor, with the
+shared measurement and its commands as specified.
 
-The iOS client will receive analysis results, not audio. That boundary already exists in the app: `MeterPipeline`
-publishes a fixed-layout snapshot (`SnapshotSlots`, `METER_SNAPSHOT_FLOATS` floats: levels, loudness, spectrum,
-spectrogram column, stereo bands, waveform columns) to a triple buffer, and `MeterSnapshot` decodes it into plain
-values with no UI types. A network sender would serialise that snapshot (plus a small header: stream identity, sample
-rate, layout, sequence) at the 60 Hz tick — about 16 KB per frame uncompressed, so it wants delta or quantised
-encoding over the LAN. The new `BridgeSource` and `BridgeCondition` are likewise plain values. Nothing in this
-milestone sends anything over the network.
+## Production transport
 
-## Production transport (recommendation)
-
-The release app is sandboxed (`Resources/Auraliscope.entitlements`); the plugins run unsandboxed inside the DAW's
-process (REAPER, Logic Pro, Cubase, Live and FL Studio are not sandboxed). The carrier has to work across that
-boundary. `Bridge/scripts/probe-sandbox-transport.sh` (`Bridge/Tools/SandboxTransportProbe.c`) builds a sandboxed
-receiver app with an application group and an unsandboxed "plugin", and runs them against each other. Ad hoc signed,
-macOS 27.2, M1 Max:
-
-| Carrier | Sandboxed receiver | Unsandboxed plugin | Result |
-|---|---|---|---|
-| Unix socket in `~/Library/Group Containers/<group>/` | `bind`: Operation not permitted | nothing to connect to | not available ad hoc; unverified with a team signature |
-| Mach port, `CFMessagePort` named `<group>.bridge` | registered | found; 1000 × 4 KB requests answered, mean 35 µs, worst 122–254 µs | **works** |
-| Mach port the plugin registers as `<group>.plugin` | looked up and sent to | received | **works** (the app can reach each insert) |
-| Mach port without the group prefix | lookup refused | registered | refused: the sandbox is enforcing the rule |
-
-**Recommendation:** keep protocol version 2 and its framing unchanged and replace only the carrier with Mach
-messaging on application-group–prefixed service names (`TEAMID.com.jinboz.SoundMeterJBZ.bridge` for the app, one
-port per plugin instance for control). The sandbox explicitly allows a sandboxed app to register and look up names
-under its own group prefix, a non-sandboxed plugin can look up any name in the user's session, no files are shared
-(so no "access data from other apps" prompt for the DAW), and the kernel reports a dead peer (a port's dead-name
-notification replaces the socket's close). The bandwidth (≈ 94 messages of 4 KB per second for 48 kHz stereo) is
-trivial for Mach messages. Audio would go as one-way messages from the sender thread; the audio thread stays as it is
-(ring only).
-
-What must still be verified before committing, with a Developer ID or App Store team signature (the probe takes the
-identity and group as arguments): that the group prefix is honoured for a team-signed app without a provisioning
-profile; that registering the name from the app (not a launchd-declared service) survives App Review if the Mac App
-Store is the channel; peer identity (a Mach message carries an audit token: check the sender's user ID, and whether
-to require the plugin's team ID). The alternatives are weaker: a Unix socket in the group container requires the
-DAW to open another app's group container, which macOS 15 and later may put behind a privacy prompt shown on behalf
-of the DAW; an XPC service needs a launch agent helper (`SMAppService`) that the release does not otherwise need; and
-shipping unsandboxed (Developer ID only) keeps today's socket but gives up the release's sandbox. Sandboxed hosts
-(GarageBand) were not tested: a plugin inside one is subject to that host's sandbox, which is unlikely to allow
-another vendor's names (AUv3 in an app extension would be the path there).
+Unchanged from build 2's recommendation: the sandboxed release cannot use this socket; carry the same protocol over
+Mach messages under an application-group prefix, to be verified with a team signature
+(`probe-sandbox-transport.sh`). Results are smaller and less frequent than audio was, which makes that carrier easier.

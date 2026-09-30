@@ -10,7 +10,7 @@ logs=.build/bridge/validation
 failed=0
 # Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.
 if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v1.sock" ]] \
-    && ! .build/bridge/tools/ReceiverProbe --seconds 0 > /dev/null 2>&1; then
+    && ! .build/bridge/tools/ResultProbe --seconds 0 > /dev/null 2>&1; then
     echo "Another Bridge receiver is running (Auraliscope Labs?): quit it first" >&2; exit 1
 fi
 pgrep -xq REAPER && { echo "REAPER is running: quit it first" >&2; exit 1; }
@@ -46,22 +46,21 @@ for format in vst3 au; do
     grep -hE 'found|stream:|peak|conditions|FAIL' "$logs/app-reaper-$format-live.txt" | sed 's/^/   /'
     grep -h 'inserted' "$logs/reaper-$format-live.txt" | sed 's/^/   /'
 
-    # Offline render, traced by the probe (Labs must not be running): the insert must report offline throughout,
-    # never deliver live audio, and the bounce must equal the source.
+    # Offline render, traced by the probe (Labs must not be running): the insert must report offline, measure
+    # nothing while it does (a bounce is not live audio), and the bounce must equal the source.
     trace="$logs/probe-reaper-$format-render.txt"
-    .build/bridge/tools/ReceiverProbe --seconds 30 --trace 1 > "$trace" 2>&1 &
+    .build/bridge/tools/ResultProbe --seconds 30 --trace > "$trace" 2>&1 &
     probe_pid=$!
     sleep 1
     Bridge/scripts/daw-reaper.sh $format render > /dev/null 2>&1
     wait $probe_pid
     echo "== REAPER $format offline render"
-    grep -h 's  ' "$trace" | sed 's/^/   /'
-    # Pass: the insert reported offline, and no audio reached the receiver as a live stream. (REAPER sets an AU's
-    # OfflineRender a moment after creating it, before rendering; that brief "live" state carries no audio.)
-    if grep -q ' offline' "$trace" && ! grep -q '+audio' "$trace"; then
-        echo "   offline reported, no audio delivered as live: PASS"
-        grep -q ' live' "$trace" && echo "   (the host created the insert as live and flagged offline before rendering)"
-    else echo "   live audio during the render: FAIL"; failed=1; fi
+    grep -hE ' s  |offline render seen' "$trace" | sed 's/^/   /'
+    # Pass: the insert reported offline, and its analysis measured nothing while it did. (REAPER creates the insert
+    # live and flags offline before rendering; whatever it measured then is not the bounce.)
+    if grep -q 'offline render seen: yes; frames analysed while offline: 0' "$trace"; then
+        echo "   offline reported, nothing measured as live during the render: PASS"
+    else echo "   the render was measured as live audio, or never reported offline: FAIL"; failed=1; fi
     python3 Bridge/Tools/check-render.py .build/bridge/reaper-profile/render/bridge-render.wav | sed 's/^/   /' || failed=1
 
     # Identity and transport, then the project reopened: the analysed insert is duplicated (its copy turned down

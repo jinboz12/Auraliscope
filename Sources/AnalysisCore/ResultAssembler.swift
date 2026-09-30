@@ -39,6 +39,7 @@ package final class ResultAssembler {
     package private(set) var spectrogramGaps: UInt64 = 0
     package private(set) var spectrogramSkipped: UInt64 = 0
     package private(set) var waveformGaps: UInt64 = 0
+    package private(set) var waveformSkipped: UInt64 = 0
 
     package init(streamSeed: UInt32 = 0) { streamID = streamSeed }
 
@@ -93,6 +94,15 @@ package final class ResultAssembler {
             }
             waveformQueue.append(Array(message.waveform[(i * stride)..<((i + 1) * stride)]))
             lastWaveform = serial
+        }
+        // Bounded whatever the display does (it may be paused for minutes): only what it could still show is kept.
+        if spectrogramQueue.count > Self.spectrogramLag {
+            spectrogramSkipped += UInt64(spectrogramQueue.count - Self.spectrogramLag)
+            spectrogramQueue.removeFirst(spectrogramQueue.count - Self.spectrogramLag)
+        }
+        if waveformQueue.count > StreamAnalyzer.waveformCapacity {
+            waveformSkipped += UInt64(waveformQueue.count - StreamAnalyzer.waveformCapacity)
+            waveformQueue.removeFirst(waveformQueue.count - StreamAnalyzer.waveformCapacity)
         }
         latest = message
         pendingState = true

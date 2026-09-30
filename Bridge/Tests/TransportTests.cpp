@@ -644,11 +644,23 @@ int main() {
         info = ack(id);
         CHECK(info.last_ack_outcome == ABR_ACK_STALE_GENERATION && controlled.last().generation == generation + 1,
               "a command for an obsolete generation is refused (outcome %u) and changes nothing", info.last_ack_outcome);
+        // A pause from the display ends with the display's connection.
+        abr_server_command(server, a.session_id, ABR_COMMAND_PAUSE, 0);
+        CHECK(waitFor([&] { return controlled.last().measurement == ABR_MEASUREMENT_PAUSED; }, 2), "paused again from the display");
+        abr_server_disconnect(server, a.session_id, 300);
+        CHECK(waitFor([&] { return stereo->status().measurement == ABR_MEASUREMENT_MEASURING; }, 2),
+              "…and when that display's connection goes, the plugin resumes by itself");
+        waitFor([&] { findSource(server, "Stereo bus", a); return stereo->status().connected; }, 3);
         stereo->requestCommand(ABR_COMMAND_PAUSE);
-        CHECK(waitFor([&] { return controlled.last().measurement == ABR_MEASUREMENT_PAUSED; }, 2),
+        CHECK(waitFor([&] { return stereo->status().measurement == ABR_MEASUREMENT_PAUSED; }, 2),
               "the plugin window's own Pause pauses the same measurement");
+        abr_server_disconnect(server, a.session_id, 300);
+        std::this_thread::sleep_for(milliseconds(500));
+        CHECK(stereo->status().measurement == ABR_MEASUREMENT_PAUSED, "…which a display's disconnection does not undo");
         stereo->requestCommand(ABR_COMMAND_RESUME);
-        CHECK(waitFor([&] { return controlled.last().measurement == ABR_MEASUREMENT_MEASURING; }, 2), "…and Resume resumes it");
+        CHECK(waitFor([&] { return stereo->status().measurement == ABR_MEASUREMENT_MEASURING; }, 2), "…and its Resume resumes it");
+        // Back to a connected, listed original before the next checks.
+        waitFor([&] { return stereo->status().connected && findSource(server, "Stereo bus", a); }, 4);
         host.stop();
         abr_server_detach(server);
     }
