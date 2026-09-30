@@ -8,16 +8,16 @@ source Bridge/scripts/prototype-version.sh
 lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 if [[ "${1:-}" == "--uninstall" ]]; then
     for folder in "$HOME/Applications" /Applications; do
-        [[ -d "$folder/Auraliscope Labs.app" ]] && { "$lsregister" -u "$folder/Auraliscope Labs.app" || true; rm -rf "$folder/Auraliscope Labs.app"; echo "Removed $folder/Auraliscope Labs.app"; }
+        [[ -d "$folder/Auraliscope LABS.app" ]] && { "$lsregister" -u "$folder/Auraliscope LABS.app" || true; rm -rf "$folder/Auraliscope LABS.app"; echo "Removed $folder/Auraliscope LABS.app"; }
     done
     exit 0
 fi
 target="$HOME/Applications"; [[ "${1:-}" == "--system" ]] && target=/Applications
 mkdir -p "$target"
-rm -rf "$target/Auraliscope Labs.app"
-ditto --norsrc "$ABR_DIST/Auraliscope Labs.app" "$target/Auraliscope Labs.app"
-find "$target/Auraliscope Labs.app" -name '._*' -delete
-xattr -cr "$target/Auraliscope Labs.app"
-codesign --verify --strict "$target/Auraliscope Labs.app"
-"$lsregister" -f "$target/Auraliscope Labs.app"
-echo "Installed $target/Auraliscope Labs.app"
+rm -rf "$target/Auraliscope LABS.app"
+ditto --norsrc "$ABR_DIST/Auraliscope LABS.app" "$target/Auraliscope LABS.app"
+find "$target/Auraliscope LABS.app" -name '._*' -delete
+xattr -cr "$target/Auraliscope LABS.app"
+codesign --verify --strict "$target/Auraliscope LABS.app"
+"$lsregister" -f "$target/Auraliscope LABS.app"
+echo "Installed $target/Auraliscope LABS.app"

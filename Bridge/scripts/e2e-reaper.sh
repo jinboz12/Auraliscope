@@ -5,7 +5,7 @@
 set -uo pipefail
 cd "${0:A:h:h:h}"
 source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope Labs.app/Contents/MacOS/Auraliscope"
+app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
 logs=.build/bridge/validation
 failed=0
 # Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.

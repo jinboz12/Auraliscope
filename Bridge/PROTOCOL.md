@@ -1,6 +1,6 @@
 # Auraliscope Bridge protocol, version 3 (analysis schema 1)
 
-Between an Auraliscope Bridge plugin instance (the **plugin**) and a display (**Auraliscope Labs** today, an iOS app
+Between an Auraliscope Bridge plugin instance (the **plugin**) and a display (**Auraliscope LABS** today, an iOS app
 later). The plugin analyses its own audio; the display receives **analysis results**, never audio, and sends a
 few commands. This document is the reference; the C header `Sources/BridgeTransport/include/BridgeProtocol.h`
 (framing, control messages) and `Sources/AnalysisCore/ResultProtocol.swift` (RESULT fields) implement it.
@@ -65,7 +65,7 @@ not a schema change; changing a field's meaning or units is.
 |---|---|---|---|
 | 1 | HELLO | plugin → display | u32 protocol version, u32 plugin format (1 VST3, 2 AU, 99 test), then fields |
 | 2 | STATUS | plugin → display | fields; on every change and at least every 250 ms |
-| 5 | FOCUS | plugin → display | none: the user clicked "Show in Auraliscope Labs" |
+| 5 | FOCUS | plugin → display | none: the user clicked "Show in Auraliscope LABS" |
 | 6 | RESULT | plugin → display | fields; while subscribed, whenever the analysis has something new |
 | 7 | ACK | plugin → display | fields: the outcome of a COMMAND |
 | 16 | WELCOME | display → plugin | u32 protocol version, u32 0, then fields |

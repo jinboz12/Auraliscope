@@ -15,6 +15,8 @@ struct SourceID: Hashable {
     static let none = SourceID(device: 0)
     static let noOutput = SourceID(device: 0, output: true)
     static let waitingPrefix = "waiting:"
+    /// Host plugins chosen as the source type, no insert chosen yet (also: launched by a plugin, before it asked).
+    static let anyPlugin = SourceID(device: 0, bridge: waitingPrefix)
     var isNone: Bool { device == 0 && bridge == nil }
 }
 

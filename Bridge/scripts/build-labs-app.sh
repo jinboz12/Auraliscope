@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Builds "Auraliscope Labs.app" (1.3dev), the test app with the DAW Plugin source, into
+# Builds "Auraliscope LABS.app" (1.3dev), the test app with the DAW Plugin source, into
 # experimental-dist/Auraliscope Labs <label> build <n>/. Identity com.jinboz.SoundMeterJBZ.Labs (Bridge/App/Info.plist)
 # and its own beta icon, so it installs and runs beside Auraliscope without sharing preferences, logs or privacy grants.
 #
@@ -17,7 +17,7 @@ identity="$(otool -s __TEXT __info_plist -v "$binary_directory/Auraliscope" | gr
 (( identity > 0 )) || { echo "error: the binary does not carry the Labs identity" >&2; exit 1; }
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-app="$stage/Auraliscope Labs.app"
+app="$stage/Auraliscope LABS.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Bridge/App/Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
@@ -30,6 +30,6 @@ xattr -cr "$app"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
 mkdir -p "$ABR_DIST"
-rm -rf "$ABR_DIST/Auraliscope Labs.app"
-ditto --norsrc "$app" "$ABR_DIST/Auraliscope Labs.app"
-echo "$ABR_DIST/Auraliscope Labs.app"
+rm -rf "$ABR_DIST/Auraliscope LABS.app"
+ditto --norsrc "$app" "$ABR_DIST/Auraliscope LABS.app"
+echo "$ABR_DIST/Auraliscope LABS.app"

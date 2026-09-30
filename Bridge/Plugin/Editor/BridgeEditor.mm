@@ -14,7 +14,7 @@ extern "C" {
 
 // The plugin window, in Auraliscope's own look (Sources/Auraliscope/Theme.swift, dark appearance, Sage accent):
 // the window gradient, rounded cards, cream ink, expanded-width headings and the hexagon mark. One button
-// connects: it launches Auraliscope Labs when needed and makes this insert the active source.
+// connects: it launches Auraliscope LABS when needed and makes this insert the active source.
 //
 // Each binary (VST3, AU) compiles this file with its own class names: a host that loads both formats would
 // otherwise see two definitions of one Objective-C class.
@@ -139,7 +139,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
 - (void)shutDown;
 @end
 
-// Answers three questions, top to bottom: is this insert the one Auraliscope Labs analyses (and one click makes
+// Answers three questions, top to bottom: is this insert the one Auraliscope LABS analyses (and one click makes
 // it so); is fresh audio arriving; has the stream been interrupted. The network scan sits last, collapsed: it
 // only runs when asked, because nothing on the network can receive analysis yet.
 @implementation ABR_EDITOR_CLASS {
@@ -224,7 +224,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _name.delegate = self;
     _name.target = self;
     _name.action = @selector(commitName:);
-    _name.toolTip = @"Shown in Auraliscope Labs' source list and saved with the project. Leave empty to use the track name.";
+    _name.toolTip = @"Shown in Auraliscope LABS' source list and saved with the project. Leave empty to use the track name.";
     [well addSubview:_name];
     _identity = label(NSMakeRect(14, 58, inner - 28, 14), [NSFont systemFontOfSize:10], tertiary());
     [source addSubview:_identity];
@@ -292,8 +292,12 @@ NSTextField *heading(NSRect frame, NSString *title) {
     [network addSubview:_scan];
 
     NSTextField *note = label(NSMakeRect(margin, 542, inner, 14), [NSFont systemFontOfSize:10], tertiary());
-    note.stringValue = @"Audio passes through unchanged. Closing this window does not stop the measurement.";
+    note.stringValue = @"Audio passes through unchanged. Closing this window keeps measuring.";
     [self addSubview:note];
+    NSTextField *prototype = label(NSMakeRect(margin, 560, inner, 14), expanded(9, NSFontWeightSemibold), ochre());
+    prototype.stringValue = @"Prototype experiment only";
+    prototype.alignment = NSTextAlignmentCenter;
+    [self addSubview:prototype];
     [self refresh];
     return self;
 }
@@ -341,13 +345,36 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _pause.target = nil;
 }
 
-// One click: ask Auraliscope Labs to analyse this insert, launching it first when it is not running. The request
+// The copy of Auraliscope LABS to launch. Older test builds left in Downloads or a build folder share its bundle ID,
+// and Launch Services may pick any of them: take the newest build, and among equal builds one in an Applications
+// folder. Copies in the Trash are skipped.
+static NSURL *labsApplicationURL() {
+    NSURL *best = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:kLabsBundleID];
+    if (@available(macOS 12.0, *)) {
+        auto build = [](NSURL *url) {
+            return [[NSBundle bundleWithURL:url].infoDictionary[@"CFBundleVersion"] integerValue];
+        };
+        auto installed = [](NSURL *url) { return [url.path containsString:@"/Applications/"]; };
+        NSInteger bestBuild = best ? build(best) : -1;
+        for (NSURL *url in [NSWorkspace.sharedWorkspace URLsForApplicationsWithBundleIdentifier:kLabsBundleID]) {
+            if ([url.path containsString:@"/.Trash/"]) continue;
+            const NSInteger candidate = build(url);
+            if (candidate > bestBuild || (candidate == bestBuild && installed(url) && !installed(best))) {
+                best = url;
+                bestBuild = candidate;
+            }
+        }
+    }
+    return best;
+}
+
+// One click: ask Auraliscope LABS to analyse this insert, launching it first when it is not running. The request
 // waits in the core and goes out as soon as the connection is up.
 - (void)connect:(id)sender {
     _core->requestFocus();
     _launchFailed = NO;
     if (!_core->status().connected) {
-        NSURL *app = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:kLabsBundleID];
+        NSURL *app = labsApplicationURL();
         if (app) {
             NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
             configuration.arguments = @[@"--bridge-launch"];
@@ -406,45 +433,45 @@ NSTextField *heading(NSRect frame, NSString *title) {
     NSString *headline, *detail, *button = @"";
     BOOL filled = NO, enabled = NO;
     if (status.receiverTooOld) {
-        headline = @"Auraliscope Labs needs an update";
-        detail = @"The Auraliscope Labs on this Mac is older than this plugin.";
+        headline = @"Auraliscope LABS needs an update";
+        detail = @"The Auraliscope LABS on this Mac is older than this plugin.";
         dot = ember();
     } else if (status.receiverTooNew) {
         headline = @"This plugin needs an update";
-        detail = @"Install the Auraliscope Bridge that comes with your Auraliscope Labs.";
+        detail = @"Install the Auraliscope Bridge that comes with your Auraliscope LABS.";
         dot = ember();
     } else if (!status.connected) {
         if (status.focusPending) {
-            headline = @"Opening Auraliscope Labs…";
+            headline = @"Opening Auraliscope LABS…";
             detail = @"This insert is shown as soon as it connects.";
             button = @"Connecting…";
         } else if (_launchFailed) {
-            headline = @"Auraliscope Labs is not installed";
+            headline = @"Auraliscope LABS is not installed";
             detail = @"Install it in Applications, then click again.";
             dot = ember();
-            button = @"Open Auraliscope Labs";
+            button = @"Open Auraliscope LABS";
             filled = enabled = YES;
         } else if (labs) {
-            headline = @"Connecting to Auraliscope Labs…";
+            headline = @"Connecting to Auraliscope LABS…";
             detail = @"It is starting up.";
         } else if ([NSRunningApplication runningApplicationsWithBundleIdentifier:kReleaseBundleID].count) {
-            headline = @"Auraliscope Labs is not open";
-            detail = @"Auraliscope is open, but only Auraliscope Labs receives DAW audio.";
+            headline = @"Auraliscope LABS is not open";
+            detail = @"Auraliscope is open, but only Auraliscope LABS receives DAW audio.";
             dot = ochre();
-            button = @"Open Auraliscope Labs";
+            button = @"Open Auraliscope LABS";
             filled = enabled = YES;
         } else {
-            headline = @"Auraliscope Labs is not open";
+            headline = @"Auraliscope LABS is not open";
             detail = @"Every insert connects by itself whenever it is open.";
-            button = @"Open Auraliscope Labs";
+            button = @"Open Auraliscope LABS";
             filled = enabled = YES;
         }
     } else if (status.subscribed) {
-        button = @"Shown in Auraliscope Labs";
+        button = @"Shown in Auraliscope LABS";
         switch (status.state) {
         case ABR_STATE_LIVE:
-            headline = fresh ? @"Shown in Auraliscope Labs" : @"Selected · no audio";
-            detail = fresh ? @"This insert's measurements are shown in Auraliscope Labs."
+            headline = fresh ? @"Shown in Auraliscope LABS" : @"Selected · no audio";
+            detail = fresh ? @"This insert's measurements are shown in Auraliscope LABS."
                            : @"The DAW is not processing this insert (stopped or suspended).";
             dot = fresh ? accent() : ochre();
             break;
@@ -466,7 +493,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
         }
     } else {
         headline = @"Connected · not analysed";
-        detail = @"Auraliscope Labs is showing another source; this insert still measures.";
+        detail = @"Auraliscope LABS is showing another source; this insert still measures.";
         dot = heather();
         button = status.focusPending ? @"Switching…" : @"Show this insert";
         filled = enabled = !status.focusPending;
@@ -475,11 +502,11 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _detail.stringValue = detail;
     _dot.layer.backgroundColor = dot.CGColor;
     [self style:_connect title:button filled:filled enabled:enabled size:12];
-    _thisMac.stringValue = labs ? [NSString stringWithFormat:@"This Mac · Auraliscope Labs %@", version]
-                                : @"This Mac · Auraliscope Labs not running";
+    _thisMac.stringValue = labs ? [NSString stringWithFormat:@"This Mac · Auraliscope LABS %@", version]
+                                : @"This Mac · Auraliscope LABS not running";
 }
 
-// Which insert this is, as Auraliscope Labs lists it.
+// Which insert this is, as Auraliscope LABS lists it.
 - (void)refreshIdentity:(const abr::CoreStatus &)status {
     NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:[NSString stringWithFormat:@"ID %s", status.instanceTag.c_str()]];
     [parts addObject:_format];
@@ -519,7 +546,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
         _fresh.stringValue = @"The DAW has not processed this insert yet.";
         _fresh.textColor = tertiary();
     } else if (since < 0.5) {
-        NSString *where = status.subscribed ? @"measured here, results sent to Auraliscope Labs" : @"measured here";
+        NSString *where = status.subscribed ? @"measured here, results sent to Auraliscope LABS" : @"measured here";
         _fresh.stringValue = [NSString stringWithFormat:@"Audio is flowing · %@", where];
         _fresh.textColor = status.subscribed && status.state == ABR_STATE_LIVE ? accent() : secondary();
     } else {

@@ -99,7 +99,7 @@ bundle() {  # bundle <name.ext> <plist> <exports> <objects…>
     local name="$1" plist="$2" exports="$3"; shift 3
     local contents="$stage/$name/Contents"
     mkdir -p "$contents/MacOS" "$contents/Resources"
-    sed -e "s/@VERSION@/$ABR_VERSION/g" -e "s/@BUILD@/$ABR_BUILD/g" -e "s/@AU_VERSION@/$ABR_AU_VERSION/g" "$plist" > "$contents/Info.plist"
+    sed -e "s/@VERSION@/$ABR_PLUGIN_BUNDLE_VERSION/g" -e "s/@BUILD@/$ABR_BUILD/g" -e "s/@AU_VERSION@/$ABR_AU_VERSION/g" "$plist" > "$contents/Info.plist"
     plutil -lint "$contents/Info.plist" >/dev/null
     printf 'BNDL????' > "$contents/PkgInfo"
     clang++ "${link_flags[@]}" -exported_symbols_list "$exports" "$@" -o "$contents/MacOS/Auraliscope Bridge"

@@ -1,7 +1,7 @@
 #pragma once
 
 // The plugin window shared by the VST3 and AU wrappers: the source name (editable, saved in the project), the
-// connection to Auraliscope Labs, what the stream carries, and this insert's own measurement (with Reset and
+// connection to Auraliscope LABS, what the stream carries, and this insert's own measurement (with Reset and
 // Pause). It reads the core's status; closing it changes nothing about the analysis or what is sent.
 
 #include <functional>
@@ -12,7 +12,7 @@ namespace abr {
 class BridgeCore;
 
 constexpr int kEditorWidth = 440;
-constexpr int kEditorHeight = 562;
+constexpr int kEditorHeight = 582;
 
 // Returns a retained NSView (as void *). `nameEdited` runs on the main thread after the user changes the name,
 // so the wrapper can mark the project as modified.

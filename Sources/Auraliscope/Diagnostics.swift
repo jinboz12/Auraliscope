@@ -553,7 +553,7 @@ enum Diagnostics {
         let originalDark = theme.dark
         func report(_ step: String, expectedDark: Bool) {
             let utilityWindows = NSApp.windows.filter {
-                $0.isVisible && ($0.title == L("Settings") || $0.title == L("About Auraliscope"))
+                $0.isVisible && ($0.title == L("Settings") || $0.title == L("About Auraliscope LABS"))
             }
             print("[\(step)] mode=\(theme.mode.rawValue) dark=\(theme.dark) utilityWindows=\(utilityWindows.count)")
             fflush(stdout)
@@ -590,7 +590,7 @@ enum Diagnostics {
         func report(_ step: String) {
             let window = MainWindow.window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? "none"
             let utilityWindows = NSApp.windows.filter { $0.isVisible && ($0.identifier?.rawValue == "settings" || $0.identifier?.rawValue == "about"
-                || $0.title == L("Settings") || $0.title == L("About Auraliscope")) }
+                || $0.title == L("Settings") || $0.title == L("About Auraliscope LABS")) }
             print(String(format: "[%@] mode=%@ dark=%@ window=%@ capture=%u running=%@ elapsed=%.1f s utilityWindows=%d", step,
                          theme.mode.rawValue, theme.dark ? "yes" : "no", window, model.captureGeneration,
                          model.running ? "yes" : "no", model.readouts.values.elapsed, utilityWindows.count))

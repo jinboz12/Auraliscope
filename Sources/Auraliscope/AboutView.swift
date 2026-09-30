@@ -95,7 +95,7 @@ struct AboutView: View {
         }
         .frame(width: 660, alignment: .top)
         .background(Theme.windowBottom)
-        .background(UtilityWindowProbe(title: L("About Auraliscope"), capture: Diagnostics.showAbout))
+        .background(UtilityWindowProbe(title: L("About Auraliscope LABS"), capture: Diagnostics.showAbout))
         .tint(Theme.action)
     }
 

@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "${0:A:h:h:h}"
 source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope Labs.app/Contents/MacOS/Auraliscope"
+app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
 harness=.build/bridge/tools/HostHarness
 vst3="$ABR_DIST/Auraliscope Bridge.vst3"
 logs=.build/bridge/validation

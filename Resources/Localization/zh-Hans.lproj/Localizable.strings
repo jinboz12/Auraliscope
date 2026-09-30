@@ -2,7 +2,7 @@
 /* The policy and the glossary live in scripts/check-localization.py, which ./scripts/test.sh runs. */
 
 /* Menu bar and window titles */
-"About Auraliscope" = "关于 Auraliscope";
+"About Auraliscope LABS" = "关于 Auraliscope LABS";
 "Settings…" = "设置…";
 "Settings" = "设置";
 "Toggle Full Screen" = "切换全屏幕";
@@ -115,9 +115,9 @@
 "Needed to meter any input. After changing it in System Settings, click the arrow to check again." = "测量任何输入都需要此权限。在系统设置中更改后，点按箭头重新检查。";
 "System audio recording" = "系统录音";
 "Open System Settings" = "打开系统设置";
-"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "测量输出时需要此权限。开始采集输出时 macOS 会询问。如果电平表一直没有信号，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope，然后重新选择该输出。";
+"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "测量输出时需要此权限。开始采集输出时 macOS 会询问。如果电平表一直没有信号，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope LABS，然后重新选择该输出。";
 "No sound from this output" = "此输出没有声音";
-"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "目前只收到数字静音。如果有应用正在向此输出播放，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope，然后重新选择该输出。";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "目前只收到数字静音。如果有应用正在向此输出播放，请在“隐私与安全 → 录屏与系统录音”中允许 Auraliscope LABS，然后重新选择该输出。";
 "Allowed" = "已允许";
 "Not requested" = "尚未请求";
 "Denied" = "已拒绝";
@@ -323,10 +323,10 @@
 "Changes are not applied yet." = "更改尚未应用。";
 "Apply the source and format first, then route their channels." = "请先应用音源和格式，再为其声道设置路由。";
 "Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation." = "语言会立即预览，包括菜单栏，测量不会中断。“应用”保留更改；“还原”恢复之前的语言。单位、声道标签和标准保持调音台与 DAW 上的写法。";
-"Hide Auraliscope" = "隐藏 Auraliscope";
+"Hide Auraliscope LABS" = "隐藏 Auraliscope LABS";
 "Hide Others" = "隐藏其他";
 "Show All" = "全部显示";
-"Quit Auraliscope" = "退出 Auraliscope";
+"Quit Auraliscope LABS" = "退出 Auraliscope LABS";
 "Services" = "服务";
 "Edit" = "编辑";
 "Undo" = "撤销";
@@ -367,9 +367,16 @@
 "%@ (choose one of the ◆ inserts)" = "%@（请从标有 ◆ 的插入中选择一个）";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 有 %d 个已连接的插入可能是已保存的那一个 · 请在设置中选择，或点击相应插件窗口中的按钮";
 "%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW 插件已断开 · 测量保持，以便此插件实例重新连接时继续";
-"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "已连接另一版本的 Auraliscope Bridge（%@）。请安装本 Auraliscope Labs 附带的 Bridge，然后重新打开工程。";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project." = "已连接另一版本的 Auraliscope Bridge（%@）。请安装本 Auraliscope LABS 附带的 Bridge，然后重新打开工程。";
 "Interrupted %d×" = "中断 %d 次";
 "Interrupted %d× · %@ s missing" = "中断 %d 次 · 缺失 %@ s";
 "The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "所分析的音频曾中断后又恢复。积分响度、响度范围和峰值保持跨越这些中断；瞬时、短期、频谱以及所有滤波器在每次中断后都重新开始。如需测量一段连续的音频，请重置测量。";
 "copy of #%@" = "#%@ 的副本";
 "track %@" = "轨道 %@";
+"Source type" = "信号源类型";
+"Audio devices" = "音频设备";
+"Host plugins" = "宿主插件";
+"No DAW plugin connected" = "没有已连接的 DAW 插件";
+"Choose a DAW plugin" = "选择 DAW 插件";
+"Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "宿主插件 · 请在“设置 → 音频”中选择一个插入实例，或点击其插件窗口中的按钮";
+"Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "每个插入实例在 DAW 内测量自己的音频，Auraliscope LABS 显示其结果。插件窗口中的按钮也可以在这里选择该插入实例。";

@@ -1,12 +1,13 @@
-# Auraliscope Labs 1.3dev and Auraliscope Bridge (DAW integration prototype)
+# Auraliscope LABS 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
 Auraliscope Bridge is an audio effect (VST3 and AUv2) that you insert on a DAW track, bus or master. It passes the
 audio through unchanged and **measures it itself**, with Auraliscope's own analysis compiled into the plugin:
-levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. **Auraliscope Labs**, the 1.3dev test
+levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. **Auraliscope LABS**, the 1.3dev test
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 3 is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
+Build 63 (the first build number after Auraliscope 1.2.2, build 62; builds 1 to 3 were
+the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
@@ -16,7 +17,7 @@ branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Au
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope Labs.app | `experimental-dist/Auraliscope Labs 1.3dev build 3/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 63/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -43,6 +44,24 @@ static library per format; the Swift runtime is the system's). Other scripts: `f
 
 ## Install
 
+**Testers: the installer.** `Auraliscope LABS 1.3dev build 63.pkg` installs, for every user of the Mac, the app
+into `/Applications` and both plugins into `/Library/Audio/Plug-Ins/{VST3,Components}` (three choices, all selected).
+The app stays independent of Auraliscope. The plugins use the paths, names and bundle IDs an official Auraliscope
+Bridge would use, with bundle versions below any release (0.63; the plugin window and hosts show "1.3dev build 63"),
+so an official installer replaces them, and this package never replaces a newer plugin. Nothing is relocated to
+another copy. The package is not signed: open it with Control-click ▸ Open, or System Settings ▸ Privacy & Security ▸
+Open Anyway. Apple silicon, macOS 13 or later. Build it with:
+
+```bash
+Bridge/scripts/package-installer.sh
+```
+
+Remove earlier test builds first (`install-plugins.sh --uninstall`, `install-labs-app.sh --uninstall`), so hosts and
+macOS see one copy. The plugin's **Open Auraliscope LABS** button launches the newest registered copy, preferring one
+in an Applications folder.
+
+**Development: per-user copies.**
+
 ```bash
 Bridge/scripts/install-plugins.sh
 ```
@@ -56,11 +75,21 @@ them up (REAPER: Preferences ▸ Plug-ins ▸ Re-scan; Logic: Plug-in Manager).
 
 ## Use
 
+Auraliscope LABS keeps both ways of working. In Settings ▸ Audio, **Source type** chooses:
+
+- **Audio devices**: an input, or what apps play to an output, analysed in the app, as in Auraliscope.
+- **Host plugins**: the Auraliscope Bridge inserts in your DAW, each measuring its own audio; LABS shows the results.
+  With one insert connected it is chosen; with several, none is until you choose one (or click its plugin button).
+
+Switching back to Audio devices returns to the device last chosen there (else the macOS default output). The plugin
+button selects its insert whatever the source type. The main window and the plugin window both say **Prototype
+experiment only** at the bottom.
+
 1. Insert **Auraliscope Bridge** on a mono or stereo track, bus or the master.
-2. Open the plugin window and click **Open Auraliscope Labs** (or **Show in Auraliscope Labs** when it is already
+2. Open the plugin window and click **Open Auraliscope LABS** (or **Show in Auraliscope LABS** when it is already
    running). That one click launches Labs if needed, connects, and makes this insert the active source.
    Without clicking, every insert still connects by itself whenever Labs is open, and appears in Labs under
-   Settings ▸ Audio ▸ Source ▸ *DAW plugins · Auraliscope Bridge*.
+   Settings ▸ Audio ▸ Source type ▸ *Host plugins*.
 3. The name you type in the plugin window (saved with the DAW project) is what Labs lists; left empty, the host's
    track name is used when the host provides it (REAPER does).
 4. The plugin window says whether **this insert** is the one Labs shows (and why not, with one click to make it so),
@@ -100,7 +129,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope Labs 1.3dev build 3/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 63/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz

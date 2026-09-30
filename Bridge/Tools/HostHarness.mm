@@ -7,19 +7,22 @@
 //
 //   HostHarness --format vst3|au [--bundle <path.vst3>] [--channels 1|2] [--rate 48000] [--block 256]
 //               [--instances n] [--copies n] [--name <base>] [--id <32 hex>] [--phases live:4,bypass:2,live:2]
-//               [--editor-snapshot <file.png>] [--editor-seconds s]
+//               [--editor-snapshot <file.png>] [--editor-seconds s] [--cycles n]
 //
 // Phases: live:s, bypass:s, offline:s, idle:s, rate=<hz>:s (reconfigure, then live), ch=<n>:s (likewise),
 // reidentify:s (every instance is given its own state back with a new identity, as a host restoring a project
 // into already-running plugins does; each reconnects under the same session, then live).
 // --copies n: after the instances, n more restored from instance 1's saved state while it is live, as a host
 // duplicating a track does.
+// --cycles n: the whole run (load, play the phases, open and close the editor, unload) n times over in one
+// process, reporting its footprint, threads and open files after each unload, so leaks show as growth.
 // Instance i plays L = 0.5·2⁻ⁱ·sin(2π·997·n/fs) and R = 0.25·2⁻ⁱ·sin(2π·1499·n/fs), n counting live frames
 // only (bypassed, offline and idle blocks do not advance it), so its stream position equals n.
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AUCocoaUIView.h>
 #import <Cocoa/Cocoa.h>
+#include <fcntl.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/thread_policy.h>
@@ -54,7 +57,7 @@ namespace {
 
 struct Options {
     std::string format = "vst3", bundle, name = "Harness", id, snapshot;
-    uint32_t channels = 2, block = 256, instances = 1, copies = 0;
+    uint32_t channels = 2, block = 256, instances = 1, copies = 0, cycles = 1;
     double rate = 48000, editorSeconds = 2;
     std::string phases = "live:5";
     bool clickConnect = false;  // press the plugin window's connect button, as a user would
@@ -418,6 +421,28 @@ std::vector<Phase> parsePhases(const std::string &text) {
     return phases;
 }
 
+
+// Leak checks across --cycles: what the process holds once every instance is unloaded.
+double footprintMB() {
+    task_vm_info_data_t info{};
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, task_info_t(&info), &count) != KERN_SUCCESS) return -1;
+    return info.phys_footprint / 1048576.0;
+}
+int threadCount() {
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) return -1;
+    for (mach_msg_type_number_t i = 0; i < count; ++i) mach_port_deallocate(mach_task_self(), threads[i]);
+    vm_deallocate(mach_task_self(), vm_address_t(threads), count * sizeof(thread_act_t));
+    return int(count);
+}
+int openFiles() {
+    int open = 0;
+    for (int fd = 0; fd < 4096; ++fd) if (fcntl(fd, F_GETFD) != -1) ++open;
+    return open;
+}
+
 }  // namespace
 
 int main(int argc, const char *argv[]) {
@@ -432,6 +457,7 @@ int main(int argc, const char *argv[]) {
             else if (key == "--block") options.block = uint32_t(std::atoi(value.c_str()));
             else if (key == "--instances") options.instances = uint32_t(std::atoi(value.c_str()));
             else if (key == "--copies") options.copies = uint32_t(std::atoi(value.c_str()));
+            else if (key == "--cycles") options.cycles = uint32_t(std::max(1, std::atoi(value.c_str())));
             else if (key == "--name") options.name = value;
             else if (key == "--id") options.id = value;
             else if (key == "--phases") options.phases = value;
@@ -442,127 +468,134 @@ int main(int argc, const char *argv[]) {
         }
         [NSApplication sharedApplication];
 
-        std::vector<std::unique_ptr<Instance>> instances;
-        for (uint32_t i = 0; i < options.instances; ++i) {
-            if (options.format == "au") {
-                auto instance = std::make_unique<AUInstance>(options, i);
-                if (!instance->ok()) return 1;
-                instances.push_back(std::move(instance));
-            } else {
-                auto instance = std::make_unique<VST3Instance>(options, i);
-                if (!instance->ok()) return 1;
-                instances.push_back(std::move(instance));
-            }
-        }
-        // Duplicated tracks: new instances given instance 1's saved state while it is live.
-        for (uint32_t i = 0; i < options.copies && !instances.empty(); ++i) {
-            const std::string state = instances[0]->saveState();
-            std::unique_ptr<Instance> copy;
-            if (options.format == "au") copy = std::make_unique<AUInstance>(options, options.instances + i);
-            else copy = std::make_unique<VST3Instance>(options, options.instances + i);
-            copy->restoreState(state);
-            instances.push_back(std::move(copy));
-        }
-        double rate = options.rate;
-        uint32_t channels = options.channels;
-        for (auto &instance : instances)
-            if (!instance->configure(rate, channels, options.block)) { std::fprintf(stderr, "configure failed\n"); return 1; }
-        std::printf("[harness] %s, %u instance(s) \"%s\", %.0f Hz, %u ch, block %u\n", options.format.c_str(),
-                    options.instances, options.name.c_str(), rate, channels, options.block);
-        std::fflush(stdout);
-
-        std::atomic<bool> done{false};
         std::atomic<long> mismatches{0}, errors{0};
-        std::thread audio([&] {
-            makeRealTime(options.block / rate);
-            std::vector<std::vector<float>> in(2, std::vector<float>(options.block)), out(2, std::vector<float>(options.block));
-            float *inputs[2] = {in[0].data(), in[1].data()}, *outputs[2] = {out[0].data(), out[1].data()};
-            std::vector<uint64_t> position(instances.size(), 0);
-            uint64_t sampleTime = 0;
-            for (const Phase &phase : parsePhases(options.phases)) {
-                if (phase.rate > 0 || phase.channels > 0) {
-                    if (phase.rate > 0) rate = phase.rate;
-                    if (phase.channels > 0) channels = phase.channels;
-                    for (auto &instance : instances) instance->configure(rate, channels, options.block);
-                    std::fill(position.begin(), position.end(), 0);  // a new format epoch: compare from its start
+        for (uint32_t cycle = 0; cycle < options.cycles; ++cycle) @autoreleasepool {
+            std::vector<std::unique_ptr<Instance>> instances;
+            for (uint32_t i = 0; i < options.instances; ++i) {
+                if (options.format == "au") {
+                    auto instance = std::make_unique<AUInstance>(options, i);
+                    if (!instance->ok()) return 1;
+                    instances.push_back(std::move(instance));
+                } else {
+                    auto instance = std::make_unique<VST3Instance>(options, i);
+                    if (!instance->ok()) return 1;
+                    instances.push_back(std::move(instance));
                 }
-                if (phase.reidentify)
-                    for (auto &instance : instances) instance->restoreState(reidentified(instance->saveState()));
-                for (auto &instance : instances) instance->setMode(phase.mode == Mode::idle ? Mode::live : phase.mode);
-                const uint64_t blocks = uint64_t(phase.seconds * rate / options.block);
-                int64_t worst = 0;
-                long phaseMismatches = 0;
-                auto next = std::chrono::steady_clock::now();
-                const auto period = std::chrono::duration<double>(options.block / rate);
-                for (uint64_t b = 0; b < blocks; ++b) {
-                    if (phase.mode != Mode::idle) {
-                        for (size_t i = 0; i < instances.size(); ++i) {
-                            // Offline and bypassed audio is still the programme: fill it the same way, but only live
-                            // blocks advance the stream position the receiver sees.
-                            for (uint32_t c = 0; c < channels; ++c)
-                                for (uint32_t f = 0; f < options.block; ++f)
-                                    in[c][f] = signal(uint32_t(i), c, position[i] + f, rate);
-                            const auto before = std::chrono::steady_clock::now();
-                            if (!instances[i]->process(inputs, outputs, channels, options.block, sampleTime)) errors++;
-                            worst = std::max<int64_t>(worst, std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                                 std::chrono::steady_clock::now() - before).count());
-                            for (uint32_t c = 0; c < channels; ++c)
-                                if (std::memcmp(in[c].data(), out[c].data(), options.block * sizeof(float)) != 0) ++phaseMismatches;
-                            if (phase.mode == Mode::live) position[i] += options.block;
-                        }
-                        sampleTime += options.block;
-                    }
-                    next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
-                    std::this_thread::sleep_until(next);
-                }
-                mismatches += phaseMismatches;
-                std::printf("[harness] phase %-12s %.1f s at %.0f Hz, %u ch: output %s input, worst process %.1f µs\n",
-                            phase.label.c_str(), phase.seconds, rate, channels,
-                            phaseMismatches ? "DIFFERS FROM" : "identical to", worst / 1000.0);
-                std::fflush(stdout);
             }
-            done = true;
-        });
+            // Duplicated tracks: new instances given instance 1's saved state while it is live.
+            for (uint32_t i = 0; i < options.copies && !instances.empty(); ++i) {
+                const std::string state = instances[0]->saveState();
+                std::unique_ptr<Instance> copy;
+                if (options.format == "au") copy = std::make_unique<AUInstance>(options, options.instances + i);
+                else copy = std::make_unique<VST3Instance>(options, options.instances + i);
+                copy->restoreState(state);
+                instances.push_back(std::move(copy));
+            }
+            double rate = options.rate;
+            uint32_t channels = options.channels;
+            for (auto &instance : instances)
+                if (!instance->configure(rate, channels, options.block)) { std::fprintf(stderr, "configure failed\n"); return 1; }
+            std::printf("[harness] %s, %u instance(s) \"%s\", %.0f Hz, %u ch, block %u\n", options.format.c_str(),
+                        options.instances, options.name.c_str(), rate, channels, options.block);
+            std::fflush(stdout);
 
-        if (!options.snapshot.empty()) {
-            // Open the first instance's editor in a window, capture it, then close it while audio keeps running.
-            NSView *editor = instances[0]->createEditor();
-            if (editor) {
-                NSWindow *window = [[NSWindow alloc] initWithContentRect:editor.frame styleMask:NSWindowStyleMaskTitled
-                                                                 backing:NSBackingStoreBuffered defer:NO];
-                window.releasedWhenClosed = NO;
-                window.title = @"Auraliscope Bridge (test host)";
-                [window.contentView addSubview:editor];
-                [window makeKeyAndOrderFront:nil];
-                if (options.clickConnect) {
-                    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
-                    NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
-                    collect(editor, buttons, [NSMutableArray array]);
-                    std::printf("[harness] clicking \"%s\"\n", buttons.firstObject.title.UTF8String ?: "?");
+            std::atomic<bool> done{false};
+            std::thread audio([&] {
+                makeRealTime(options.block / rate);
+                std::vector<std::vector<float>> in(2, std::vector<float>(options.block)), out(2, std::vector<float>(options.block));
+                float *inputs[2] = {in[0].data(), in[1].data()}, *outputs[2] = {out[0].data(), out[1].data()};
+                std::vector<uint64_t> position(instances.size(), 0);
+                uint64_t sampleTime = 0;
+                for (const Phase &phase : parsePhases(options.phases)) {
+                    if (phase.rate > 0 || phase.channels > 0) {
+                        if (phase.rate > 0) rate = phase.rate;
+                        if (phase.channels > 0) channels = phase.channels;
+                        for (auto &instance : instances) instance->configure(rate, channels, options.block);
+                        std::fill(position.begin(), position.end(), 0);  // a new format epoch: compare from its start
+                    }
+                    if (phase.reidentify)
+                        for (auto &instance : instances) instance->restoreState(reidentified(instance->saveState()));
+                    for (auto &instance : instances) instance->setMode(phase.mode == Mode::idle ? Mode::live : phase.mode);
+                    const uint64_t blocks = uint64_t(phase.seconds * rate / options.block);
+                    int64_t worst = 0;
+                    long phaseMismatches = 0;
+                    auto next = std::chrono::steady_clock::now();
+                    const auto period = std::chrono::duration<double>(options.block / rate);
+                    for (uint64_t b = 0; b < blocks; ++b) {
+                        if (phase.mode != Mode::idle) {
+                            for (size_t i = 0; i < instances.size(); ++i) {
+                                // Offline and bypassed audio is still the programme: fill it the same way, but only live
+                                // blocks advance the stream position the receiver sees.
+                                for (uint32_t c = 0; c < channels; ++c)
+                                    for (uint32_t f = 0; f < options.block; ++f)
+                                        in[c][f] = signal(uint32_t(i), c, position[i] + f, rate);
+                                const auto before = std::chrono::steady_clock::now();
+                                if (!instances[i]->process(inputs, outputs, channels, options.block, sampleTime)) errors++;
+                                worst = std::max<int64_t>(worst, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                                     std::chrono::steady_clock::now() - before).count());
+                                for (uint32_t c = 0; c < channels; ++c)
+                                    if (std::memcmp(in[c].data(), out[c].data(), options.block * sizeof(float)) != 0) ++phaseMismatches;
+                                if (phase.mode == Mode::live) position[i] += options.block;
+                            }
+                            sampleTime += options.block;
+                        }
+                        next += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+                        std::this_thread::sleep_until(next);
+                    }
+                    mismatches += phaseMismatches;
+                    std::printf("[harness] phase %-12s %.1f s at %.0f Hz, %u ch: output %s input, worst process %.1f µs\n",
+                                phase.label.c_str(), phase.seconds, rate, channels,
+                                phaseMismatches ? "DIFFERS FROM" : "identical to", worst / 1000.0);
                     std::fflush(stdout);
-                    [buttons.firstObject performClick:nil];
                 }
-                [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:options.editorSeconds]];
-                NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
-                NSMutableArray<NSString *> *texts = [NSMutableArray array];
-                collect(editor, buttons, texts);
-                std::printf("[harness] plugin window shows: %s | button \"%s\"\n",
-                            [texts componentsJoinedByString:@" | "].UTF8String, buttons.firstObject.title.UTF8String ?: "");
-                NSBitmapImageRep *image = [editor bitmapImageRepForCachingDisplayInRect:editor.bounds];
-                [editor cacheDisplayInRect:editor.bounds toBitmapImageRep:image];
-                [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
-                    writeToFile:[NSString stringWithUTF8String:options.snapshot.c_str()] atomically:YES];
-                instances[0]->closeEditor();
-                [window close];
-                std::printf("[harness] editor captured to %s and closed; audio continues\n", options.snapshot.c_str());
+                done = true;
+            });
+
+            if (!options.snapshot.empty()) {
+                // Open the first instance's editor in a window, capture it, then close it while audio keeps running.
+                NSView *editor = instances[0]->createEditor();
+                if (editor) {
+                    NSWindow *window = [[NSWindow alloc] initWithContentRect:editor.frame styleMask:NSWindowStyleMaskTitled
+                                                                     backing:NSBackingStoreBuffered defer:NO];
+                    window.releasedWhenClosed = NO;
+                    window.title = @"Auraliscope Bridge (test host)";
+                    [window.contentView addSubview:editor];
+                    [window makeKeyAndOrderFront:nil];
+                    if (options.clickConnect) {
+                        [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
+                        NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
+                        collect(editor, buttons, [NSMutableArray array]);
+                        std::printf("[harness] clicking \"%s\"\n", buttons.firstObject.title.UTF8String ?: "?");
+                        std::fflush(stdout);
+                        [buttons.firstObject performClick:nil];
+                    }
+                    [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:options.editorSeconds]];
+                    NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
+                    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+                    collect(editor, buttons, texts);
+                    std::printf("[harness] plugin window shows: %s | button \"%s\"\n",
+                                [texts componentsJoinedByString:@" | "].UTF8String, buttons.firstObject.title.UTF8String ?: "");
+                    NSBitmapImageRep *image = [editor bitmapImageRepForCachingDisplayInRect:editor.bounds];
+                    [editor cacheDisplayInRect:editor.bounds toBitmapImageRep:image];
+                    [[image representationUsingType:NSBitmapImageFileTypePNG properties:@{}]
+                        writeToFile:[NSString stringWithUTF8String:options.snapshot.c_str()] atomically:YES];
+                    instances[0]->closeEditor();
+                    [window close];
+                    std::printf("[harness] editor captured to %s and closed; audio continues\n", options.snapshot.c_str());
+                    std::fflush(stdout);
+                } else {
+                    std::printf("[harness] no editor\n");
+                }
+            }
+            while (!done) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+            audio.join();
+            instances.clear();
+            if (options.cycles > 1) {
+                std::printf("[harness] cycle %u/%u done, everything unloaded: footprint %.1f MB, %d thread(s), %d open file(s)\n",
+                            cycle + 1, options.cycles, footprintMB(), threadCount(), openFiles());
                 std::fflush(stdout);
-            } else {
-                std::printf("[harness] no editor\n");
             }
         }
-        while (!done) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
-        audio.join();
-        instances.clear();
         const bool pass = mismatches == 0 && errors == 0;
         std::printf("[harness] %s: %ld output mismatch(es), %ld process error(s)\n", pass ? "PASS" : "FAIL",
                     long(mismatches), long(errors));

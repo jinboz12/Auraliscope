@@ -6,14 +6,14 @@ set -euo pipefail
 cd "${0:A:h:h:h}"
 source Bridge/scripts/prototype-version.sh
 dist="$ABR_DIST"
-for bundle in "Auraliscope Labs.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
+for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     [[ -d "$dist/$bundle" ]] || { echo "missing $dist/$bundle: build it first" >&2; exit 1; }
 done
 cp Bridge/README.md Bridge/ARCHITECTURE.md Bridge/PROTOCOL.md Bridge/VALIDATION.md Bridge/THIRD_PARTY_NOTICES.md "$dist/"
 cp Bridge/App/Icon/AuraliscopeLabs-1024.png "$dist/"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-for bundle in "Auraliscope Labs.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
+for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     ditto --norsrc "$dist/$bundle" "$stage/$bundle"
     find "$stage/$bundle" -name '._*' -delete
     codesign --verify --strict "$stage/$bundle"
@@ -27,5 +27,5 @@ for bundle in "Auraliscope Labs.app" "Auraliscope Bridge.vst3" "Auraliscope Brid
     echo "zipped and verified: $bundle"
 done
 find "$dist" -name '._*' -delete
-(cd "$dist" && shasum -a 256 *.zip *.md *.png > SHA256SUMS.txt)
+(cd "$dist" && shasum -a 256 *.pkg(N) *.zip *.md *.png > SHA256SUMS.txt)
 cat "$dist/SHA256SUMS.txt"

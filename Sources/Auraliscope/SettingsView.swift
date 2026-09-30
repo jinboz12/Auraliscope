@@ -471,7 +471,9 @@ struct SettingsView: View {
             .help(L("Start every measurement over: Integrated loudness, Range, peaks and the loudness history"))
             .padding(.horizontal, 2)
             Button { openWindow(id: "about") } label: {
-                Label(L("About Auraliscope"), systemImage: "info.circle")
+                Label(L("About Auraliscope LABS"), systemImage: "info.circle")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
             }
             .glassButton()
@@ -568,28 +570,58 @@ private struct AudioPane: View {
     @ObservedObject private var l10n = Localizer.shared
     @ObservedObject private var draft = SettingsDraft.shared
 
+    /// The two kinds of source: the Mac's own audio devices (inputs, and what apps play to outputs), analysed
+    /// here; or the Auraliscope Bridge inserts in a DAW, which analyse their audio themselves.
+    private enum SourceKind: Hashable { case devices, plugins }
+
     var body: some View {
+        let source = draft.binding(\.source, live: { model.selectedID })
+        let kind = source.wrappedValue.bridge != nil ? SourceKind.plugins : .devices
         SettingsSection(title: L("DEVICE")) {
+            SettingsRow(title: L("Source type")) {
+                Picker(L("Source type"), selection: Binding(get: { kind }, set: { wanted in
+                    guard wanted != kind else { return }
+                    // Back to the kind in use: what is in use. Otherwise the kind's own choice (see the model).
+                    let live = model.selectedID
+                    if wanted == .plugins {
+                        source.wrappedValue = live.bridge != nil ? live : model.preferredPluginSource()
+                    } else {
+                        source.wrappedValue = live.bridge == nil ? live : model.preferredDeviceSource()
+                    }
+                })) {
+                    Text(L("Audio devices")).tag(SourceKind.devices)
+                    Text(L("Host plugins")).tag(SourceKind.plugins)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+            }
+            Divider()
             SettingsRow(title: L("Source")) {
                 HStack(spacing: 6) {
-                    Picker(L("Source"), selection: draft.binding(\.source, live: { model.selectedID })) {
-                        let inputs = model.devices.filter { !$0.output }, outputs = model.devices.filter(\.output)
-                        Section(L("Inputs")) {
-                            Text(L("No input device")).tag(SourceID.none)
-                            ForEach(inputs) { device in
-                                Text(verbatim: "\(device.name) · \(device.channels) ch").tag(device.id)
+                    Picker(L("Source"), selection: source) {
+                        if kind == .devices {
+                            let hardware = model.devices.filter { !$0.isBridge }
+                            let inputs = hardware.filter { !$0.output }, outputs = hardware.filter(\.output)
+                            Section(L("Inputs")) {
+                                Text(L("No input device")).tag(SourceID.none)
+                                ForEach(inputs) { device in
+                                    Text(verbatim: "\(device.name) · \(device.channels) ch").tag(device.id)
+                                }
                             }
-                        }
-                        Section(L("Outputs · what apps play to them")) {
-                            Text(L("No output device")).tag(SourceID.noOutput)
-                            ForEach(outputs) { device in
-                                Text(verbatim: "\(L("%@ (output)", device.name)) · \(device.channels) ch").tag(device.id)
+                            Section(L("Outputs · what apps play to them")) {
+                                Text(L("No output device")).tag(SourceID.noOutput)
+                                ForEach(outputs) { device in
+                                    Text(verbatim: "\(L("%@ (output)", device.name)) · \(device.channels) ch").tag(device.id)
+                                }
                             }
-                        }
-                        let plugins = model.devices.filter(\.isBridge)
-                        let waiting = model.selectedID.bridge != nil && !plugins.contains { $0.id == model.selectedID }
-                        if !plugins.isEmpty || waiting {
+                        } else {
+                            let plugins = model.devices.filter(\.isBridge)
+                            let waiting = model.selectedID.bridge != nil && model.selectedID != .anyPlugin
+                                && !plugins.contains { $0.id == model.selectedID }
                             Section(L("DAW plugins · Auraliscope Bridge")) {
+                                Text(plugins.isEmpty ? L("No DAW plugin connected") : L("Choose a DAW plugin"))
+                                    .tag(SourceID.anyPlugin)
                                 ForEach(plugins) { device in
                                     // Inserts that could be the saved one, while that is ambiguous, are marked.
                                     let candidate = device.bridgeSession.map(model.bridgeCandidates.contains) ?? false
@@ -620,22 +652,26 @@ private struct AudioPane: View {
                     .help(model.status.text)
             }
             if model.silentOutput {
-                Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
+                Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
                       systemImage: "speaker.slash")
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !model.incompatibleBridgePlugins.isEmpty {
-                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project.",
+                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project.",
                         model.incompatibleBridgePlugins.map { $0.hostName }.joined(separator: ", ")),
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
-            SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
-            SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
-                ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported."))
+            if kind == .devices {
+                SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
+                SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
+            } else {
+                SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
+                    ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported."))
+                SettingsNote(L("Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here."))
+            }
         }
         SettingsSection(title: L("PRIVACY")) {
             SettingsRow(title: L("Microphone access")) { PermissionControl() }
@@ -647,7 +683,7 @@ private struct AudioPane: View {
                 }
                 .glassButton()
             }
-            SettingsNote(L("Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
+            SettingsNote(L("Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
         }
         // The pane never shows a state from before a change made in System Settings.
         .onAppear { AudioPermission.shared.refresh() }

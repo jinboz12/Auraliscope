@@ -1,4 +1,33 @@
-# Auraliscope Bridge / Auraliscope Labs 1.3dev build 3: validation report
+# Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
+
+## Build 63 (early test package)
+
+Build 63 is build 3's analysis and protocol, unchanged, with these changes (the rest of this report is build 3's):
+
+- **Source type** in Settings ▸ Audio: *Audio devices* (inputs and outputs, analysed in the app) or *Host plugins*
+  (Bridge inserts; one connected is chosen, several wait for a choice). The last device is remembered.
+- The app is named **Auraliscope LABS** (bundle, menus, window title, wordmark); **Prototype experiment only** at the
+  foot of the main window and the plugin window (plugin window 582 pt tall).
+- The plugin's Open button launches the newest registered copy of LABS, preferring one in an Applications folder.
+  Before, Launch Services picked an old build 3 copy from a dist folder with the same bundle ID; this was found in the
+  leak check below.
+- Plugin bundle and AU versions are 0.63 / 0.63.0, below any official release; the installer
+  (`package-installer.sh`) installs app and plugins system-wide, not relocatable, without downgrading a newer plugin.
+
+| Check (build 63 binaries) | Result |
+|---|---|
+| Transport tests, analysis checks, release core checks (42), localization (340 keys) | all pass |
+| Steinberg validator `-e`; `auval -strict` | **537 passed, 0 failed**; **AU VALIDATION SUCCEEDED** |
+| Test host, 11 app scenarios (`e2e-app.sh`) | 11/11 |
+| REAPER 7.80, both formats (`e2e-reaper.sh`): live, reference, controls, offline render, identity, reopen | all pass |
+| Leaks, plugins: 10 cycles × 4 instances (load, live, bypass, offline, idle, 96 kHz, mono, editor open/close, unload), `leaks --atExit` with malloc stack logging, VST3 and AU | **0 leaks**; after each unload the process holds 89–115 MB (stack logging included), 6–9 threads, 6 open files, with no growth over the 10 cycles; output identical to input |
+| Leaks, app: LABS showing a plugin (launched by its button) for 150 s through bypass and a stereo → mono change | **0 leaks**; footprint 150 MB at 30 s and 149 MB at 140 s |
+| Installer | payload identical to the dist bundles, signatures valid, nothing relocatable; `installer -pkginfo/-dominfo` read it; installing needs an administrator, so the actual installation was not run here |
+
+In the app leak check, "not responding" appeared for 0.14 s: `leaks` suspends the process it inspects, so this is
+expected. Only REAPER was rerun for build 63; the Logic and Cubase results below are build 3's.
+
+## Build 3
 
 Build: Auraliscope Labs 1.3dev build 3 with Auraliscope Bridge 1.3dev build 3 (VST3 and AUv2), protocol version 3,
 analysis schema 1, branch `claude/bridge-plugin-analysis` (from the build 2 prototype `7f7e733`; application baseline
@@ -13,7 +42,7 @@ plugin binaries in `Bridge/Tools/HostHarness`, not a DAW), **DAW runtime** (REAP
 Cubase 15.0.30 driven through their user interface). Timing figures are measurements on this Mac; the guarantees are
 structural and listed separately.
 
-## Summary
+### Summary
 
 | Requirement | Evidence | Result |
 |---|---|---|
@@ -30,7 +59,7 @@ structural and listed separately.
 | CPU and memory measured | `measure-resources.sh` against build 2 | table below |
 | Desktop sources unchanged | release core checks; analysis moved without change | **42/42** |
 
-## Automated
+### Automated
 
 | Check | Result |
 |---|---|
@@ -56,7 +85,7 @@ restoration, saved state holds no live measurement); reactivation (restart break
 after a quick re-selection (never replayed); Labs away for 1.5 s and back (measured on, same generation); 8 more
 inserts in real time; protocol versions 1 and 2 on either side; DNS-SD discovery.
 
-## Test host (real binaries, no DAW)
+### Test host (real binaries, no DAW)
 
 `e2e-probe.sh` (`ResultProbe`, which checks each result against Auraliscope's own analysis of the signal): **12/12**:
 VST3 48 kHz stereo, 44.1 kHz mono, 96 kHz stereo; AU 48 kHz stereo, 48 kHz mono, 192 kHz stereo; three instances of
@@ -73,9 +102,9 @@ quit and relaunched during playback, a duplicated insert (ambiguous until chosen
 controls from Labs (pause holds 3.25 s → 3.25 s; reset starts generation 2), and an insert measuring 5 s before Labs
 was launched (the first results cover it; comparison within 0.002 LU).
 
-## DAW runtime
+### DAW runtime
 
-### Host compatibility matrix (build 3)
+#### Host compatibility matrix (build 3)
 
 | Host (format) | Loads, names | Live results = reference | Controls from Labs | Stop | Offline render | Duplicate / copy | Reopen |
 |---|---|---|---|---|---|---|---|
@@ -86,7 +115,7 @@ was launched (the first results cover it; comparison within 0.002 LU).
 | Ableton Live 12 Lite | not tested: the macOS Local Network prompt for Live (from the build 2 session) is left for you | | | | | | |
 | FL Studio, GarageBand | not tested | | | | | | |
 
-### REAPER 7.80 (private profile, silent device): `e2e-reaper.sh`, all passed
+#### REAPER 7.80 (private profile, silent device): `e2e-reaper.sh`, all passed
 
 For each format: live (play, plugin window open and closed, FX bypass, stop, play, quit: streaming → no audio →
 streaming → held); an offline render traced by `ResultProbe` (reported offline, 0 frames measured while offline,
@@ -94,7 +123,7 @@ render equal to the source within 7.45·10⁻⁸); identity and transport (track
 44.1 kHz and back — a new generation each time —, unload and reload: Labs back on the original; saved project holds
 distinct identities); reopen (Labs finds the original by itself).
 
-### Logic Pro 12.4 (AU), a copy of build 2's test project
+#### Logic Pro 12.4 (AU), a copy of build 2's test project
 
 Logic re-validated and loaded build 3 in `AUHostingServiceXPC_arrow`. Live: exact, with Labs' comparison against its own
 analysis passing on every value; controls acknowledged (pause: nothing accumulated; reset: generation 2). Stop and
@@ -103,7 +132,7 @@ and measured nothing; the bounce differs from the source in the same 285,960 sam
 metronome clicks and start transient; a bounce with the Bridge bypassed differs likewise); every other sample within
 2 LSB. Reopen: Labs found the original insert by itself.
 
-### Cubase 15.0.30 (VST3), a copy of build 2's test project
+#### Cubase 15.0.30 (VST3), a copy of build 2's test project
 
 Live: the insert had measured 16 s before Labs connected (Cubase processes from project load); comparison passes;
 controls acknowledged. The plugin window showed its own measurement (I −7.8 LUFS, true-peak maximum, LRA, time
@@ -114,7 +143,7 @@ as expected). Reopen: Labs restored the original, not "(D)".
 Not rerun on build 3 in Logic and Cubase: bypass and deactivate (the plugin's state machine is unchanged from build 2,
 where they were checked, and is covered by the test host and REAPER).
 
-## Resources
+### Resources
 
 `measure-resources.sh` (real VST3 in the test host, 20 s per case, no receiver: every insert analysing on its own;
 baseline: build 2's plugin, which does not analyse):
@@ -136,7 +165,7 @@ where macOS may use efficiency cores; the same work measured on a performance co
 per insert: the 1 MB capture ring, the pipeline's FFT and history buffers, the result mailbox and output buffer.
 In return, Labs no longer analyses a Bridge source at all.
 
-## Structural guarantees
+### Structural guarantees
 
 - The host's audio thread only copies into the insert's preallocated ring: no allocation, lock, system call, logging,
   Swift or analysis (`BridgeCore::process`).
@@ -148,7 +177,7 @@ In return, Labs no longer analyses a Bridge source at all.
 - A display never receives a result of an earlier subscription, a column twice, or results of two formats in one
   generation.
 
-## Known limitations and unresolved issues
+### Known limitations and unresolved issues
 
 1. **True-peak onset overshoot (finding in the shared analyser, not changed).** When a measurement starts in the middle
    of a waveform (capture started while audio plays, or a Reset while the DAW plays), the release true-peak detector

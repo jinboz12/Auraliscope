@@ -2,7 +2,7 @@
 /* The policy and the glossary live in scripts/check-localization.py, which ./scripts/test.sh runs. */
 
 /* Menu bar and window titles */
-"About Auraliscope" = "About Auraliscope";
+"About Auraliscope LABS" = "About Auraliscope LABS";
 "Settings…" = "Settings…";
 "Settings" = "Settings";
 "Toggle Full Screen" = "Toggle Full Screen";
@@ -115,9 +115,9 @@
 "Needed to meter any input. After changing it in System Settings, click the arrow to check again." = "Needed to meter any input. After changing it in System Settings, click the arrow to check again.";
 "System audio recording" = "System audio recording";
 "Open System Settings" = "Open System Settings";
-"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
+"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
 "No sound from this output" = "No sound from this output";
-"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again.";
 "Allowed" = "Allowed";
 "Not requested" = "Not requested";
 "Denied" = "Denied";
@@ -323,10 +323,10 @@
 "Changes are not applied yet." = "Changes are not applied yet.";
 "Apply the source and format first, then route their channels." = "Apply the source and format first, then route their channels.";
 "Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation." = "Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation.";
-"Hide Auraliscope" = "Hide Auraliscope";
+"Hide Auraliscope LABS" = "Hide Auraliscope LABS";
 "Hide Others" = "Hide Others";
 "Show All" = "Show All";
-"Quit Auraliscope" = "Quit Auraliscope";
+"Quit Auraliscope LABS" = "Quit Auraliscope LABS";
 "Services" = "Services";
 "Edit" = "Edit";
 "Undo" = "Undo";
@@ -367,9 +367,16 @@
 "%@ (choose one of the ◆ inserts)" = "%@ (choose one of the ◆ inserts)";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button";
 "%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects";
-"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project.";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project." = "An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project.";
 "Interrupted %d×" = "Interrupted %d×";
 "Interrupted %d× · %@ s missing" = "Interrupted %d× · %@ s missing";
 "The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch.";
 "copy of #%@" = "copy of #%@";
 "track %@" = "track %@";
+"Source type" = "Source type";
+"Audio devices" = "Audio devices";
+"Host plugins" = "Host plugins";
+"No DAW plugin connected" = "No DAW plugin connected";
+"Choose a DAW plugin" = "Choose a DAW plugin";
+"Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window";
+"Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here.";

@@ -7,7 +7,7 @@
 set -uo pipefail
 cd "${0:A:h:h:h}"
 source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope Labs.app/Contents/MacOS/Auraliscope"
+app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
 if [[ " $* " == *" --restore "* ]]; then
     exec "$app" --diagnostic "$@" -showWelcomeOnLaunch NO
 fi

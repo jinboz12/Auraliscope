@@ -33,7 +33,7 @@ struct AuraliscopeApp: App {
     init() { Diagnostics.runIfRequested() }
 
     var body: some Scene {
-        Window("Auraliscope", id: "meter") {
+        Window(AppName.full, id: "meter") {
             MeterView(model: model)
                 .modifier(ThemeIdentity())
                 .frame(minWidth: 1000, minHeight: 628)
@@ -73,7 +73,7 @@ struct AuraliscopeApp: App {
         }
         .defaultSize(width: 780, height: 560)
         .windowResizability(.contentMinSize)
-        Window(L("About Auraliscope"), id: "about") {
+        Window(L("About Auraliscope LABS"), id: "about") {
             AboutView()
                 .modifier(ThemeIdentity())
         }
@@ -81,7 +81,7 @@ struct AuraliscopeApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {
-                Button(L("About Auraliscope")) { model.showAbout = true }
+                Button(L("About Auraliscope LABS")) { model.showAbout = true }
             }
             CommandGroup(replacing: .appSettings) {
                 Button(L("Settings…")) { model.openSettings() }
@@ -1167,7 +1167,7 @@ private struct StatusBar: View {
                 Label(L("No sound from this output"), systemImage: "speaker.slash")
                     .lineLimit(1)
                     .foregroundStyle(Theme.ochre)
-                    .help(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
+                    .help(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
             }
             Spacer(minLength: 8)
             if breaks > 0 {
@@ -1182,6 +1182,11 @@ private struct StatusBar: View {
                 Label(L("Dropped %d", Int(droppedFrames)), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.ochre)
             }
+            Text(verbatim: AppName.prototypeNote)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Theme.ochre)
+                .lineLimit(1)
+                .fixedSize()
             Text("ITU-R BS.1770-5 · EBU R128 · 60 Hz")
         }
         .font(.system(size: 10))

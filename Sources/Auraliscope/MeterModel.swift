@@ -236,6 +236,7 @@ enum MeterStatus: Equatable {
             case .disconnectedHeld:
                 return L("%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects", name)
             case .connecting: return L("Waiting for the DAW plugin to connect…")
+            case .unchosen: return L("Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window")
             case let .ambiguous(count):
                 return L("%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button", name, count)
             }
@@ -266,8 +267,10 @@ enum BridgeCondition: Equatable {
     case stale
     /// Disconnected while its analysis waits: the same live insert coming back continues it (with a break).
     case disconnectedHeld
-    /// Launched by a plugin, before it has connected.
+    /// Launched by a plugin, before it has connected; or Host plugins chosen with none connected.
     case connecting
+    /// Host plugins chosen, inserts connected, none chosen yet.
+    case unchosen
     /// Several connected inserts claim the saved one and nothing tells them apart: nothing is analysed until the
     /// person chooses.
     case ambiguous(Int)
@@ -546,6 +549,9 @@ final class MeterModel: ObservableObject {
         } else if launchedByBridge {
             // A plugin's button launched the app: it connects and asks to be shown within a moment.
             selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix)
+        } else if savedUID == bridgeUIDPrefix {
+            // Host plugins chosen as the source type, no insert chosen: wait for the person to choose one.
+            selectedID = .anyPlugin
         } else if let savedUID, savedUID.hasPrefix(bridgeUIDPrefix) {
             // A DAW plugin chosen last time: wait for that insert to connect rather than fall back to a device.
             let persistent = String(savedUID.dropFirst(bridgeUIDPrefix.count))
@@ -797,12 +803,21 @@ final class MeterModel: ObservableObject {
             if id.isNone { status = .noSelection }
             return
         }
-        guard id.isNone || devices.contains(where: { $0.id == id }) else { return }
+        guard id.isNone || id == .anyPlugin || devices.contains(where: { $0.id == id }) else { return }
         selectedID = id
+        if id == .anyPlugin {
+            UserDefaults.standard.set(bridgeUIDPrefix, forKey: "inputDeviceUID")
+            UserDefaults.standard.set(false, forKey: "inputDeviceIsOutput")
+        }
         if let device = devices.first(where: { $0.id == id }), !device.uid.isEmpty {
             UserDefaults.standard.set(device.uid, forKey: "inputDeviceUID")
             UserDefaults.standard.set(device.output, forKey: "inputDeviceIsOutput")
-            if device.isBridge { UserDefaults.standard.set(device.name, forKey: Self.bridgeNameKey) }
+            if device.isBridge {
+                UserDefaults.standard.set(device.name, forKey: Self.bridgeNameKey)
+            } else {
+                UserDefaults.standard.set(device.uid, forKey: Self.lastDeviceKey)
+                UserDefaults.standard.set(device.output, forKey: Self.lastDeviceOutputKey)
+            }
         }
         // The person's choice: remembered with its context, and final (no longer provisional or ambiguous).
         bridgeProvisionalUntil = nil
@@ -810,11 +825,41 @@ final class MeterModel: ObservableObject {
         bridgeCandidates = []
         if let session = id.bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) {
             remember(source)
-        } else if id.bridge == nil {
+        } else if id.bridge == nil || id == .anyPlugin {
             bridgeSaved = nil
         }
         loadAssignment()
         if wantsCapture { requestPermissionAndStart() }
+    }
+
+    private static let lastDeviceKey = "lastAudioDeviceUID"
+    private static let lastDeviceOutputKey = "lastAudioDeviceIsOutput"
+
+    /// Settings' source type switched to Audio devices: the device last chosen there, else what launch would take
+    /// (the macOS default output, else the default input), else the first one.
+    func preferredDeviceSource() -> SourceID {
+        let hardware = devices.filter { !$0.isBridge }
+        let lastUID = UserDefaults.standard.string(forKey: Self.lastDeviceKey)
+        let lastOutput = UserDefaults.standard.bool(forKey: Self.lastDeviceOutputKey)
+        if let last = hardware.first(where: { !$0.uid.isEmpty && $0.uid == lastUID && $0.output == lastOutput }) { return last.id }
+        let outputID = AudioDevices.defaultDeviceID(output: true), inputID = AudioDevices.defaultDeviceID(output: false)
+        let choice = hardware.first { $0.output && $0.device == outputID }
+            ?? hardware.first { !$0.output && $0.device == inputID } ?? hardware.first
+        return choice?.id ?? .noOutput
+    }
+
+    /// Settings' source type switched to Host plugins: the only connected insert, else none until the person
+    /// chooses one (several are never chosen between by chance).
+    func preferredPluginSource() -> SourceID {
+        let plugins = devices.filter { device in
+            device.isBridge && bridgeSources.contains { $0.sessionKey == device.bridgeSession && $0.compatible }
+        }
+        return plugins.count == 1 ? plugins[0].id : .anyPlugin
+    }
+
+    /// The status of Host plugins with no insert chosen: waiting for one to connect, or for the person to choose.
+    private var unchosenPluginCondition: BridgeCondition {
+        bridgeSources.contains(where: \.compatible) ? .unchosen : .connecting
     }
 
     func assign(role: Int, source: Int32) {
@@ -1032,7 +1077,7 @@ final class MeterModel: ObservableObject {
             clearMeasurements()
             if selectedID.bridge != nil {
                 // A DAW plugin that is not connected (yet): `pollBridge` starts it when it appears.
-                status = .bridge(name: waitingBridgeName, condition: waitingForLaunch ? .connecting : .disconnected,
+                status = .bridge(name: waitingBridgeName, condition: waitingForLaunch ? unchosenPluginCondition : .disconnected,
                              channels: 0, layout: speakerLayout.name)
                 return
             }
@@ -1314,7 +1359,7 @@ final class MeterModel: ObservableObject {
     /// the saved one has yet to appear, or several could be it. See `BridgeRestoration` for the rules.
     private func findSaved() {
         let waiting = MeterStatus.bridge(name: waitingBridgeName,
-                                         condition: waitingForLaunch ? .connecting : attachedBridge != nil ? .disconnectedHeld : .disconnected,
+                                         condition: waitingForLaunch ? unchosenPluginCondition : attachedBridge != nil ? .disconnectedHeld : .disconnected,
                                          channels: 0, layout: speakerLayout.name)
         // Launched by a plugin's button: its request selects the insert; the saved one is not restored meanwhile.
         guard !waitingForLaunch, let saved = bridgeSaved else {

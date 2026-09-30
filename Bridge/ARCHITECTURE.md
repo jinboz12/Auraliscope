@@ -1,7 +1,7 @@
 # Auraliscope Bridge 1.3dev build 3: architecture note
 
 Plugin-side analysis with result-only delivery. The DAW hosts the Bridge (VST3 or AUv2) on a track, bus or master;
-**the Bridge analyses its own audio**; Auraliscope Labs shows the results. Labs still analyses physical inputs and
+**the Bridge analyses its own audio**; Auraliscope LABS shows the results. Labs still analyses physical inputs and
 system audio itself, with the same code.
 
 ```
@@ -12,7 +12,7 @@ analysis thread (one per plugin binary) ─► StreamAnalyzer = MeterPipeline (s
                                                  │  newest RESULT in a one-slot mailbox; ordered columns queued
 sender thread (one per plugin binary) ─► Unix socket (protocol 3: HELLO, STATUS, RESULT, ACK) ◄─ SUBSCRIBE, COMMAND
                                                  │
-Auraliscope Labs: receiver thread ─► ResultInbox (decode) ─► ResultAssembler ─► 60 Hz ResultWorker
+Auraliscope LABS: receiver thread ─► ResultInbox (decode) ─► ResultAssembler ─► 60 Hz ResultWorker
                                                  ─► the same snapshot triple buffer ─► every canvas and readout, unchanged
 ```
 

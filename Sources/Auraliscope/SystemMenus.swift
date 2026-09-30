@@ -10,10 +10,10 @@ import AppKit
 enum SystemMenus {
     /// AppKit's items by the action they send, with their title's table key.
     private static let actions: [(Selector, String)] = [
-        (#selector(NSApplication.hide(_:)), LKey("Hide Auraliscope")),
+        (#selector(NSApplication.hide(_:)), LKey("Hide Auraliscope LABS")),
         (#selector(NSApplication.hideOtherApplications(_:)), LKey("Hide Others")),
         (#selector(NSApplication.unhideAllApplications(_:)), LKey("Show All")),
-        (#selector(NSApplication.terminate(_:)), LKey("Quit Auraliscope")),
+        (#selector(NSApplication.terminate(_:)), LKey("Quit Auraliscope LABS")),
         (Selector(("undo:")), LKey("Undo")),
         (Selector(("redo:")), LKey("Redo")),
         (#selector(NSText.cut(_:)), LKey("Cut")),

@@ -2,7 +2,7 @@
 /* The policy and the glossary live in scripts/check-localization.py, which ./scripts/test.sh runs. */
 
 /* Menu bar and window titles */
-"About Auraliscope" = "Auraliscope에 관하여";
+"About Auraliscope LABS" = "Auraliscope LABS에 관하여";
 "Settings…" = "설정…";
 "Settings" = "설정";
 "Toggle Full Screen" = "전체 화면 전환";
@@ -115,9 +115,9 @@
 "Needed to meter any input. After changing it in System Settings, click the arrow to check again." = "입력을 측정하려면 필요합니다. 시스템 설정에서 변경한 후 화살표를 클릭해 다시 확인하십시오.";
 "System audio recording" = "시스템 오디오 녹음";
 "Open System Settings" = "시스템 설정 열기";
-"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "출력을 측정할 때 필요합니다. 출력 캡처가 시작되면 macOS가 묻습니다. 미터가 계속 조용하면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope를 허용한 다음 출력을 다시 선택하십시오.";
+"Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "출력을 측정할 때 필요합니다. 출력 캡처가 시작되면 macOS가 묻습니다. 미터가 계속 조용하면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope LABS를 허용한 다음 출력을 다시 선택하십시오.";
 "No sound from this output" = "이 출력에서 소리가 없습니다";
-"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "지금까지 디지털 무음만 들어왔습니다. 앱이 이 출력으로 재생 중이라면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope를 허용한 다음 출력을 다시 선택하십시오.";
+"Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again." = "지금까지 디지털 무음만 들어왔습니다. 앱이 이 출력으로 재생 중이라면 개인정보 보호 및 보안 → 화면 및 시스템 오디오 녹음에서 Auraliscope LABS를 허용한 다음 출력을 다시 선택하십시오.";
 "Allowed" = "허용됨";
 "Not requested" = "요청 전";
 "Denied" = "거부됨";
@@ -323,10 +323,10 @@
 "Changes are not applied yet." = "변경 사항이 아직 적용되지 않았습니다.";
 "Apply the source and format first, then route their channels." = "먼저 소스와 포맷을 적용한 다음 채널을 라우팅하세요.";
 "Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation." = "메뉴 막대를 포함한 언어가 즉시 미리보기로 바뀌며 측정은 계속됩니다. 적용하면 변경 사항이 저장되고, 되돌리면 이전 언어로 돌아갑니다. 단위, 채널 레이블과 표준은 콘솔 및 DAW 표기를 유지합니다.";
-"Hide Auraliscope" = "Auraliscope 가리기";
+"Hide Auraliscope LABS" = "Auraliscope LABS 가리기";
 "Hide Others" = "기타 가리기";
 "Show All" = "모두 보기";
-"Quit Auraliscope" = "Auraliscope 종료";
+"Quit Auraliscope LABS" = "Auraliscope LABS 종료";
 "Services" = "서비스";
 "Edit" = "편집";
 "Undo" = "실행 취소";
@@ -367,9 +367,16 @@
 "%@ (choose one of the ◆ inserts)" = "%@ (◆ 표시된 인서트 중 하나를 선택하세요)";
 "%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button" = "%@ · 연결된 인서트 %d개가 저장된 인서트일 수 있음 · 설정에서 선택하거나 해당 플러그인 창의 버튼을 누르세요";
 "%@ · DAW plugin disconnected · measurement held in case this plugin instance reconnects" = "%@ · DAW 플러그인 연결 끊김 · 이 플러그인 인스턴스가 다시 연결되면 이어서 측정하도록 유지";
-"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope Labs, then reopen the project." = "다른 버전의 Auraliscope Bridge가 연결되어 있습니다(%@). 이 Auraliscope Labs와 함께 제공되는 Bridge를 설치한 다음 프로젝트를 다시 여세요.";
+"An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project." = "다른 버전의 Auraliscope Bridge가 연결되어 있습니다(%@). 이 Auraliscope LABS와 함께 제공되는 Bridge를 설치한 다음 프로젝트를 다시 여세요.";
 "Interrupted %d×" = "%d회 중단";
 "Interrupted %d× · %@ s missing" = "%d회 중단 · %@ s 누락";
 "The analysed audio broke off and resumed. Integrated loudness, loudness range and the held peaks span the breaks; momentary, short-term, the spectrum and every filter started again after each one. Reset to measure one continuous stretch." = "분석 중인 오디오가 끊겼다가 다시 이어졌습니다. 통합 라우드니스, 라우드니스 범위와 피크 홀드는 중단 구간에 걸쳐 이어지고, 순간·단기 값과 스펙트럼, 모든 필터는 중단될 때마다 다시 시작됩니다. 한 구간을 연속으로 측정하려면 측정을 재설정하세요.";
 "copy of #%@" = "#%@의 사본";
 "track %@" = "트랙 %@";
+"Source type" = "소스 유형";
+"Audio devices" = "오디오 장치";
+"Host plugins" = "호스트 플러그인";
+"No DAW plugin connected" = "연결된 DAW 플러그인 없음";
+"Choose a DAW plugin" = "DAW 플러그인 선택";
+"Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "호스트 플러그인 · 설정 → 오디오에서 인서트를 선택하거나 플러그인 창의 버튼을 클릭하세요";
+"Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "각 인서트는 DAW 안에서 자체 오디오를 측정하고, Auraliscope LABS는 그 결과를 표시합니다. 플러그인 창의 버튼으로도 여기에서 해당 인서트를 선택할 수 있습니다.";
