@@ -21,3 +21,6 @@ SoundmeterIcon/soundmeter Exports/*
 # DAW Bridge prototype: fetched SDKs and prototype outputs
 Bridge/ThirdParty/
 experimental-dist/
+
+# macOS metadata files written on external volumes
+._*
