@@ -23,6 +23,16 @@ cp Bridge/App/Info.plist "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 cp Bridge/App/AuraliscopeLabs.icns "$app/Contents/Resources/AuraliscopeLabs.icns"
 cp -R Resources/Localization/*.lproj "$app/Contents/Resources/"
+# The release's InfoPlist.strings name the app "Auraliscope" in every language, and Finder, the Dock and the privacy
+# prompts show that localized name over Info.plist's. In LABS each one names Auraliscope LABS (the release's own
+# files stay as they are).
+for strings in "$app"/Contents/Resources/*.lproj/InfoPlist.strings; do
+    sed -i '' -e 's/Auraliscope/Auraliscope LABS/g' "$strings"
+    printf '"CFBundleName" = "Auraliscope LABS";\n' >> "$strings"
+    plutil -lint "$strings" >/dev/null
+    grep -q '^"CFBundleDisplayName" = "Auraliscope LABS";$' "$strings" \
+        || { echo "error: $strings does not name Auraliscope LABS" >&2; exit 1; }
+done
 cp docs/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$binary_directory/Auraliscope" "$app/Contents/MacOS/Auraliscope"
 find "$app" -name '._*' -delete

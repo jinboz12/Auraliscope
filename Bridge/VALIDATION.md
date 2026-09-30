@@ -1,5 +1,16 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+## Build 65
+
+- **App name fix.** Build 64 installed as `/Applications/Auraliscope LABS.app`, but Finder, the Dock and the privacy
+  prompts showed "Auraliscope". The release's localized `InfoPlist.strings` (en, zh-Hans, ko) set
+  `CFBundleDisplayName` to "Auraliscope", and the localized name wins over `Info.plist`. `build-labs-app.sh` now
+  rewrites each copy in the LABS bundle to "Auraliscope LABS" (name, display name and privacy descriptions), and
+  fails if one does not. The release's files are unchanged. The privacy descriptions in `Bridge/App/Info.plist` say
+  Auraliscope LABS too.
+- Checked: the display name resolved per localization, as Finder does, is "Auraliscope LABS" in en, zh-Hans and ko
+  (installed build 64: "Auraliscope" in all three). Plugins 0.65; plugin code unchanged.
+
 ## Build 64
 
 - **Installer fix.** Build 63's package installed every bundle as `drwx------ root wheel`, so the app could not be
