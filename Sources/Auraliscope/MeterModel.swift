@@ -276,7 +276,7 @@ enum BridgeCondition: Equatable {
     static let staleAudio = 0.5
     /// A connection silent for this long (no status either) reads as "not responding".
     static let staleMessages = 2.0
-    /// Results older than this, while audio is flowing and results are subscribed, read as "results delayed".
+    /// The plugin has measured this much more than the newest result shown here: "results delayed".
     static let staleResults = 1.0
 
     init(_ source: BridgeSource) {
@@ -288,10 +288,8 @@ enum BridgeCondition: Equatable {
         case .live:
             if !source.hasUsableFormat { self = .unsupported }
             else if source.measurementPaused { self = .measurementPaused }
-            else if let age = source.secondsSinceAudio, age < Self.staleAudio {
-                let delayed = source.delivering && (source.secondsSinceResult ?? .infinity) > Self.staleResults
-                self = delayed ? .stale : .streaming
-            } else { self = .noAudio }
+            else if let age = source.secondsSinceAudio, age < Self.staleAudio { self = .streaming }
+            else { self = .noAudio }
         }
     }
 }
@@ -513,8 +511,6 @@ final class MeterModel: ObservableObject {
     private var focusHandled: [String: UInt32] = [:]
     /// Breaks of the bound insert already written to the diagnostic log (session, count).
     private var breaksLogged: (session: String, count: UInt64)?
-    /// When the ring was attached: the first audio needs a moment to arrive before "no audio" is shown.
-    private var bridgeAttachedAt = Date.distantPast
     private static let bridgeNameKey = "bridgeSourceName"
 
     deinit {
@@ -1158,12 +1154,17 @@ final class MeterModel: ObservableObject {
         focusHandled = focusHandled.filter { live.contains($0.key) }
     }
 
-    /// The condition for the status line; just after attaching, a live source counts as streaming until its first
-    /// audio has had time to arrive.
+    /// The condition for the status line. The plugin reports how long ago its host last gave it audio, whatever
+    /// Labs is showing, so no grace period is needed after attaching: "streaming" means audio is being measured.
     private func shownCondition(_ source: BridgeSource) -> BridgeCondition {
         let condition = BridgeCondition(source)
-        let settling = Date().timeIntervalSince(bridgeAttachedAt) < BridgeCondition.staleAudio
-        return condition == .noAudio && settling && source.secondsSinceAudio == nil ? .streaming : condition
+        // Delayed: the plugin reports audio measured that no result shown here covers (its STATUS runs ahead of the
+        // results). A pause in the results while the host was stopped is not a delay.
+        if condition == .streaming, let result = resultInbox?.latest, result.generation == source.generation,
+           Double(source.framesAnalysed) - Double(result.framesAnalysed) > BridgeCondition.staleResults * max(1, source.sampleRate) {
+            return .stale
+        }
+        return condition
     }
 
     /// Starts analysis of a DAW plugin instance: a new pipeline at the plugin's own sample rate, then the
@@ -1196,7 +1197,6 @@ final class MeterModel: ObservableObject {
         resultInbox = inbox
         bridge.attach(inbox)
         attachedBridge = (source.sessionKey, source.formatEpoch, source.channels)
-        bridgeAttachedAt = Date()
         bridgeLostBase = source.framesDroppedByPlugin
         sampleRate = source.sampleRate
         captureChannels = source.channels

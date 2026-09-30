@@ -407,6 +407,8 @@ void BridgeCore::runCommands() {
             if (analyzer_) {
                 abr_analyzer_set_measuring(analyzer_, pause ? 0 : 1);
                 measurement_.store(pause ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
+            } else {
+                outcome = ABR_ACK_NO_ANALYSIS;  // nothing measured yet; the request applies once audio arrives
             }
         } else if (c.code == ABR_COMMAND_RESET) {
             if (!analyzer_) {

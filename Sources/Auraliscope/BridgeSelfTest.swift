@@ -389,7 +389,9 @@ enum BridgeSelfTest {
                 let role = c == 0 ? Role.left : Role.right
                 check("peak ch\(c + 1) dBFS", db(result.peak[c]), db(values[SnapshotSlots.peaks + role]), 0.05)
                 check("RMS ch\(c + 1) dBFS", db(result.rms[c]), db(values[SnapshotSlots.rms + role]), 0.05)
-                check("held true peak ch\(c + 1) dBTP", db(result.heldTruePeak[c]), db(values[SnapshotSlots.heldTruePeaks + role]), 0.05)
+                // The current window's true peak: the held maximum also holds the shared detector's onset overshoot
+                // of a measurement started mid-waveform (after a reset while playing), which the reference lacks.
+                check("true peak ch\(c + 1) dBTP", db(result.truePeak[c]), db(values[SnapshotSlots.truePeaks + role]), 0.05)
             }
             check("momentary LUFS", Double(result.momentary), Double(values[SnapshotSlots.momentary]), 0.05)
             check("short-term LUFS", Double(result.shortTerm), Double(values[SnapshotSlots.shortTerm]), 0.05)

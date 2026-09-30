@@ -127,19 +127,22 @@ your REAPER settings and speakers are untouched.
 
 ### Checks in other DAWs
 
-REAPER is scripted (`e2e-reaper.sh`). Logic Pro (AU) and Cubase 15 (VST3) were checked by hand on build 2; the steps
+REAPER is scripted (`e2e-reaper.sh`). Logic Pro (AU) and Cubase 15 (VST3) were checked through their interfaces on
+build 3 (`labs-selftest.sh` runs Labs' self-test for such checks); the steps
 and results are in [VALIDATION.md](VALIDATION.md), with the host compatibility matrix. To repeat them, or to check
 Ableton Live or FL Studio:
 
 1. Use a new, disposable project. Import `bridge-test-48k.aiff` (make one with
    `python3 Bridge/Tools/make-test-wav.py out.wav 48000 120`, then `afconvert -f AIFF -d BEI24@48000 out.wav
    bridge-test-48k.aiff`): L 997 Hz at −6.02 dBFS, R 1499 Hz at −12.04 dBFS.
-2. Insert **Auraliscope Bridge** on that track and run
-   `"experimental-dist/Auraliscope Labs 1.3dev build 3/Auraliscope Labs.app/Contents/MacOS/Auraliscope" --diagnostic
-   --bridge-selftest bridge-test-48k --expect-peak-db -6.02,-12.04 --watch 40 --log-sources` while playing: it
-   measures, then prints every state the insert goes through (stop, bypass, deactivate) and the plugin list.
+2. Insert **Auraliscope Bridge** on that track and, while playing, run
+   `Bridge/scripts/labs-selftest.sh --bridge-selftest bridge-test-48k --expect-peak-db -6.02,-12.04 --compare-reference
+   --then-controls`: it checks the plugin's results against Labs' own analysis of the signal and drives Pause, Resume,
+   Reset true peak and Reset. With `--no-measure --watch 20 --log-sources` instead it prints every state the insert
+   goes through (stop, bypass, deactivate).
 3. Bounce or export offline while `.build/bridge/tools/ResultProbe --seconds 30 --trace` runs (Labs closed): the
    insert must report offline with nothing analysed while it is (`frames analysed while offline: 0`), and `python3 Bridge/Tools/check-render.py <file.wav>` must pass (turn off
    normalization and anything on the master bus).
 4. Duplicate the track while step 2 watches: the copy is listed as "copy of #…", and Labs stays on the original.
-5. Save, quit the DAW, reopen, and run step 2 with `--restore` instead of the track name: Labs must find the original.
+5. Save, quit the DAW, reopen, and run `labs-selftest.sh --bridge-selftest --restore --expect-peak-db -6.02,-12.04`:
+   Labs must find the original by itself.

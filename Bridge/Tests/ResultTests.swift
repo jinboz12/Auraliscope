@@ -29,6 +29,7 @@ enum ResultChecks {
         codec()
         assembly()
         lifecycle()
+        midStreamStart()
         return failures
     }
 
@@ -241,6 +242,35 @@ enum ResultChecks {
         mono.publish()
         check(mono.values[SnapshotSlots.peaks] == 0 && mono.values[SnapshotSlots.integrated] == -10,
               "going quiet silences the instantaneous readings and keeps integrated loudness")
+    }
+
+    /// True peak of a stream that starts in the middle of a waveform (a reset, a capture started while playing):
+    /// the plugin and the desktop pipeline must agree, whatever the interpolator does at the first sample.
+    private static func midStreamStart() {
+        print("Stream starting mid-waveform")
+        for start in [0, 12_345, 777] {
+            guard let bridge = StreamAnalyzer(sampleRate: 48_000, channels: 2, generation: 1, formatEpoch: 1),
+                  let desktop = MeterPipeline(sampleRate: 48_000, activeRoles: (0..<Role.count).map { $0 < 2 },
+                                              detector: FormatDetector(), streamID: 1) else { return check(false, "analysers") }
+            let audio = interleaved(channels: 2, start: start, count: 48_000 * 2, rate: 48_000)
+            audio.withUnsafeBufferPointer { bridge.consume($0.baseAddress!, frames: 96_000, position: 0, now: 0) }
+            var values = [Float](repeating: 0, count: SnapshotSlots.total)
+            var position = 0
+            for tick in 0..<120 {
+                audio.withUnsafeBufferPointer {
+                    desktop.consume(interleaved: $0.baseAddress! + position * 2, channels: 2, frames: 800, roles: [0, 1])
+                }
+                position += 800
+                values.withUnsafeMutableBufferPointer { desktop.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+            }
+            let b = bridge.snapshot
+            func db(_ v: Float) -> Double { 20 * log10(Double(v)) }
+            print(String(format: "  info start %6d: held true peak L %.3f R %.3f dBTP (sample peaks -6.021, -12.041)",
+                         start, db(b[SnapshotSlots.heldTruePeaks]), db(b[SnapshotSlots.heldTruePeaks + 1])))
+            check(b[SnapshotSlots.heldTruePeaks] == values[SnapshotSlots.heldTruePeaks]
+                      && b[SnapshotSlots.heldTruePeaks + 1] == values[SnapshotSlots.heldTruePeaks + 1],
+                  "start at sample \(start): plugin and desktop hold the same true peak")
+        }
     }
 
     /// Measurement pause, breaks and idle ticks in the plugin's analyser.
