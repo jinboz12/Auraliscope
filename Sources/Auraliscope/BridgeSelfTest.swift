@@ -240,6 +240,7 @@ enum BridgeSelfTest {
         func awaitHold() {
             let session = model.selectedID.bridge, generation = model.captureGeneration
             let heldResult = model.latestBridgeResult
+            let serial = model.bridgeSources.first { $0.sessionKey == session }?.connectionSerial
             var held = false
             if dropConnection {
                 say("breaking the connection")
@@ -250,26 +251,32 @@ enum BridgeSelfTest {
                 if self.condition == .disconnectedHeld && !held {
                     held = true
                     say("held: \(self.model.status.text)")
-                    if !self.model.running { self.fail("the held analysis stopped") }
+                    if !self.model.running { self.fail("the held display stopped") }
                 }
-                return held && self.condition == .streaming
+                let reconnected = self.model.bridgeSources.first { $0.sessionKey == session }.map { $0.connectionSerial != serial } ?? false
+                return reconnected && (held || !self.dropConnection) && self.condition == .streaming
             }) {
-                guard held else { return self.finish("the held state never showed: \(self.model.status.text)") }
+                guard self.condition == .streaming else { return self.finish("never returned: \(self.model.status.text)") }
+                if self.dropConnection && !held { self.fail("the held state never showed") }
                 if self.model.selectedID.bridge != session { self.fail("returned under another session") }
                 if self.model.captureGeneration != generation { self.fail("the display restarted instead of carrying on") }
-                // The plugin went on measuring while Labs was away: the same generation, and more audio analysed.
-                if let before = heldResult, let after = self.model.latestBridgeResult {
-                    say(String(format: "plugin analysis across the gap: generation %u → %u, analysed %.1f s → %.1f s",
-                               before.generation, after.generation, Double(before.framesAnalysed) / before.sampleRate,
-                               Double(after.framesAnalysed) / after.sampleRate))
-                    if after.generation != before.generation { self.fail("the plugin's measurement restarted") }
-                    if after.framesAnalysed <= before.framesAnalysed { self.fail("the plugin did not measure while disconnected") }
+                // The plugin went on measuring while the connection was away: the same generation, more analysed.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if let before = heldResult, let after = self.model.latestBridgeResult {
+                        say(String(format: "plugin measurement across the reconnection: generation %u → %u, analysed %.1f s → %.1f s",
+                                   before.generation, after.generation, Double(before.framesAnalysed) / before.sampleRate,
+                                   Double(after.framesAnalysed) / after.sampleRate))
+                        if after.generation != before.generation { self.fail("the plugin's measurement restarted") }
+                        if after.framesAnalysed <= before.framesAnalysed { self.fail("the plugin's measurement did not carry on") }
+                    } else {
+                        self.fail("no results to compare across the reconnection")
+                    }
+                    say("returned under the same session\(held ? " after being held" : ""), measurement carried on: \(self.model.status.text)")
+                    self.measureWhenStreaming(then: {
+                        self.checkContinuity()
+                        self.finish(nil)
+                    })
                 }
-                say("returned under the same session after being held, measurement carried on: \(self.model.status.text)")
-                self.measureWhenStreaming(then: {
-                    self.checkContinuity()
-                    self.finish(nil)
-                })
             }
         }
 

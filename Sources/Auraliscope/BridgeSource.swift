@@ -66,6 +66,8 @@ struct BridgeSource: Equatable {
     let capabilities: UInt32
     /// Grows each time the user clicks "Show in Auraliscope Labs" in this instance's window.
     let focusRequests: UInt32
+    /// Unique per accepted connection: changes when the same live insert reconnects.
+    let connectionSerial: UInt32
 
     var sessionKey: String { Self.hex(session) }
     var persistentKey: String { Self.hex(persistent) }
@@ -165,6 +167,7 @@ struct BridgeSource: Equatable {
                             generation: info.last_ack_generation, measurement: info.last_ack_measurement)
         capabilities = info.capabilities
         focusRequests = info.focus_requests
+        connectionSerial = info.connection_serial
     }
 
     private static func string<T>(_ tuple: T) -> String {

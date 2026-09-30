@@ -1,6 +1,7 @@
 #!/bin/zsh
-# Real plugin binaries → transport → Auraliscope Labs's analysis pipeline, checked by the app's own
-# --bridge-selftest against the known signal. Needs a logged-in GUI session; no microphone or system-audio
+# Real plugin binaries → plugin-side analysis → results → Auraliscope Labs's displays, checked by the app's own
+# --bridge-selftest against the known signal (and, with --compare-reference, against Labs' own analysis of it).
+# Every measurement also checks that Labs shows the plugin's results and analyses nothing itself. Needs a logged-in GUI session; no microphone or system-audio
 # permission (the app is pointed at a DAW source from launch). Logs go to .build/bridge/validation/app-*.txt.
 set -uo pipefail
 cd "${0:A:h:h:h}"
@@ -35,20 +36,20 @@ finish() {  # finish <label>
     local verdict=PASS
     (( app_result != 0 || host_result != 0 )) && { verdict=FAIL; failed=1; }
     echo "== $label: $verdict (app $app_result, test host $host_result)"
-    grep -hE '\[bridge-selftest\] (stream|peak|dropped|conditions|FAIL|analysis|disconnected|integrated|after the|ambiguous|still|choosing|held|returned)' "$logs/app-$label.txt" | sed 's/^/   /'
+    grep -hE '\[bridge-selftest\] (stream|peak|unanalysed|plugin|conditions|FAIL|disconnected|integrated|after|ambiguous|still|choosing|held|returned|compared|  |pause|resume|reset|while|controls)' "$logs/app-$label.txt" | sed 's/^/   /'
     grep -hE 'phase|PASS|FAIL' "$logs/host-$label.txt" 2>/dev/null | sed 's/^/   /'
 }
 rm -f $logs/app-*.txt(N) $logs/host-*.txt(N)
 
 # 1. VST3 stereo 48 kHz; the plugin then goes away and the same insert returns (new session, same project ID).
-start_app reconnect --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --expect-rate 48000 --expect-channels 2 --then-reconnect
+start_app reconnect --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --expect-rate 48000 --expect-channels 2 --compare-reference --then-reconnect
 "$harness" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name Harness --id $id --phases live:7 >> $logs/host-reconnect.txt 2>&1
 sleep 2
 host reconnect --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name Harness --id $id --phases live:7
 finish reconnect
 
 # 2. AU mono 44.1 kHz: one channel, analysed on L only.
-start_app au-mono --bridge-selftest Harness --expect-peak-db -6.02 --expect-rate 44100 --expect-channels 1
+start_app au-mono --bridge-selftest Harness --expect-peak-db -6.02 --expect-rate 44100 --expect-channels 1 --compare-reference
 host au-mono --format au --channels 1 --rate 44100 --block 128 --name Harness --phases live:7
 finish au-mono
 
@@ -84,16 +85,28 @@ host duplicate --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name D
 finish duplicate
 
 # 8. The same live insert reconnects (the host restores state into the running plugin, which announces itself
-#    again): the analysis carries on across the reconnection, with the break counted.
-start_app hold --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-hold --expect-breaks 1
+#    again): its measurement carries on across the reconnection (same generation), and so does the display.
+start_app hold --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-hold
 host hold --format au --channels 2 --rate 48000 --name Harness --id $id --phases live:6,reidentify:9
 finish hold
 
-# 9. The connection breaks (closed on the receiving side) and the plugin reconnects a second later: the analysis
-#    is held meanwhile ("measurement held") and carries on when the same live insert returns.
-start_app held --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-hold --drop-connection --expect-breaks 1
+# 9. The connection breaks (closed on the receiving side) and the plugin reconnects a second later: the display
+#    is held meanwhile ("measurement held"); the plugin measured on, and the display carries on with its state.
+start_app held --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-hold --drop-connection
 host held --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name Harness --id $id --phases live:16
 finish held
+
+# 10. Controls from Labs: pause (Labs' Pause Capture pauses the plugin's measurement and holds the display),
+#     resume, reset true peak, reset (a new generation), each acknowledged by the plugin.
+start_app controls --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-controls
+host controls --format au --channels 2 --rate 48000 --name Harness --phases live:24
+finish controls
+
+# 11. The insert measured before Labs was launched: the first results already cover it.
+host before-labs --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name Harness --phases live:16
+sleep 5
+start_app before-labs --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --expect-analysed-min 5 --compare-reference
+finish before-labs
 
 echo; (( failed )) && echo "Some app-level checks FAILED" || echo "All app-level checks passed"
 exit $failed
