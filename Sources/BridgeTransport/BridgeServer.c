@@ -143,7 +143,7 @@ static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *aud
     if (!selected || !current) return;
 
     uint64_t delivered = 0, discarded = 0, lost = 0, gaps = 0;
-    uint32_t reasons = 0;
+    uint32_t reasons = 0, idle = 0;
     pthread_mutex_lock(&server->sink_lock);
     if (server->sink && server->sink_epoch == audio->format_epoch && epoch == audio->format_epoch
         && channels == audio->channels) {
@@ -158,9 +158,8 @@ static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *aud
         if (first && !server->mark_start) reasons = 0, lost = 0;
         if (reasons) {
             gaps = 1;
-            if (server->boundary)
-                server->boundary(server->sink_context, reasons, lost,
-                                 (audio->flags & ABR_AUDIO_AFTER_IDLE) ? audio->idle_ms : 0);
+            idle = (audio->flags & ABR_AUDIO_AFTER_IDLE) ? audio->idle_ms : 0;
+            if (server->boundary) server->boundary(server->sink_context, reasons, lost, idle);
         }
         server->have_expectation = true;
         server->expected_position = audio->position + audio->frames;
@@ -176,7 +175,11 @@ static void deliver_audio(AbrServer *server, Client *client, const AbrAudio *aud
     client->info.frames_discarded += discarded;
     client->info.frames_lost += lost;
     client->info.discontinuities += gaps;
-    if (gaps) client->info.last_reasons = reasons;
+    if (gaps) {
+        client->info.last_reasons = reasons;
+        client->info.last_lost_frames = lost;
+        client->info.last_idle_ms = idle;
+    }
     pthread_mutex_unlock(&server->lock);
 }
 

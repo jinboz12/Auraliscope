@@ -379,6 +379,36 @@ int main() {
         CHECK(lost <= dropped + 48000 / 10, "receiver's loss matches the plugin's drops (within the socket backlog)");
         CHECK(recovered > 40000, "delivery recovers to real time after the stall (%zu frames in the next second)", recovered);
     }
+    {
+        // The host pauses while Auraliscope is stalled: the block announcing the pause is among those discarded as
+        // late, but the pause is still reported (with the frames lost), not turned into a plain drop.
+        Collector slow;
+        a = settled(server, "Stereo bus", *stereo);
+        abr_server_select(server, a.session_id);
+        abr_server_attach(server, a.format_epoch, Collector::sink, Collector::boundary, &slow, 0);
+        FakeHost host(*stereo, 2, 48000, 32, 1.0);
+        waitFor([&] { return slow.frames() > 4800; }, 3);
+        const size_t before = slow.marks().size();
+        // The socket and sender buffers hold about 0.8 s: the pause comes after they are full, and is followed by
+        // more than the 150 ms the plugin keeps queued.
+        slow.sleepOnceMs = 2500;
+        std::this_thread::sleep_for(milliseconds(1200));
+        host.idleMs = 500;
+        waitFor([&] { return slow.sleepOnceMs.load() == 0; }, 5);
+        std::this_thread::sleep_for(milliseconds(500));
+        host.stop();
+        quiesce(server);
+        abr_server_detach(server);
+        const auto marks = slow.marks();
+        bool idle = false;
+        uint32_t idleMs = 0, reasons = 0;
+        for (size_t i = before; i < marks.size(); ++i) {
+            reasons |= marks[i].reasons;
+            if (marks[i].reasons & ABR_AUDIO_AFTER_IDLE) idle = true, idleMs = marks[i].idleMs;
+        }
+        CHECK(idle && idleMs >= 400 && (reasons & ABR_AUDIO_AFTER_DROP),
+              "a pause announced by a discarded block is still reported (reasons 0x%x, idle %u ms)", reasons, idleMs);
+    }
 
     std::printf("Format change\n");
     {
@@ -546,6 +576,9 @@ int main() {
         marks = collectorR.marks();
         CHECK((marks.back().reasons & ABR_AUDIO_AFTER_IDLE) && marks.back().idleMs >= 900 && marks.back().idleMs <= 1300,
               "…as the host being idle for %u ms", marks.back().idleMs);
+        findSource(server, "Stereo bus", a);
+        CHECK((a.last_reasons & ABR_AUDIO_AFTER_IDLE) && a.last_idle_ms == marks.back().idleMs && a.last_lost_frames == 0,
+              "…and the source info reports the same break (reasons 0x%x, idle %u ms)", a.last_reasons, a.last_idle_ms);
         // A locate or loop while playing is metadata only.
         before = marks.size();
         const uint32_t jumps = stereo->status().transportJumps;

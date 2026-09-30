@@ -53,6 +53,8 @@ typedef struct {
     uint64_t frames_discarded;       // arrived for a format epoch the sink was not attached to
     uint64_t frames_stale;           // arrived for an earlier subscription (in flight when it changed)
     uint32_t last_reasons;           // reasons of the newest boundary
+    uint64_t last_lost_frames;       // … the frames missing at it
+    uint32_t last_idle_ms;           // … and how long the host did not process (with ABR_AUDIO_AFTER_IDLE)
     double seconds_since_message;
     double seconds_since_audio;      // < 0 when no audio arrived yet
     uint32_t connection_serial;      // increments per accepted connection; unique while the server runs

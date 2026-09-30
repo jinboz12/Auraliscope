@@ -127,10 +127,9 @@ public:
         return kResultOk;
     }
 
-    tresult PLUGIN_API setProcessing(TBool state) override {
-        if (!state) core_->hostSuspended();
-        return kResultOk;
-    }
+    // Not a break by itself: REAPER, for one, toggles processing around every locate and loop without any audio
+    // going missing. A real stop is seen by the core as time passing between process calls.
+    tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
 
     tresult PLUGIN_API process(ProcessData &data) override {
         if (IParameterChanges *changes = data.inputParameterChanges) {

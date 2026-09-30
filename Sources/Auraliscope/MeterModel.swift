@@ -493,6 +493,8 @@ final class MeterModel: ObservableObject {
     private var bridgeTimer: Timer?
     /// Focus requests already acted on, per session.
     private var focusHandled: [String: UInt32] = [:]
+    /// Breaks of the bound insert already written to the diagnostic log (session, count).
+    private var breaksLogged: (session: String, count: UInt64)?
     /// When the ring was attached: the first audio needs a moment to arrive before "no audio" is shown.
     private var bridgeAttachedAt = Date.distantPast
     private static let bridgeNameKey = "bridgeSourceName"
@@ -1103,7 +1105,11 @@ final class MeterModel: ObservableObject {
 
     /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
     private func remember(_ source: BridgeSource) {
-        let selection = BridgeSelection(source.candidate)
+        var selection = BridgeSelection(source.candidate,
+                                        knownCopies: bridgeSaved?.persistent == source.persistentKey ? bridgeSaved?.knownCopies : nil)
+        if selection.noteCopies(among: bridgeSources.filter(\.compatible).map(\.candidate)) {
+            DiagnosticLog.event("DAW plugin \"\(source.displayName)\" was copied; the copy is known not to be it")
+        }
         guard selection != bridgeSaved else { return }
         bridgeSaved = selection
         selection.save()
@@ -1221,6 +1227,7 @@ final class MeterModel: ObservableObject {
             }
         }
         if bridgeProvisionalUntil == nil { remember(source) }
+        logBreaks(source)
         if let attached = attachedBridge {
             // Reconfigure whenever the audio the receiver would deliver no longer matches the pipeline.
             if attached.session != source.sessionKey || attached.epoch != source.formatEpoch || attached.channels != source.channels {
@@ -1238,6 +1245,20 @@ final class MeterModel: ObservableObject {
         let next = MeterStatus.bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
                                       channels: source.channels, layout: speakerLayout.name)
         if status != next { status = next }
+    }
+
+    /// Writes each new break in the bound insert's delivered audio to the diagnostic log, with its reasons (only the
+    /// newest is known when several arrive between two refreshes).
+    private func logBreaks(_ source: BridgeSource) {
+        guard let logged = breaksLogged, logged.session == source.sessionKey else {
+            breaksLogged = (source.sessionKey, source.discontinuities)
+            return
+        }
+        guard source.discontinuities > logged.count else { return }
+        DiagnosticLog.event(String(format: "DAW plugin \"%@\": %llu break(s) (newest: %@; %llu frames missing; idle %u ms; timeline jumps %u)",
+                                   source.displayName, source.discontinuities - logged.count, source.lastBreakReasonNames,
+                                   source.lastBreakLostFrames, source.lastBreakIdleMs, source.transportJumps))
+        breaksLogged = (source.sessionKey, source.discontinuities)
     }
 
     /// Nothing bound is connected: the bound insert went away (its analysis waits for the same live insert), or

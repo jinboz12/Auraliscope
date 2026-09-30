@@ -27,8 +27,15 @@ struct BridgeSelection: Codable, Equatable {
     var channelID: String
     var hostBundleID: String
     var plugin: String
+    /// Identities of copies of this insert that appeared while it was bound and connected (a duplicated track, a
+    /// paste): they are known not to be it, so they never make finding it again ambiguous. Absent in selections
+    /// saved before it was kept.
+    var knownCopies: [String]?
 
-    init(_ candidate: BridgeCandidate) {
+    /// How many copies are remembered (the newest).
+    static let knownCopiesLimit = 32
+
+    init(_ candidate: BridgeCandidate, knownCopies: [String]? = nil) {
         session = candidate.session
         persistent = candidate.persistent
         name = candidate.name
@@ -36,6 +43,17 @@ struct BridgeSelection: Codable, Equatable {
         channelID = candidate.channelID
         hostBundleID = candidate.hostBundleID
         plugin = candidate.plugin
+        self.knownCopies = knownCopies
+    }
+
+    /// Adds the copies of this insert among `candidates` to the known ones; returns whether any was new.
+    mutating func noteCopies(among candidates: [BridgeCandidate]) -> Bool {
+        var known = knownCopies ?? []
+        let fresh = candidates.filter { $0.copiedFrom == persistent && $0.persistent != persistent && !known.contains($0.persistent) }
+        guard !fresh.isEmpty else { return false }
+        known.append(contentsOf: fresh.map(\.persistent))
+        knownCopies = Array(known.suffix(Self.knownCopiesLimit))
+        return true
     }
 
     /// A selection saved before the context was kept: only the identity and the name are known.
@@ -76,7 +94,8 @@ struct BridgeSelection: Codable, Equatable {
 /// 2. Otherwise the inserts claiming the saved identity are the ones that hold it (the project reopened, the plugin
 ///    reloaded) and the copies made of it (a duplicated track, pasted settings, a second copy of the project in
 ///    the same DAW). A copy never inherits the selection: it is a different insert. The only holder, with no copy
-///    beside it, is the saved insert.
+///    beside it, is the saved insert. Copies seen appearing while the saved insert was bound are known not to be
+///    it and do not count (the host unloaded and reloaded the original, beside its copy).
 /// 3. With several claimants (copies beside the holder, or holders in two DAWs), the saved context may single one
 ///    holder out: the host's channel ID when it gives one, else the plugin format, host, source name and track
 ///    name together.
@@ -94,7 +113,9 @@ enum BridgeRestoration: Equatable {
             return .bind(same.session)
         }
         let holders = candidates.filter { $0.persistent == saved.persistent }
-        let copies = candidates.filter { $0.persistent != saved.persistent && $0.copiedFrom == saved.persistent }
+        let known = saved.knownCopies ?? []
+        let copies = candidates.filter { $0.persistent != saved.persistent && $0.copiedFrom == saved.persistent
+            && !known.contains($0.persistent) }
         guard !holders.isEmpty else { return .wait }
         if holders.count == 1 && copies.isEmpty { return .bind(holders[0].session) }
         let claimants = holders + copies

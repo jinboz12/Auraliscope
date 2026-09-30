@@ -4,7 +4,7 @@
 // `BridgeCore` per plugin instance and forward the host's calls to it:
 //
 //   configure / setActive / setOffline   host (non-real-time) threads, while the host is not processing
-//   setBypassed / hostSuspended          any thread, the audio thread included
+//   setBypassed                          any thread, the audio thread included
 //   process                              the host's audio thread: copies into a preallocated ring, nothing else
 //   status / names / state               UI and host threads
 //
@@ -68,8 +68,6 @@ public:
     // Any thread.
     void setBypassed(bool bypassed) noexcept;
     bool bypassed() const noexcept { return bypassed_.load(std::memory_order_relaxed); }
-    // Any thread: the host announced that it stops calling process for a while (VST3 setProcessing(false)).
-    void hostSuspended() noexcept { breaks_.fetch_or(ABR_AUDIO_AFTER_IDLE, std::memory_order_relaxed); }
 
     // Audio thread. `input` holds `channels` planar buffers of `frames` samples. Never blocks, never allocates,
     // never makes a system call: atomics, a clock read from the commpage, and copies into a preallocated ring.
@@ -159,6 +157,7 @@ private:
     uint32_t sendSequence_ = 0;
     uint32_t sentFormatEpoch_ = 0;
     uint32_t senderReasons_ = 0;
+    uint32_t senderIdleMs_ = 0;  // with ABR_AUDIO_AFTER_IDLE in senderReasons_: carried from a discarded record
     std::unique_ptr<uint8_t[]> out_;
     size_t outUsed_ = 0, outSent_ = 0;
     uint8_t in_[256];

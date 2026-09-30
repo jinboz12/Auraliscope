@@ -250,12 +250,28 @@ private func restoration() {
     saved = BridgeSelection(original)
     check(decide([original, insert("S3", "P3", copiedFrom: "P1")], matchingSession: false) == .ambiguous(["S1", "S3"]),
           "re-checking an automatic choice ignores the session: a copy arriving makes it ambiguous")
+    var watched = BridgeSelection(original)
+    check(watched.noteCopies(among: [original, insert("S3", "P3", copiedFrom: "P1"), insert("S5", "P5")]) && watched.knownCopies == ["P3"],
+          "a copy appearing beside the bound insert is noted (and nothing else is)")
+    check(!watched.noteCopies(among: [original, insert("S3", "P3", copiedFrom: "P1")]), "…once")
+    saved = watched
+    check(decide([insert("S2", "P1"), insert("S3", "P3", copiedFrom: "P1")]) == .bind("S2"),
+          "the original reloaded beside a copy seen being made: the copy is known, the holder is bound")
+    check(decide([insert("S2", "P1"), insert("S3", "P3", copiedFrom: "P1"), insert("S6", "P6", copiedFrom: "P1")]) == .ambiguous(["S2", "S6"]),
+          "…but a copy never seen stays a claimant")
+    check(decide([insert("S3", "P3", copiedFrom: "P1")]) == .wait, "…and a known copy alone still never inherits it")
+    for n in 0..<40 { _ = watched.noteCopies(among: [insert("C\(n)", "Q\(n)", copiedFrom: "P1")]) }
+    check(watched.knownCopies?.count == BridgeSelection.knownCopiesLimit && watched.knownCopies?.last == "Q39",
+          "the known copies are bounded (the newest kept)")
     let legacy = BridgeSelection(persistent: "P1", name: "Vocals")
     check(BridgeRestoration.decide(for: legacy, among: [insert("S2", "P1", track: "Anything")]) == .bind("S2"),
           "a selection saved by build 1 (identity and name only) still finds its insert")
     let defaults = UserDefaults(suiteName: "AnalysisBreakTests.\(getpid())")!
     saved.save(to: defaults)
     check(BridgeSelection.load(from: defaults) == saved, "the selection survives saving and loading")
+    defaults.set(Data(#"{"session":"S1","persistent":"P1","name":"Vocals","trackName":"","channelID":"","hostBundleID":"","plugin":""}"#.utf8),
+                 forKey: BridgeSelection.defaultsKey)
+    check(BridgeSelection.load(from: defaults)?.knownCopies == nil, "a selection saved without known copies still loads")
     defaults.removePersistentDomain(forName: "AnalysisBreakTests.\(getpid())")
 }
 

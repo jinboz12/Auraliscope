@@ -8,6 +8,14 @@ source Bridge/scripts/prototype-version.sh
 app="$ABR_DIST/Auraliscope Labs.app/Contents/MacOS/Auraliscope"
 logs=.build/bridge/validation
 failed=0
+# Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.
+if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v1.sock" ]] \
+    && ! .build/bridge/tools/ReceiverProbe --seconds 0 > /dev/null 2>&1; then
+    echo "Another Bridge receiver is running (Auraliscope Labs?): quit it first" >&2; exit 1
+fi
+pgrep -xq REAPER && { echo "REAPER is running: quit it first" >&2; exit 1; }
+app_pid=0
+trap '(( app_pid )) && kill $app_pid 2>/dev/null' EXIT INT TERM
 watch_app() {  # watch_app <log> <self-test arguments…>: runs the app in the background, no DAW source chosen
     app_log="$1"; shift
     "$app" --diagnostic "$@" -inputDeviceUID daw.00 -showWelcomeOnLaunch NO > "$app_log.tmp" 2>&1 &
@@ -22,7 +30,7 @@ watch_saved() {  # watch_saved <log> <self-test arguments…>: as watch_app, wit
 }
 await_app() {  # waits up to 120 s for the app's verdict, then stops it by process ID
     local waited=0
-    while kill -0 $app_pid 2>/dev/null && (( waited < 120 )); do sleep 1; (( waited++ )); done
+    while kill -0 $app_pid 2>/dev/null && (( waited < 120 )); do sleep 1; (( ++waited )); done
     kill $app_pid 2>/dev/null
     wait $app_pid; local result=$?
     { cat "$app_log.tmp"; echo "app exit $result"; } > "$app_log"; rm -f "$app_log.tmp"
@@ -31,7 +39,7 @@ await_app() {  # waits up to 120 s for the app's verdict, then stops it by proce
 for format in vst3 au; do
     track="REAPER $format track"
     watch_app "$logs/app-reaper-$format-live.txt" --bridge-selftest "$track" --expect-peak-db -6.02,-12.04 --expect-rate 48000 \
-        --expect-channels 2 --watch 40 --expect-seen streaming,noAudio,disconnected
+        --expect-channels 2 --watch 40 --expect-seen streaming,noAudio,disconnectedHeld
     Bridge/scripts/daw-reaper.sh $format live > /dev/null 2>&1
     await_app
     echo "== REAPER $format live: $(tail -1 "$logs/app-reaper-$format-live.txt")"
@@ -64,9 +72,9 @@ for format in vst3 au; do
     Bridge/scripts/daw-reaper.sh $format identity > /dev/null 2>&1
     await_app
     echo "== REAPER $format identity and transport: $(tail -1 "$logs/app-reaper-$format-identity.txt")"
-    grep -hE 'status:|sources:|analysed insert|stream:|peak|FAIL' "$logs/app-reaper-$format-identity.txt" | sed 's/^/   /'
+    grep -hE 'status:|sources:|analysed (insert|format)|stream:|peak|FAIL' "$logs/app-reaper-$format-identity.txt" | sed 's/^/   /'
     python3 Bridge/Tools/check-project-ids.py .build/bridge/reaper-profile/bridge-identity-$format.rpp | sed 's/^/   /' || failed=1
-    watch_saved "$logs/app-reaper-$format-reopen.txt" --restore --expect-peak-db -6.02,-12.04 --expect-rate 48000
+    watch_saved "$logs/app-reaper-$format-reopen.txt" --bridge-selftest --restore --expect-peak-db -6.02,-12.04 --expect-rate 48000
     Bridge/scripts/daw-reaper.sh $format reopen > /dev/null 2>&1
     await_app
     echo "== REAPER $format reopened: $(tail -1 "$logs/app-reaper-$format-reopen.txt")"

@@ -256,6 +256,7 @@ enum BridgeSelfTest {
         func watch(_ seconds: Double) {
             var seen: [String] = []
             var listed = ""
+            var analysedFormat = ""
             let end = Date().addingTimeInterval(seconds)
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] timer in
                 MainActor.assumeIsolated {
@@ -267,6 +268,12 @@ enum BridgeSelfTest {
                         let now = model.devices.filter(\.isBridge).map { "\($0.detail) (\($0.bridgeSession == model.selectedID.bridge ? "analysed" : "listed"))" }
                             .joined(separator: " | ")
                         if now != listed { listed = now; say("sources: \(now.isEmpty ? "none" : now)") }
+                        if let source = model.bridgeSources.first(where: { $0.sessionKey == model.selectedID.bridge }) {
+                            let format = String(format: "%.0f Hz, %d ch, epoch %u; timeline jumps %u, plugin breaks %u",
+                                                source.sampleRate, source.channels, source.formatEpoch,
+                                                source.transportJumps, source.pluginInterruptions)
+                            if format != analysedFormat { analysedFormat = format; say("analysed format: \(format)") }
+                        }
                     }
                     guard Date() >= end else { return }
                     timer.invalidate()

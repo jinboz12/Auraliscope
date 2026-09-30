@@ -407,6 +407,7 @@ bool BridgeCore::readControl() {
                 std::memcpy(&subscribe, payload, sizeof subscribe);
                 if (subscribe.subscription != 0) {
                     senderReasons_ = 0;  // a new stream: nothing of it lost yet
+                    senderIdleMs_ = 0;
                     subscription_.store(subscribe.subscription, std::memory_order_release);
                 }
             } else if (header.type == ABR_MSG_UNSUBSCRIBE) {
@@ -456,7 +457,9 @@ void BridgeCore::drainRing() {
             ring_.pop(nullptr);
             if (late && !stale) {
                 framesDropped_.fetch_add(header.frames, std::memory_order_relaxed);
-                senderReasons_ |= ABR_AUDIO_AFTER_DROP;
+                // The break this record announced (idle, bypass…) still happened: the next record sent says so.
+                senderReasons_ |= ABR_AUDIO_AFTER_DROP | (header.flags & ABR_AUDIO_REASONS);
+                if (header.flags & ABR_AUDIO_AFTER_IDLE) senderIdleMs_ = std::min(kIdleCapMs, senderIdleMs_ + header.idle_ms);
             }
             continue;
         }
@@ -477,7 +480,9 @@ void BridgeCore::drainRing() {
         }
         ring_.pop(scratch_.get());
         if (senderReasons_) header.flags |= ABR_AUDIO_DISCONTINUITY | senderReasons_;
+        if (senderReasons_ & ABR_AUDIO_AFTER_IDLE) header.idle_ms = std::min(kIdleCapMs, header.idle_ms + senderIdleMs_);
         senderReasons_ = 0;
+        senderIdleMs_ = 0;
         AbrHeader message{ABR_MAGIC, ABR_MSG_AUDIO, 0, uint32_t(sizeof header + bytes), sendSequence_++};
         std::memcpy(out_.get() + outUsed_, &message, sizeof message);
         std::memcpy(out_.get() + outUsed_ + sizeof message, &header, sizeof header);

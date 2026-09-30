@@ -51,12 +51,12 @@ run_reaper() {
     if pgrep -xq REAPER; then echo "REAPER is already running: quit it first" >&2; return 1; fi
     "$reaper" -newinst -cfgfile "$root/reaper.ini" -nosplash -ignoreerrors "$@" &
     local pid=$! waited=0
-    while kill -0 $pid 2>/dev/null && (( waited < 100 )); do sleep 1; (( waited++ )); done
+    while kill -0 $pid 2>/dev/null && (( waited < 100 )); do sleep 1; (( ++waited )); done
     kill $pid 2>/dev/null && echo "REAPER did not quit within 100 s; stopped it"
     wait $pid 2>/dev/null
     # REAPER can outlive the process it was launched as (it may relaunch itself): wait for every REAPER to be
     # gone, so the project is saved and the next run starts clean. None was running when this one started.
-    while pgrep -xq REAPER && (( waited < 110 )); do sleep 1; (( waited++ )); done
+    while pgrep -xq REAPER && (( waited < 110 )); do sleep 1; (( ++waited )); done
     local left=($(pgrep -x REAPER))
     (( ${#left} )) && { kill $left 2>/dev/null; echo "REAPER still running after 110 s; stopped it"; }
     true

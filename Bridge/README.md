@@ -5,14 +5,15 @@ audio through unchanged and hands a copy to **Auraliscope Labs**, the 1.3dev tes
 analyses and shows it exactly like any other source. The DAW is the plugin host; nothing here hosts plugins.
 
 This is an experimental branch (`claude/auraliscope-daw-bridge-187076`, started from `a004a5b`, "Release Auraliscope 1.1
-(build 51)"). It is not merged, tagged or released. See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works and
+(build 51)", with Auraliscope 1.2.2 (build 62, `10e35cd`) merged in for build 2). It is not merged, tagged or
+released. See [ARCHITECTURE.md](ARCHITECTURE.md) for how it works and
 [VALIDATION.md](VALIDATION.md) for what was tested.
 
 ## What you get
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope Labs.app | `experimental-dist/Auraliscope Labs 1.3dev build 1/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope Labs.app | `experimental-dist/Auraliscope Labs 1.3dev build 2/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -58,13 +59,19 @@ them up (REAPER: Preferences ▸ Plug-ins ▸ Re-scan; Logic: Plug-in Manager).
    Settings ▸ Audio ▸ Source ▸ *DAW plugins · Auraliscope Bridge*.
 3. The name you type in the plugin window (saved with the DAW project) is what Labs lists; left empty, the host's
    track name is used when the host provides it (REAPER does).
-4. The plugin window's scan card shows Auraliscope on this Mac, and Auraliscope receivers found on the local network
-   (a future Auraliscope for iPhone and iPad). While a plugin window is open the DAW browses the network, so macOS
-   may ask to let the DAW find devices on the local network.
+4. The plugin window says whether **this insert** is the one Labs analyses (and why not, with one click to make it
+   so), whether fresh audio is arriving, and how often the stream was interrupted.
+5. **Network · Preview**, collapsed at the bottom of the plugin window, scans the local network only when you click
+   **Scan**. It lists Auraliscope receivers it finds, but iPhone and iPad receivers cannot receive analysis yet.
+   macOS may then ask to let the DAW find devices on the local network.
 
 The Labs status line says what the selected insert is doing: streaming, no audio (the DAW stopped calling the
 plugin: transport stopped in some hosts, FX bypassed in REAPER), bypassed, offline render (not metered), inactive,
-or disconnected (Labs waits for the same insert to return, also after the project is reopened).
+disconnected with the measurement held (it continues if the same plugin instance reconnects), or waiting for the
+saved insert to return (also after the project is reopened). If several inserts could be the saved one (a duplicated
+track, the project open twice) Labs says so and analyses none until you choose. Breaks in the audio (dropped frames,
+the DAW not processing, bypass, render, reconnection) restart momentary and short-term loudness and the spectrum,
+keep integrated loudness, loudness range and held peaks, and show in the status bar as "Interrupted N×".
 
 ## Verify
 
@@ -74,10 +81,13 @@ All from the worktree root; logs go to `.build/bridge/validation/`.
 Bridge/scripts/test-transport.sh
 ```
 ```bash
+Bridge/scripts/test-analysis.sh
+```
+```bash
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope Labs 1.3dev build 1/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope Labs 1.3dev build 2/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz
@@ -92,7 +102,10 @@ Bridge/scripts/e2e-app.sh
 Bridge/scripts/e2e-reaper.sh
 ```
 
-`e2e-probe.sh` and `e2e-app.sh` need Labs to be closed (they run their own receiver or copy of Labs). `e2e-reaper.sh`
+`test-transport.sh` takes `ABR_SANITIZE=thread` (or `address`). `probe-sandbox-transport.sh` is the production
+transport feasibility test (ARCHITECTURE.md, "Production transport").
+
+`e2e-probe.sh`, `e2e-app.sh` and `e2e-reaper.sh` need Labs and REAPER to be closed (they run their own receiver or copy of Labs). `e2e-reaper.sh`
 uses a private REAPER profile in `.build/bridge/reaper-profile` and the silent "Pro Tools Audio Bridge 2-A" device, so
 your REAPER settings and speakers are untouched.
 

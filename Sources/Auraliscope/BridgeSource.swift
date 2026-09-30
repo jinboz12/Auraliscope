@@ -43,6 +43,8 @@ struct BridgeSource: Equatable {
     /// reasons (ABR_AUDIO_AFTER_*).
     let discontinuities: UInt64
     let lastBreakReasons: UInt32
+    let lastBreakLostFrames: UInt64
+    let lastBreakIdleMs: UInt32
     let framesDroppedByPlugin: UInt64
     /// Breaks in the live stream the plugin saw (bypass, offline render, the host idle, a restart), and timeline
     /// jumps while playing.
@@ -55,6 +57,13 @@ struct BridgeSource: Equatable {
     var sessionKey: String { Self.hex(session) }
     var persistentKey: String { Self.hex(persistent) }
     var copiedFromKey: String? { copiedFrom.map(Self.hex) }
+    /// The newest break's reasons, for the diagnostic log.
+    var lastBreakReasonNames: String {
+        let names: [(Int, String)] = [(ABR_AUDIO_AFTER_DROP, "frames dropped"), (ABR_AUDIO_AFTER_IDLE, "host idle"),
+                                      (ABR_AUDIO_AFTER_BYPASS, "bypass"), (ABR_AUDIO_AFTER_OFFLINE, "offline render"),
+                                      (ABR_AUDIO_AFTER_RESTART, "restart"), (ABR_AUDIO_STREAM_START, "stream start")]
+        return names.filter { lastBreakReasons & UInt32($0.0) != 0 }.map(\.1).joined(separator: ", ")
+    }
     /// Short form of the persistent ID, the plugin window shows the same.
     var tag: String { String(persistentKey.prefix(6)) }
     var displayName: String { name.isEmpty ? "Auraliscope Bridge \(tag)" : name }
@@ -127,6 +136,8 @@ struct BridgeSource: Equatable {
         framesLost = info.frames_lost
         discontinuities = info.discontinuities
         lastBreakReasons = info.last_reasons
+        lastBreakLostFrames = info.last_lost_frames
+        lastBreakIdleMs = info.last_idle_ms
         framesDroppedByPlugin = info.frames_dropped_by_plugin
         pluginInterruptions = info.plugin_interruptions
         transportJumps = info.transport_jumps
