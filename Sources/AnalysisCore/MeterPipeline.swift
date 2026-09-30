@@ -134,12 +134,40 @@ package final class MeterPipeline {
         // splitter always read (they hold silence when unrouted).
         planar.withUnsafeMutableBufferPointer { storage in
             PlanarBlock.deinterleave(frames, roles: planarRoles, into: storage.baseAddress!, capacity: Self.planarCapacity) { block in
-                loudness.consume(block)
-                waveform.consume(block)
-                spectrum.consume(block)
-                splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
+                analyse(block)
             }
         }
+    }
+
+    /// The same analyses, fed with `frames` interleaved frames of `channels` source channels, channel c going to
+    /// role `roles[c]`. Every other role the analyses read holds silence, as an unrouted role of a `ChannelFrame`
+    /// does. For producers without 16-role frames (the Bridge plugins).
+    package func consume(interleaved samples: UnsafePointer<Float>, channels: Int, frames: Int, roles: [Int]) {
+        guard frames > 0, channels > 0, roles.count == channels else { return }
+        planar.withUnsafeMutableBufferPointer { buffer in
+            let storage = buffer.baseAddress!
+            let capacity = Self.planarCapacity
+            var position = 0
+            while position < frames {
+                let count = min(capacity, frames - position)
+                for role in planarRoles where !roles.contains(role) {
+                    (storage + role * capacity).update(repeating: 0, count: count)
+                }
+                for (channel, role) in roles.enumerated() where (0..<Role.count).contains(role) {
+                    audio_gather_strided(samples + position * channels + channel, UInt32(channels),
+                                         storage + role * capacity, UInt32(count))
+                }
+                analyse(PlanarBlock(base: storage, stride: capacity, count: count))
+                position += count
+            }
+        }
+    }
+
+    private func analyse(_ block: PlanarBlock) {
+        loudness.consume(block)
+        waveform.consume(block)
+        spectrum.consume(block)
+        splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
     }
 
     /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing

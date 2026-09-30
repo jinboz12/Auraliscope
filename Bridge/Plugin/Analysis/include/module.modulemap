@@ -1,0 +1,4 @@
+module BridgeAnalysis {
+    header "BridgeAnalysis.h"
+    export *
+}
