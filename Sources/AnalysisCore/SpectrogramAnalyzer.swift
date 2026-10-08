@@ -37,21 +37,25 @@ package final class SpectrogramAnalyzer {
     /// Columns per second (`MeterPipeline`: one per two 60 Hz ticks).
     package static let columnRate = 30.0
 
-    /// One window length and what it needs: its FFT, window, frames per column and the rows it serves.
+    /// One window length and what it needs: its FFT, window, frames per column and the rows it serves. Its scratch
+    /// lives in one block allocated here, so analysing a column allocates nothing.
     private final class Zone {
         let length: Int
         let setup: OpaquePointer
-        /// The Hann window halved: the conjugate-symmetric split's ¼ rides on it (see `packed_pair_powers`).
-        var window: [Float]
         /// dB per unit of |X|² for a sine: (2 / Σw)².
         let scale: Float
         /// Start of each frame in the analysis span (oldest sample first).
         let starts: [Int]
-        var real: [Float], imaginary: [Float], outReal: [Float], outImaginary: [Float]
-        var powerA: [Float], powerB: [Float]
-        /// Display power per bin, then its dB.
-        var power: [Float]
-        var decibels: [Float]
+        private let block: UnsafeMutablePointer<Float>
+        /// The Hann window halved: the conjugate-symmetric split's ¼ rides on it (see `packed_pair_powers`).
+        let window: UnsafeMutablePointer<Float>
+        let real: UnsafeMutablePointer<Float>, imaginary: UnsafeMutablePointer<Float>
+        let outReal: UnsafeMutablePointer<Float>, outImaginary: UnsafeMutablePointer<Float>
+        let powerA: UnsafeMutablePointer<Float>, powerB: UnsafeMutablePointer<Float>
+        /// Display power per bin, then its dB (`length / 2` each).
+        let power: UnsafeMutablePointer<Float>
+        let decibels: UnsafeMutablePointer<Float>
+        var bins: Int { length / 2 }
         /// The row → bin mapping of this zone's resolution.
         var maps: [SpectrumAnalyzer.BandMap] = []
         var used = false
@@ -60,29 +64,36 @@ package final class SpectrogramAnalyzer {
             guard let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(length), .FORWARD) else { return nil }
             self.length = length
             self.setup = setup
-            var full = [Float](repeating: 0, count: length)
-            vDSP_hann_window(&full, vDSP_Length(length), Int32(vDSP_HANN_DENORM))
+            let half = length / 2
+            block = .allocate(capacity: 5 * length + 4 * half)
+            block.initialize(repeating: 0, count: 5 * length + 4 * half)
+            window = block
+            real = block + length
+            imaginary = block + 2 * length
+            outReal = block + 3 * length
+            outImaginary = block + 4 * length
+            powerA = block + 5 * length
+            powerB = powerA + half
+            power = powerB + half
+            decibels = power + half
+            vDSP_hann_window(window, vDSP_Length(length), Int32(vDSP_HANN_DENORM))
             var sum: Float = 0
-            vDSP_sve(full, 1, &sum, vDSP_Length(length))
+            vDSP_sve(window, 1, &sum, vDSP_Length(length))
             scale = (2 / sum) * (2 / sum)
-            window = full.map { $0 * 0.5 }
+            var halfScale: Float = 0.5
+            vDSP_vsmul(window, 1, &halfScale, window, 1, vDSP_Length(length))
             // Enough frames that their 50 %-overlapped windows tile the column's interval.
-            let frames = max(1, Int((Double(hop) / Double(length / 2)).rounded(.up)))
+            let frames = max(1, Int((Double(hop) / Double(half)).rounded(.up)))
             starts = (0..<frames).map { frame in
                 let offset = ((Double(frame) + 0.5) / Double(frames) - 0.5) * Double(hop)
-                return max(0, min(span - length, span / 2 + Int(offset.rounded()) - length / 2))
+                return max(0, min(span - length, span / 2 + Int(offset.rounded()) - half))
             }
-            real = [Float](repeating: 0, count: length)
-            imaginary = real
-            outReal = real
-            outImaginary = real
-            powerA = [Float](repeating: 0, count: length / 2)
-            powerB = powerA
-            power = powerA
-            decibels = powerA
         }
 
-        deinit { vDSP_DFT_DestroySetup(setup) }
+        deinit {
+            vDSP_DFT_DestroySetup(setup)
+            block.deallocate()
+        }
     }
 
     /// Which zone (and, in a blend, which second zone with what weight) each row reads.
@@ -154,7 +165,7 @@ package final class SpectrogramAnalyzer {
         }
         for zone in zones where zone.used {
             if let longest, zone.length == span {
-                zone.power.withUnsafeMutableBufferPointer { $0.baseAddress!.update(from: longest, count: span / 2) }
+                zone.power.update(from: longest, count: zone.bins)
                 decibels(zone, frames: 1, halved: true)
             } else {
                 analyse(zone, rings: rings, cursor: cursor, roles: roles)
@@ -174,32 +185,24 @@ package final class SpectrogramAnalyzer {
     /// Display power of every frame of `zone`, averaged, then its dB.
     private func analyse(_ zone: Zone, rings: UnsafePointer<Float>, cursor: Int, roles: [Int]) {
         let n = zone.length
-        let bins = vDSP_Length(n / 2)
-        vDSP_vclr(&zone.power, 1, bins)
+        let bins = vDSP_Length(zone.bins)
+        vDSP_vclr(zone.power, 1, bins)
         for start in zone.starts {
             var index = 0
             while index < roles.count {
                 let pair = index + 1 < roles.count
-                windowed(rings + roles[index] * span, cursor: cursor, start: start, zone: zone, into: &zone.real)
+                windowed(rings + roles[index] * span, cursor: cursor, start: start, zone: zone, into: zone.real)
                 if pair {
-                    windowed(rings + roles[index + 1] * span, cursor: cursor, start: start, zone: zone, into: &zone.imaginary)
+                    windowed(rings + roles[index + 1] * span, cursor: cursor, start: start, zone: zone, into: zone.imaginary)
                 } else {
-                    vDSP_vclr(&zone.imaginary, 1, vDSP_Length(n))
+                    vDSP_vclr(zone.imaginary, 1, vDSP_Length(n))
                 }
-                vDSP_DFT_Execute(zone.setup, zone.real, zone.imaginary, &zone.outReal, &zone.outImaginary)
-                zone.outReal.withUnsafeBufferPointer { r in
-                    zone.outImaginary.withUnsafeBufferPointer { i in
-                        zone.powerA.withUnsafeMutableBufferPointer { a in
-                            zone.powerB.withUnsafeMutableBufferPointer { b in
-                                packed_pair_powers(r.baseAddress!, i.baseAddress!, UInt32(n), a.baseAddress!, b.baseAddress!)
-                                a[0] = 4 * r[0] * r[0]
-                                b[0] = 4 * i[0] * i[0]
-                            }
-                        }
-                    }
-                }
-                vDSP_vadd(zone.power, 1, zone.powerA, 1, &zone.power, 1, bins)
-                if pair { vDSP_vadd(zone.power, 1, zone.powerB, 1, &zone.power, 1, bins) }
+                vDSP_DFT_Execute(zone.setup, zone.real, zone.imaginary, zone.outReal, zone.outImaginary)
+                packed_pair_powers(zone.outReal, zone.outImaginary, UInt32(n), zone.powerA, zone.powerB)
+                zone.powerA[0] = 4 * zone.outReal[0] * zone.outReal[0]
+                zone.powerB[0] = 4 * zone.outImaginary[0] * zone.outImaginary[0]
+                vDSP_vadd(zone.power, 1, zone.powerA, 1, zone.power, 1, bins)
+                if pair { vDSP_vadd(zone.power, 1, zone.powerB, 1, zone.power, 1, bins) }
                 index += 2
             }
         }
@@ -209,40 +212,31 @@ package final class SpectrogramAnalyzer {
     /// `zone.power` (summed over the roles, or already `halved`) averaged over `frames`, then to dB for a sine,
     /// floored at −120.
     private func decibels(_ zone: Zone, frames: Int, halved: Bool) {
-        let n = zone.length
-        let bins = vDSP_Length(n / 2)
+        let bins = vDSP_Length(zone.bins)
         var factor = (halved ? 1 : 0.5) / Float(frames) * zone.scale
         var floor: Float = 1e-12
         var ceiling = Float.greatestFiniteMagnitude
         var ten: Float = 10
-        var count = Int32(n / 2)
-        vDSP_vsmul(zone.power, 1, &factor, &zone.decibels, 1, bins)
-        vDSP_vclip(zone.decibels, 1, &floor, &ceiling, &zone.decibels, 1, bins)
-        zone.decibels.withUnsafeMutableBufferPointer { d in
-            vvlog10f(d.baseAddress!, d.baseAddress!, &count)
-            vDSP_vsmul(d.baseAddress!, 1, &ten, d.baseAddress!, 1, bins)
-        }
+        var count = Int32(zone.bins)
+        vDSP_vsmul(zone.power, 1, &factor, zone.decibels, 1, bins)
+        vDSP_vclip(zone.decibels, 1, &floor, &ceiling, zone.decibels, 1, bins)
+        vvlog10f(zone.decibels, zone.decibels, &count)
+        vDSP_vsmul(zone.decibels, 1, &ten, zone.decibels, 1, bins)
     }
 
     /// `zone.length` samples of a ring from `start` (oldest-first position in the span), times the window.
-    private func windowed(_ ring: UnsafePointer<Float>, cursor: Int, start: Int, zone: Zone, into out: inout [Float]) {
+    private func windowed(_ ring: UnsafePointer<Float>, cursor: Int, start: Int, zone: Zone, into out: UnsafeMutablePointer<Float>) {
         let n = zone.length
         let first = (cursor + start) % span
         let run = min(n, span - first)
-        zone.window.withUnsafeBufferPointer { w in
-            out.withUnsafeMutableBufferPointer { o in
-                vDSP_vmul(ring + first, 1, w.baseAddress!, 1, o.baseAddress!, 1, vDSP_Length(run))
-                if run < n {
-                    vDSP_vmul(ring, 1, w.baseAddress! + run, 1, o.baseAddress! + run, 1, vDSP_Length(n - run))
-                }
-            }
-        }
+        vDSP_vmul(ring + first, 1, zone.window, 1, out, 1, vDSP_Length(run))
+        if run < n { vDSP_vmul(ring, 1, zone.window + run, 1, out + run, 1, vDSP_Length(n - run)) }
     }
 
     /// A row's level at `zone`'s resolution (see the type's notes).
     private func level(_ zone: Zone, row: Int) -> Float {
         let map = zone.maps[row]
-        let d = zone.decibels
+        let d = UnsafeBufferPointer(start: zone.decibels, count: zone.bins)
         guard map.interpolated else {
             var peak = map.first
             for bin in map.first...map.last where d[bin] > d[peak] { peak = bin }
@@ -255,6 +249,6 @@ package final class SpectrogramAnalyzer {
             guard d[peak] > -120, tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 else { return d[peak] }
             return estimate.level
         }
-        return d.withUnsafeBufferPointer { SpectrumAnalyzer.interpolatedLevel($0, at: map.position, halfWidth: map.halfWidth) }
+        return SpectrumAnalyzer.interpolatedLevel(d, at: map.position, halfWidth: map.halfWidth)
     }
 }

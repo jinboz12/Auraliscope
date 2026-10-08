@@ -149,6 +149,28 @@ filters, FFT and true-peak interpolation restart at a break. Each result carries
 known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
 continuous measurement.
 
+## Build 68 spectrogram
+
+The spectrogram is the project's own end to end; nothing of the earlier presentation (and no third-party credit)
+remains.
+
+- **Analysis** (`AnalysisCore/SpectrogramAnalyzer.swift`, so the plugins compute the same columns as Labs). It reads
+  the spectrum's 8192-sample history rings at 30 columns per second. Each of the 512 log rows uses the shortest Hann
+  window whose bins keep `frequency / binWidth ≥ 64` (main lobe within about ±½ semitone): 8192 points below about
+  750 Hz at 48 kHz, then 4096, 2048, 1024 and 512 points, zones blended over half an octave above each boundary. All
+  windows are centred on the middle of the 8192-sample span, so a column is one instant at every frequency; windows
+  shorter than twice the 1/30 s hop are repeated across it at 50 % overlap and their powers averaged (Welch). The
+  8192-point zone reuses the spectrum's own transform of the same window. Rows read the loudest level in their slice
+  of frequency, corrected for Hann scalloping with Grandke's estimator (`SpectrumAnalyzer.hannPeak`), within 0.05 dB
+  for a sine in every zone.
+- **Wire.** Unchanged: 512 dBFS rows per column (PROTOCOL.md tags 60–64).
+- **Display.** `SpectrogramHistory` keeps 512 columns (17 s) of float dBFS; `SpectrogramScene` uploads one column per
+  serial to an r32Float texture, and `waterfallFragment` interpolates between columns and rows, takes the loudest row
+  under a pixel that covers several, applies the tilt, and maps level to colour through `SpectrogramTone` (shared with
+  the spectrum's fill and the header legend). The inspector samples the same history with the same interpolation.
+- **Cost.** The DSP benchmark (100 s, 48 kHz): 0.61 → 0.77 % of one core with a stereo spectrum, 1.23 → 1.90 % with a
+  16-channel Spatial spectrum (all channels sounding).
+
 ## Build 67 DSP implementation
 
 For one or two weighted channels, the K-weighting kernel uses a two-double vector with the same coefficients,

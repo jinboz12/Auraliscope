@@ -36,7 +36,10 @@ keyboard, axes and default −90…−12 dB colours), and it is more accurate:
 - **Float history.** The display keeps every column in dBFS (no 8-bit steps), so the colour range and tilt can change
   without losing the history.
 - **New in Settings › Panels:** *Color range* (Standard −90…−12, Deep −114…−24 for tails and noise floors, Hot −72…0
-  for loud masters) and *Tilt* (flat, 3 or 4.5 dB/oct around 1 kHz) for the spectrum and spectrogram.
+  for loud masters), *Tilt* (flat, 3 or 4.5 dB/oct around 1 kHz) for the spectrum and spectrogram, *Spectrogram span*
+  (Auto 3–8 s by width, or a fixed 4, 8 or 15 s) and *Average spectrum*.
+- **Average spectrum:** a dashed second line on the live spectrum, each band's power averaged over everything heard
+  since the last Reset (silence left out): the long-term average spectrum used to compare tonal balance.
 - **Inspector:** hover over the spectrogram to read the pitch, frequency, age and level of the cell under the pointer
   (over the live spectrum, the band's level). Pause to read a moment at leisure.
 

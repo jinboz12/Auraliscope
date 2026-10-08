@@ -694,11 +694,31 @@ package final class SpectrumAnalyzer {
     /// elsewhere): a fitted log parabola was off by up to 2.9 cents and 0.3 dB at 55 Hz. Neighbours louder than
     /// `b` (not a peak) give no offset.
     package static func hannPeak(_ a: Float, _ b: Float, _ c: Float) -> (offset: Float, level: Float) {
+        // Both results depend only on the louder neighbour's distance below `b`, and only within 6.02 dB (further
+        // down, α < ½ and the tone sits on the bin): read them from `hannTable`, interpolated, with no
+        // transcendental function per call.
         let right = c >= a
-        let ratio = pow(10, (min(b, right ? c : a) - b) / 20)
+        let gap = max(0, b - (right ? c : a))
+        guard gap < hannGapLimit else { return (0, b) }
+        let position = (1 - gap / hannGapLimit) * Float(hannSteps)
+        let index = min(hannSteps - 1, Int(position))
+        let t = position - Float(index)
+        let lower = hannTable[index], upper = hannTable[index + 1]
+        let delta = lower.offset + (upper.offset - lower.offset) * t
+        let gain = lower.gain + (upper.gain - lower.gain) * t
+        return (right ? delta : -delta, b + gain)
+    }
+
+    /// The gap at which the Hann estimator's offset reaches zero: 20·log10(½).
+    private static let hannGapLimit: Float = 20 * log10(2)
+    private static let hannSteps = 1024
+    /// Offset (bins) and level correction (dB) for gaps from `hannGapLimit` (entry 0) to 0 (the last), exact.
+    private static let hannTable: [(offset: Float, gain: Float)] = (0...hannSteps).map { step in
+        let gap = (1 - Double(step) / Double(hannSteps)) * Double(hannGapLimit)
+        let ratio = pow(10, -gap / 20)
         let delta = max(0, min(0.5, (2 * ratio - 1) / (ratio + 1)))
-        let lobe = delta < 1e-5 ? 1 : sin(Float.pi * delta) / (Float.pi * delta * (1 - delta * delta))
-        return (right ? delta : -delta, b - 20 * log10(lobe))
+        let lobe = delta < 1e-9 ? 1 : sin(Double.pi * delta) / (Double.pi * delta * (1 - delta * delta))
+        return (Float(delta), Float(-20 * log10(lobe)))
     }
 
     /// The loudest level within `position ± halfWidth` (fractional bins) of a spectrum in dB, read from the parabola
