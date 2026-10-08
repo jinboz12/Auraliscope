@@ -623,6 +623,13 @@ int main() {
               "…nothing accumulates while paused, and the results say paused");
         CHECK(waitFor([&] { findSource(server, "Stereo bus", info); return info.measurement == ABR_MEASUREMENT_PAUSED; }, 1),
               "…and so does the status");
+        id = abr_server_command(server, a.session_id, ABR_COMMAND_RESET_TRUE_PEAK, generation);
+        info = ack(id);
+        CHECK(info.last_ack_outcome == ABR_ACK_DONE && waitFor([&] {
+            const Result reset = controlled.last();
+            return reset.heldTruePeak[0] == 0 && reset.heldTruePeak[1] == 0
+                && reset.framesAnalysed == paused.framesAnalysed && reset.measurement == ABR_MEASUREMENT_PAUSED;
+        }, 2), "reset true peak while paused: zero reaches the display without more measured frames");
         id = abr_server_command(server, a.session_id, ABR_COMMAND_RESUME, generation);
         info = ack(id);
         waitFor([&] { return controlled.last().framesAnalysed > paused.framesAnalysed + 4800; }, 2);

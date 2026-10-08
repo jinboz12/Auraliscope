@@ -30,6 +30,7 @@ enum ResultChecks {
         assembly()
         lifecycle()
         midStreamStart()
+        resetHeldPeakWhileStopped()
         return failures
     }
 
@@ -245,7 +246,7 @@ enum ResultChecks {
     }
 
     /// True peak of a stream that starts in the middle of a waveform (a reset, a capture started while playing):
-    /// the plugin and the desktop pipeline must agree, whatever the interpolator does at the first sample.
+    /// both pipelines must agree with the known analytic crest, not just with each other.
     private static func midStreamStart() {
         print("Stream starting mid-waveform")
         for start in [0, 12_345, 777] {
@@ -264,12 +265,41 @@ enum ResultChecks {
                 values.withUnsafeMutableBufferPointer { desktop.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
             }
             let b = bridge.snapshot
+            check(abs(b[SnapshotSlots.heldTruePeaks] - 0.5) < 0.0003
+                      && abs(b[SnapshotSlots.heldTruePeaks + 1] - 0.25) < 0.00015,
+                  "start at sample \(start): no synthetic onset overshoot")
             func db(_ v: Float) -> Double { 20 * log10(Double(v)) }
             print(String(format: "  info start %6d: held true peak L %.3f R %.3f dBTP (sample peaks -6.021, -12.041)",
                          start, db(b[SnapshotSlots.heldTruePeaks]), db(b[SnapshotSlots.heldTruePeaks + 1])))
             check(b[SnapshotSlots.heldTruePeaks] == values[SnapshotSlots.heldTruePeaks]
                       && b[SnapshotSlots.heldTruePeaks + 1] == values[SnapshotSlots.heldTruePeaks + 1],
                   "start at sample \(start): plugin and desktop hold the same true peak")
+        }
+    }
+
+    private static func resetHeldPeakWhileStopped() {
+        print("Reset true peak without a new audio tick")
+        for paused in [false, true] {
+            guard let a = StreamAnalyzer(sampleRate: 48_000, channels: 2, generation: 1, formatEpoch: 1) else {
+                return check(false, "analyser")
+            }
+            let audio = interleaved(channels: 2, start: 777, count: 48_000, rate: 48_000)
+            audio.withUnsafeBufferPointer { a.consume($0.baseAddress!, frames: 48_000, position: 0, now: 0) }
+            if paused { a.setMeasuring(false) }
+            else { for n in 1...60 { a.idle(now: Double(n) / 60) } }
+            let before = a.snapshot, ticks = a.ticks, frames = a.framesAnalysed
+            check(before[SnapshotSlots.heldTruePeaks] > 0.49, "a peak was held before reset")
+            a.resetTruePeaks()
+            var expected = before
+            for role in 0..<Role.count { expected[SnapshotSlots.heldTruePeaks + role] = 0 }
+            check(a.snapshot == expected && a.ticks == ticks && a.framesAnalysed == frames,
+                  "reset while \(paused ? "paused" : "idle"): immediately clears only held true peaks")
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: 131_072, alignment: 8)
+            defer { buffer.deallocate() }
+            let encoded = a.encode(into: buffer, capacity: 131_072, subscription: 1, layout: 2,
+                                   afterSpectrogram: 0, afterWaveform: 0)
+            let decoded = ResultMessage.decode(UnsafeRawBufferPointer(start: buffer, count: encoded.bytes))
+            check(decoded.heldTruePeak == [0, 0], "the next wire result carries the reset without new audio")
         }
     }
 

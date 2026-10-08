@@ -127,7 +127,12 @@ package final class StreamAnalyzer {
     package func setMeasuring(_ on: Bool) { measuring = on }
 
     /// Clears the held true peaks only (the TRUE PEAK reading's reset).
-    package func resetTruePeaks() { pipeline.resetTruePeaks() }
+    package func resetTruePeaks() {
+        pipeline.resetTruePeaks()
+        // Commands can arrive while paused or after idle ticks have stopped. Update the
+        // published state too, without ticking (which would advance/decay unrelated meters).
+        for role in 0..<Role.count { values[SnapshotSlots.heldTruePeaks + role] = 0 }
+    }
 
     private func publish(now: Double, idle: Bool) {
         ticks += 1

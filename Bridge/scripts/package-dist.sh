@@ -9,7 +9,7 @@ dist="$ABR_DIST"
 for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     [[ -d "$dist/$bundle" ]] || { echo "missing $dist/$bundle: build it first" >&2; exit 1; }
 done
-cp Bridge/README.md Bridge/ARCHITECTURE.md Bridge/PROTOCOL.md Bridge/VALIDATION.md Bridge/THIRD_PARTY_NOTICES.md "$dist/"
+cp Bridge/README.md Bridge/ARCHITECTURE.md Bridge/PROTOCOL.md Bridge/VALIDATION.md Bridge/TESTING-zh.md Bridge/THIRD_PARTY_NOTICES.md "$dist/"
 cp Bridge/App/Icon/AuraliscopeLabs-1024.png "$dist/"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

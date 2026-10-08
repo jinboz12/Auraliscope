@@ -12,6 +12,7 @@ tools=.build/bridge/tools
 logs=.build/bridge/validation
 mkdir -p "$logs"
 vst3="$ABR_DIST/Auraliscope Bridge.vst3"
+au="$ABR_DIST/Auraliscope Bridge.component"
 filter="${1:-}"
 private="$(mktemp -d /tmp/abr-e2e-XXXXXX)"
 trap 'rm -rf "$private"' EXIT
@@ -38,15 +39,15 @@ live=(--phases live:7)
 run vst3-stereo-48k   Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
 run vst3-mono-44k1    Harness 0 "" --format vst3 --bundle "$vst3" --channels 1 --rate 44100 --block 128 --name Harness $live
 run vst3-stereo-96k   Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 96000 --block 512 --name Harness $live
-run au-stereo-48k     Harness 0 "" --format au --channels 2 --rate 48000 --block 256 --name Harness $live
-run au-mono-48k       Harness 0 "" --format au --channels 1 --rate 48000 --block 64 --name Harness $live
-run au-stereo-192k    Harness 0 "" --format au --channels 2 --rate 192000 --block 1024 --name Harness $live
+run au-stereo-48k     Harness 0 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live
+run au-mono-48k       Harness 0 "" --format au --bundle "$au" --channels 1 --rate 48000 --block 64 --name Harness $live
+run au-stereo-192k    Harness 0 "" --format au --bundle "$au" --channels 2 --rate 192000 --block 1024 --name Harness $live
 run vst3-3-instances  "Multi 2" 1 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Multi --instances 3 $live
-run au-3-instances    "Multi 3" 2 "" --format au --channels 2 --rate 48000 --block 256 --name Multi --instances 3 $live
+run au-3-instances    "Multi 3" 2 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Multi --instances 3 $live
 run vst3-before-labs  Harness 0 "--subscribe-after 3" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
-run au-controls       Harness 0 "--controls --seconds 3" --format au --channels 2 --rate 48000 --block 256 --name Harness --phases live:12
+run au-controls       Harness 0 "--controls --seconds 3" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness --phases live:12
 run vst3-editor-close Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live \
     --editor-snapshot "$logs/editor-vst3.png" --editor-seconds 2
-run au-editor-close   Harness 0 "" --format au --channels 2 --rate 48000 --block 256 --name Harness $live \
+run au-editor-close   Harness 0 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live \
     --editor-snapshot "$logs/editor-au.png" --editor-seconds 2
 exit $failed

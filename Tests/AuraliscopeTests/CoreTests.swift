@@ -526,7 +526,8 @@ final class CoreTests {
         // A two-sample burst rings above the sample peak after the input has already gone silent.
         // The result must not depend on where Core Audio splits its buffers, including one-frame buffers.
         // The silence outlasts the fine window (63 samples), which completes the burst's segment.
-        let samples: [Float] = [1, 1] + Array(repeating: 0, count: 126)
+        // Known preceding silence makes this a physical onset, unlike capture beginning mid-waveform.
+        let samples: [Float] = Array(repeating: 0, count: 128) + [1, 1] + Array(repeating: 0, count: 126)
         let active = (0..<Role.count).map { $0 == Role.left }
         for rate in [44_100.0, 48_000, 88_200, 96_000, 176_400, 192_000] {
             let factor = rate < 96_000 ? 4 : 2
@@ -561,6 +562,56 @@ final class CoreTests {
                 checkEqual(reading, reference ?? reading, accuracy: 0.000001)
                 reference = reference ?? reading
             }
+        }
+    }
+
+    func testTruePeakStartsWithoutSyntheticHistory() {
+        for rate in [44_100.0, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            for frequency in [997.0, 1499, 15_000, 20_000] {
+                for phase in 0..<8 {
+                    let samples = (0..<2048).map {
+                        Float(0.5 * sin(2 * Double.pi * (frequency * Double($0) / rate + Double(phase) / 8)))
+                    }
+                    var reference: Float?
+                    for chunk in [1, 7, 257] {
+                        let detector = TruePeakDetector(sampleRate: rate, capacity: chunk)
+                        samples.withUnsafeBufferPointer { input in
+                            for offset in stride(from: 0, to: samples.count, by: chunk) {
+                                let count = min(chunk, samples.count - offset)
+                                let peak = samples[offset..<(offset + count)].map { abs($0) }.max()!
+                                detector.process(role: Role.left, signal: input.baseAddress! + offset,
+                                                 count: count, samplePeak: peak)
+                            }
+                        }
+                        let peak = detector.take(role: Role.left)
+                        checkEqual(MeterScale.decibels(peak), -6.0206, accuracy: 0.005)
+                        checkEqual(peak, reference ?? peak, accuracy: 0.000001)
+                        reference = peak
+                    }
+                }
+            }
+            // Nonzero history at the end of priming must drain into real, observed silence.
+            let samples: [Float] = Array(repeating: 0, count: 63) + [1, 1] + Array(repeating: 0, count: 128)
+            var reference: Float?
+            for chunk in [1, 7, 65, 193] {
+                let detector = TruePeakDetector(sampleRate: rate, capacity: chunk)
+                samples.withUnsafeBufferPointer { input in
+                    for offset in stride(from: 0, to: samples.count, by: chunk) {
+                        let count = min(chunk, samples.count - offset)
+                        detector.process(role: Role.left, signal: input.baseAddress! + offset, count: count,
+                                         samplePeak: samples[offset..<(offset + count)].map { abs($0) }.max()!)
+                    }
+                }
+                let peak = detector.take(role: Role.left)
+                checkGreater(peak, 1.1)
+                checkEqual(peak, reference ?? peak, accuracy: 0.000001)
+                reference = peak
+            }
+            // Even a capture shorter than the warm-up retains its sample maximum.
+            let detector = TruePeakDetector(sampleRate: rate, capacity: 1)
+            var one: Float = 0.9
+            detector.process(role: Role.left, signal: &one, count: 1, samplePeak: one)
+            checkEqual(detector.take(role: Role.left), 0.9)
         }
     }
 
@@ -1791,6 +1842,7 @@ struct TestRunner {
             ("BS.1770-5 997 Hz reference and LFE exclusion", suite.testLUFSReferenceAndLFEExclusion),
             ("BS.1770-5 channel weights up to 9.1.6 and unrouted roles", suite.testSurroundAndHeightWeights),
             ("K-weighting matches the 48 kHz response within 0.01 dB from 44.1 to 384 kHz", suite.testKWeightingAcrossSampleRates),
+            ("true peak startup has no fabricated onset and preserves priming tails", suite.testTruePeakStartsWithoutSyntheticHistory),
             ("true peak and exact EBU Tech 3342 loudness range", suite.testTruePeakAndLoudnessRange),
             ("true peak preserves the tail into silence across buffer sizes and sample rates", suite.testTruePeakAtSilenceBoundaries),
             ("true peak reads 15–20 kHz inter-sample peaks within 0.005 dB from 44.1 to 192 kHz", suite.testTruePeakNearNyquist),

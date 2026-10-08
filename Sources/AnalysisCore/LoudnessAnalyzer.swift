@@ -477,8 +477,9 @@ package final class TruePeakDetector {
     private var pending = [Int](repeating: 0, count: Role.count)
     /// Samples received per role, silent ones included: the clock the segments are counted on.
     private var received = [Int](repeating: 0, count: Role.count)
-    /// Samples still to go into the filter window, unmeasured, after a break (see `interrupt`).
-    private var priming = [Int](repeating: 0, count: Role.count)
+    /// Unknown history at startup/reset is treated like a break, not fabricated silence.
+    /// Sample peaks remain measured while the interpolation window fills.
+    private var priming = [Int](repeating: TruePeakDetector.fineTaps + 1, count: Role.count)
     /// Each role's refinement state (see `true_peak_scan`).
     private var segments = [TruePeakSegment](repeating: TruePeakSegment(), count: Role.count)
     private var kernel: TruePeakKernel
@@ -551,6 +552,9 @@ package final class TruePeakDetector {
                 memmove(base, base + fill, (history - fill) * MemoryLayout<Float>.stride)
                 (base + history - fill).update(from: signal, count: fill)
             }
+            // A nonzero sample in the priming window still has a real tail. Drain it even if
+            // the following buffers are silent (including when priming ends exactly at a split).
+            pending[role] = samplePeak > 0 ? history : max(0, pending[role] - fill)
             priming[role] -= fill
             received[role] += fill
             signal += fill

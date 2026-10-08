@@ -6,18 +6,45 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 65 (build numbers continue after Auraliscope 1.2.2, build 62: 63 and 64 were earlier LABS test packages; builds 1 to 3 were
+Build 67 (build numbers continue after Auraliscope 1.2.2, build 62: 63–66 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
 [VALIDATION.md](VALIDATION.md) for what was tested.
 
+## Build 67 changes
+
+- A two-lane double-precision K-weighting kernel for mono/stereo avoids evaluating six unused lanes. Three or
+  more channels retain the existing grouped kernel. Filter coefficients, recurrence and analysis rates are unchanged.
+- The stereo band filter uses fixed SIMD element stores, removing runtime vector indexing while preserving the
+  interleaved independent cascades and their output samples.
+- Independent scalar-oracle kernel checks run as part of `scripts/test.sh`, including sanitizer builds.
+- `Bridge/Tools/CompareResources.py` performs alternating-order paired measurements on two staged VST3 builds and
+  requires bitwise audio passthrough on every run. See VALIDATION.md for measured results and limits.
+
+All build-66 accuracy and state fixes below remain included.
+
+## Build 66 changes
+
+- True-peak startup/reset now fills its interpolation history from observed audio, just as at a stream break.
+  It no longer holds an artificial onset overshoot when capture starts mid-waveform; sample peaks remain active
+  during priming, and real bursts after observed silence retain their interpolated tails.
+- Reset True Peak updates the plugin's published result immediately, including while paused or idle, without
+  advancing measurement time or changing integrated loudness.
+- Plugin compilation now tracks the version file, so an incremental build updates compiled version strings and
+  Objective-C editor class names as well as bundle metadata.
+- The launch button rejects missing/unexecutable and trashed LABS candidates, including the default returned by
+  LaunchServices and external-volume `.Trashes` paths.
+- AU end-to-end tests load the exact staged bundle in the test process; no installed plugin is substituted.
+
+See [TESTING-zh.md](TESTING-zh.md) for the short Chinese installation and listening-test guide.
+
 ## What you get
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 65/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 67/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -44,10 +71,10 @@ static library per format; the Swift runtime is the system's). Other scripts: `f
 
 ## Install
 
-**Testers: the installer.** `Auraliscope LABS 1.3dev build 65.pkg` installs, for every user of the Mac, the app
+**Testers: the installer.** `Auraliscope LABS 1.3dev build 67.pkg` installs, for every user of the Mac, the app
 into `/Applications` and both plugins into `/Library/Audio/Plug-Ins/{VST3,Components}` (three choices, all selected).
 The app stays independent of Auraliscope. The plugins use the paths, names and bundle IDs an official Auraliscope
-Bridge would use, with bundle versions below any release (0.65; the plugin window and hosts show "1.3dev build 65"),
+Bridge would use, with bundle versions below any release (0.67; the plugin window and hosts show "1.3dev build 67"),
 so an official installer replaces them, and this package never replaces a newer plugin. Nothing is relocated to
 another copy. The package is not signed: open it with Control-click ▸ Open, or System Settings ▸ Privacy & Security ▸
 Open Anyway. Apple silicon, macOS 13 or later. Build it with:
@@ -129,7 +156,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 65/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 67/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz

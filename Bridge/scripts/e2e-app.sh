@@ -9,8 +9,13 @@ source Bridge/scripts/prototype-version.sh
 app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
 harness=.build/bridge/tools/HostHarness
 vst3="$ABR_DIST/Auraliscope Bridge.vst3"
+au="$ABR_DIST/Auraliscope Bridge.component"
 logs=.build/bridge/validation
 id=A1B2C3D4E5F60718293A4B5C6D7E8F90
+# A private socket prevents the test app from taking over a running LABS receiver.
+private="$(mktemp -d /tmp/abr-app-e2e-XXXXXX)"
+trap 'rm -rf "$private"' EXIT
+export AURALISCOPE_BRIDGE_SOCKET="$private/bridge.sock"
 failed=0
 typeset -a hosts
 
@@ -50,7 +55,7 @@ finish reconnect
 
 # 2. AU mono 44.1 kHz: one channel, analysed on L only.
 start_app au-mono --bridge-selftest Harness --expect-peak-db -6.02 --expect-rate 44100 --expect-channels 1 --compare-reference
-host au-mono --format au --channels 1 --rate 44100 --block 128 --name Harness --phases live:7
+host au-mono --format au --bundle "$au" --channels 1 --rate 44100 --block 128 --name Harness --phases live:7
 finish au-mono
 
 # 3. Three VST3 instances; the app selects the second (half the level of the first).
@@ -60,7 +65,7 @@ finish multi
 
 # 4. AU stereo, then the host switches to 96 kHz mid-stream: analysis must be rebuilt for the new rate.
 start_app rate-change --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-rate 96000
-host rate-change --format au --channels 2 --rate 48000 --name Harness --phases live:6,rate=96000:8
+host rate-change --format au --bundle "$au" --channels 2 --rate 48000 --name Harness --phases live:6,rate=96000:8
 finish rate-change
 
 # 5. Bypass, offline render and a host that stops processing, as the status line shows them; the analysis counts
@@ -87,7 +92,7 @@ finish duplicate
 # 8. The same live insert reconnects (the host restores state into the running plugin, which announces itself
 #    again): its measurement carries on across the reconnection (same generation), and so does the display.
 start_app hold --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-hold
-host hold --format au --channels 2 --rate 48000 --name Harness --id $id --phases live:6,reidentify:9
+host hold --format au --bundle "$au" --channels 2 --rate 48000 --name Harness --id $id --phases live:6,reidentify:9
 finish hold
 
 # 9. The connection breaks (closed on the receiving side) and the plugin reconnects a second later: the display
@@ -99,7 +104,7 @@ finish held
 # 10. Controls from Labs: pause (Labs' Pause Capture pauses the plugin's measurement and holds the display),
 #     resume, reset true peak, reset (a new generation), each acknowledged by the plugin.
 start_app controls --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --then-controls
-host controls --format au --channels 2 --rate 48000 --name Harness --phases live:24
+host controls --format au --bundle "$au" --channels 2 --rate 48000 --name Harness --phases live:24
 finish controls
 
 # 11. The insert measured before Labs was launched: the first results already cover it.

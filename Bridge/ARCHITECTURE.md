@@ -32,7 +32,7 @@ neither used nor touched.
 | Target | What | Depends on |
 |---|---|---|
 | `Sources/AnalysisKernels` (C) | frame types and DSP kernels: true-peak scan, K-weighting, band filters, packed FFT powers | nothing |
-| `Sources/AnalysisCore` (Swift) | `LoudnessAnalyzer`, `SpectrumAnalyzer`, `WaveformEnvelope`, `FormatDetector`, `MeterPipeline` and its snapshot layout (moved unchanged from the app), plus `StreamAnalyzer` (pushed audio, audio-clocked ticks, result encoding), `ResultProtocol` (RESULT fields) and `ResultAssembler` (results back into snapshots) | Foundation, Accelerate, AnalysisKernels; **no AppKit, SwiftUI, Core Audio or views** |
+| `Sources/AnalysisCore` (Swift) | `LoudnessAnalyzer`, `SpectrumAnalyzer`, `WaveformEnvelope`, `FormatDetector`, `MeterPipeline` and its snapshot layout (shared with the app; build 66 fixes true-peak startup priming), plus `StreamAnalyzer` (pushed audio, audio-clocked ticks, result encoding), `ResultProtocol` (RESULT fields) and `ResultAssembler` (results back into snapshots) | Foundation, Accelerate, AnalysisKernels; **no AppKit, SwiftUI, Core Audio or views** |
 
 The app's `DSPWorker` runs `MeterPipeline` for devices and system audio, as before; the plugins run the same
 `MeterPipeline` through `StreamAnalyzer`. There is one analyser, compiled into three binaries. `package` access keeps
@@ -68,7 +68,8 @@ different summation order differs in float rounding (≤ 2.2·10⁻¹⁰).
   and if Labs quits, crashes or loses the connection the plugin resumes by itself. A pause made in the plugin window
   lasts until it is resumed there or by a display.
 - **Reset** sends RESET: the Bridge starts a new generation; every display sees a new stream.
-- **Clicking TRUE PEAK** sends RESET_TRUE_PEAK.
+- **Clicking TRUE PEAK** sends RESET_TRUE_PEAK. The published held peaks clear even when the analyser is paused
+  or has finished its idle ticks; other snapshot fields and measurement time do not advance.
 - **Display-only pause** (freezing one display while the Bridge measures on) is not a separate control in this
   milestone. It is what a second display would do; the protocol already separates it (a display can simply stop
   drawing without sending PAUSE).
@@ -147,6 +148,13 @@ Integrated loudness and loudness range carry on across breaks and count only ana
 filters, FFT and true-peak interpolation restart at a break. Each result carries the number of breaks and the audio
 known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
 continuous measurement.
+
+## Build 67 DSP implementation
+
+For one or two weighted channels, the K-weighting kernel uses a two-double vector with the same coefficients,
+recurrence and accumulation order. More channels retain the groups-of-eight kernel. Stereo-band output stores use
+constant SIMD lane indices; all cascades continue to advance as before. Neither change moves work onto the host's
+audio callback, reduces result cadence, or disables analysis while LABS is absent.
 
 ## Insert identity and restoration (unchanged from build 2)
 

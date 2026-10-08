@@ -43,5 +43,8 @@ if ! compile 2>"$check_dir/compile.log"; then
     if (( ! built )); then cat "$check_dir/compile.log" >&2; exit 1; fi
 fi
 "$check_dir/CoreChecks"
+clang -std=c11 -O2 "${c_flags[@]}" -I Sources/AnalysisKernels/include \
+    Tests/AnalysisKernelsChecks.c "$check_dir/AnalysisKernels.o" -o "$check_dir/KernelChecks"
+"$check_dir/KernelChecks"
 # String tables against the code and the language policy (see Sources/Auraliscope/Localizer.swift).
 python3 scripts/check-localization.py

@@ -83,7 +83,7 @@ void band_filter(const float *coefficients, float *state, const float *left, con
                  uint32_t lanes, uint32_t count);
 
 // BS.1770 K-weighting (a shelf, then a high-pass: b0 b1 b2 a1 a2 each, in `coefficients`) in double precision.
-// Filters `channels` planar inputs of `count` samples, eight at a time, and adds each one's sum of squared
+// Filters `channels` planar inputs of `count` samples, with a two-lane path for mono/stereo and groups of eight otherwise; adds each one's sum of squared
 // outputs to `energy[c]`. `state` holds four doubles per channel (transposed direct form II, both sections).
 void k_weight_energy(const double *coefficients, double *const *state, const float *const *inputs, uint32_t channels,
                      uint32_t count, double *energy);

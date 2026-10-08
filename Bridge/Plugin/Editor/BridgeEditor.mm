@@ -349,7 +349,14 @@ NSTextField *heading(NSRect frame, NSString *title) {
 // and Launch Services may pick any of them: take the newest build, and among equal builds one in an Applications
 // folder. Copies in the Trash are skipped.
 static NSURL *labsApplicationURL() {
+    auto usable = [](NSURL *url) {
+        if (!url || [url.pathComponents containsObject:@".Trash"] || [url.pathComponents containsObject:@".Trashes"])
+            return false;
+        NSString *executable = [NSBundle bundleWithURL:url].executablePath;
+        return executable && [NSFileManager.defaultManager isExecutableFileAtPath:executable];
+    };
     NSURL *best = [NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:kLabsBundleID];
+    if (!usable(best)) best = nil;
     if (@available(macOS 12.0, *)) {
         auto build = [](NSURL *url) {
             return [[NSBundle bundleWithURL:url].infoDictionary[@"CFBundleVersion"] integerValue];
@@ -357,7 +364,7 @@ static NSURL *labsApplicationURL() {
         auto installed = [](NSURL *url) { return [url.path containsString:@"/Applications/"]; };
         NSInteger bestBuild = best ? build(best) : -1;
         for (NSURL *url in [NSWorkspace.sharedWorkspace URLsForApplicationsWithBundleIdentifier:kLabsBundleID]) {
-            if ([url.path containsString:@"/.Trash/"]) continue;
+            if (!usable(url)) continue;
             const NSInteger candidate = build(url);
             if (candidate > bestBuild || (candidate == bestBuild && installed(url) && !installed(best))) {
                 best = url;

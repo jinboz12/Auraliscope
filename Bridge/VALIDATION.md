@@ -1,5 +1,158 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+## Build 67 — 2026-10-05
+
+This round starts from the delivered build 66 and retains its true-peak priming/reset fixes. It changes only two
+shared DSP kernels plus tests, tooling and build metadata. Protocol 3, schema 1, measurement coefficients, tick
+rates and history capacities are unchanged. Logs are in `.build/bridge/validation/build67/`.
+
+### Implementation and numerical checks
+
+- Mono/stereo K-weighting runs in one two-double vector instead of computing eight lanes including unused silence.
+  Three or more weighted channels retain the previous grouped kernel. The recursive equations and energy
+  accumulation order are unchanged, and no allocation or lock was added.
+- Stereo-band output writes use constant SIMD lane indices, preserving the parallel cascades and avoiding runtime
+  indexing of a vector array. A regrouped alternative measured slower and was discarded before packaging.
+- `Tests/AnalysisKernelsChecks.c`, included in `scripts/test.sh`, compares both kernels with independent scalar
+  recurrences: 0–16 weighted channels, 0–12 stored band lanes, empty and irregular buffers, carried states, energy
+  accumulation, silence tails and unwritten output guards. K-weighting tolerance is 1e-10 (relative for large
+  energies); band tolerance is 2e-6. These checks pass natively and under AddressSanitizer, and the x86_64 build
+  also passes under Rosetta. Rosetta is not Intel hardware validation.
+- A separate dynamic-library A/B harness loads the build-66 C kernels and the new kernels together. Its band
+  outputs and states are bit-identical; weighted energies/states match within 1e-11 on that signal. Five
+  alternating-order pairs, each processing 5.12 million frames, give these kernel-only medians:
+
+| Kernel | Build 66 | Build 67 | Change in elapsed time |
+|---|---:|---:|---:|
+| K-weighting, mono | 0.041099 s | 0.028130 s | −31.6% |
+| K-weighting, stereo | 0.041110 s | 0.028077 s | −31.7% |
+| Stereo band filter, ten output lanes | 0.048576 s | 0.046692 s | −3.9% |
+
+These are kernel costs on this Mac, **not percentages of DAW CPU saved**. The full-plugin comparison below includes
+other analysis and host overhead.
+
+### Paired full-plugin CPU comparison against build 66
+
+`python3 Bridge/Tools/CompareResources.py <build66.vst3> <build67.vst3>` runs the same HostHarness with
+no LABS receiver, a private socket, synthetic audio, 15 seconds per run, three alternating-order pairs per case.
+Every one of the 18 runs passed bitwise audio passthrough and reported zero process errors. CPU includes child
+process user + system time (including startup/teardown), divided by the configured audio duration; 100% means
+one core. These are medians, not the best run. Raw observations: `build67/resources-vs66.log`.
+
+| Scenario | Build 66 CPU | Build 67 CPU | Relative change |
+|---|---:|---:|---:|
+| 8 mono instances, 48 kHz, 256 frames | 13.160% | 12.635% | −4.0% |
+| 32 stereo instances, 48 kHz, 256 frames | 34.188% | 33.419% | −2.2% |
+| 8 stereo instances, 192 kHz, 1024 frames | 25.748% | 25.296% | −1.8% |
+
+Run-to-run variation remains: for example, the 192 kHz baseline range was 23.254–26.753%, and the new range
+19.861–25.885%. Three pairs do not establish statistical significance. These modest whole-process reductions
+are observations on this Mac, not a guaranteed DAW improvement; they must not be confused with the 32%
+K-weighting-only reduction above. LABS rendering CPU is not included in this comparison.
+
+### Completed validation
+
+| Check | Build 67 result |
+|---|---|
+| Core suite | 43/43, including dense multi-tone and 576 true-peak onset combinations |
+| New scalar/SIMD kernel checks | pass, native arm64 and x86_64 under Rosetta |
+| AddressSanitizer | core 43/43 and new kernel checks pass |
+| Localization | 341 keys, en / zh-Hans / ko |
+| Bridge analysis | 95/95 |
+| Bridge transport | 95/95, also 95/95 with ThreadSanitizer (C/C++ instrumented; Swift core uninstrumented) |
+| Steinberg VST3 validator | 537 passed, 0 failed |
+| Plugin → ResultProbe | 12/12, exact build-67 VST3 and AU; bitwise audio passthrough |
+| Plugin → LABS | 11/11: reconnect, mono, multiple instances, rate transition, states, restart, duplicate identities, hold, controls and analysis before app launch |
+| Paired resource runs | 18/18, zero output mismatches and process errors |
+| Installer payload | App + VST3 + AU identical to staged bundles; strict signatures, permissions, no AppleDouble entries, no relocation |
+| Bundle versions | App 1.3 / build 67; plugins 0.67 / build 67; plugin internal version text 1.3dev build 67 |
+
+**Boundaries:** synthetic test-host runs are not DAW compatibility certification. This round does not install the
+package as administrator, rescan an installed AU with auval, exercise real audio hardware, or rerun REAPER, Logic,
+Cubase, Live, FL Studio or GarageBand. No Intel-hardware or older-macOS runtime test. No new app-window screenshot
+was attempted in this round; the UI code is unchanged from build 66. App remains arm64/macOS 13+, plugin bundles
+contain arm64 and x86_64. Ad hoc code signatures; no Developer ID installer signing or notarization.
+
+## Build 66 — 2026-10-05
+
+This is a new build of the build-65 experiment (`cee274c`), validated below on Apple M1 Max / macOS 27.2.
+Protocol 3 and analysis schema 1 are unchanged. Older sections are historical evidence, not build-66 host claims.
+Logs: `.build/bridge/validation/build66/`, plus the individual probe/app/harness logs in its parent directory.
+
+### Changes and measured accuracy
+
+- **True-peak startup/reset priming.** The old analyser treated unavailable history as silence. Baseline run:
+  the right channel of the 1499 Hz / 0.25 test tone starting at sample 777 held **−11.012 dBTP**, although its
+  analytic crest is **−12.041 dBTP**. Build 66 reads **−12.041 dBTP** (left: **−6.021 dBTP**).
+  Startup now uses the same 65-sample history fill as a break. Sample peaks are retained from the first sample;
+  interpolation near an unknown edge is intentionally omitted. This affects both device analysis in LABS and
+  plugin analysis, and does not alter the production checkout.
+- **Real tails at the priming boundary.** If a nonzero sample arrives during priming, later observed silence drains
+  its filter tail even when a host buffer ends exactly at sample 65. This also fixes that boundary after a break.
+- **True-peak reset while paused/idle.** Clears the published snapshot as well as pipeline state, so the next RESULT
+  and plugin summary show zero without waiting for new audio; measurement time and other values stay unchanged.
+- **Build identity.** C++ object dependencies include `prototype-version.sh`, updating compiled version strings and
+  the editor's Objective-C class names when the build number changes. Both plugin binaries contain `1.3dev build 66`.
+- **Launch selection.** Every candidate, including LaunchServices' default, must have an executable and must not be
+  in `.Trash` or `.Trashes`. This is source-reviewed; no destructive manipulation of registered installed copies
+  was used as a test.
+- **Test isolation.** HostHarness `--format au --bundle …component` registers the exact staged factory only in its
+  test process. AU tests no longer silently select an installed copy. App e2e uses a private Unix socket.
+
+### Completed checks
+
+| Check | Build 66 result |
+|---|---|
+| Core suite | **43/43**, also **43/43 under AddressSanitizer** |
+| Localization | **341 keys**, en / zh-Hans / ko |
+| Bridge analysis | **95/95** |
+| Bridge transport | **95/95**, also **95/95 under ThreadSanitizer** (C/C++ instrumented; Swift library uninstrumented) |
+| Steinberg VST3 validator `-e` | **537 passed, 0 failed**, build-66 staged VST3 |
+| Plugin → ResultProbe (`e2e-probe.sh`) | **12/12**, exact build-66 VST3 and AU binaries; output identical to input |
+| Plugin → LABS (`e2e-app.sh`) | **11/11**, including reconnect, mono, multiple instances, 96 kHz transition, bypass/offline/idle states, app restart, duplicate identities, held display, controls and analysis before app launch |
+| AU and VST3 editors | Open/close tests pass; captured editor layouts inspected; AU log confirms staged build 66 |
+| Installer extraction | Three payloads match staged bundles byte for byte, internal signatures valid, non-relocatable, readable by all users, no AppleDouble entries |
+
+New core accuracy coverage: six rates (44.1, 48, 88.2, 96, 176.4 and 192 kHz), four frequencies (997, 1499, 15,000
+and 20,000 Hz), eight initial phases, three buffer sizes (1, 7, 257): **576 onset cases**, each within **0.005 dB**
+of the analytic crest and split-invariant within **1e-6 linear amplitude**. There are also 24 priming-boundary burst
+cases, six one-sample captures, and the existing dense 20-tone, near-Nyquist and real-silence tail tests. The latter
+now supplies observed preceding silence explicitly, instead of assuming silence before capture began.
+
+### Resource spot check against build 65
+
+Same HostHarness, no receiver, 10 seconds per run (one pair per case); process CPU is a percentage of **one core**.
+This is a short scheduling-sensitive comparison, not a speedup claim. RSS difference was at most 0.1 MB.
+
+| Instances / format | Build 65 CPU | Build 66 CPU | Build 66 worst audio process call |
+|---|---:|---:|---:|
+| 1 × 48 kHz stereo | 3.3% | 2.9% | 17.2 µs |
+| 8 × 48 kHz stereo | 11.9% | 12.1% | 18.5 µs |
+| 32 × 48 kHz stereo | 31.0% | 34.6% | 27.8 µs |
+| 8 × 44.1 kHz mono | 11.8% | 13.7% | 25.6 µs |
+| 8 × 96 kHz stereo | 21.4% | 20.3% | 22.7 µs |
+| 8 × 192 kHz stereo | 26.1% | 30.3% | 34.7 µs |
+| 8 × 48 kHz stereo, 4096-frame blocks | 10.6% | 10.9% | 47.5 µs |
+
+Follow-up: three alternating-order pairs for the two largest differences gave median one-core CPU **34.84% →
+35.25%** for 32 × 48 kHz stereo, and **26.40% → 27.12%** for 8 × 192 kHz stereo. All 12 repeated harness runs
+reported zero output mismatches and process errors. These small increases and run-to-run spread do not establish
+an improvement or exact equivalence; this remains an accuracy/reset update, not a CPU optimization claim.
+
+### App launch and rendering smoke check
+
+The app extracted from the final installer passes strict/deep signature verification and its Metal offscreen
+preview renders successfully (visually inspected). LaunchServices with external `--stdout/--stderr` destinations
+returned `-10810`; without those options it launched successfully. The saved no-window state required a subsequent
+normal Open event, after which the build-66 diagnostic log entered demo mode. A full-window screenshot was not
+obtained. The offscreen preview is not a substitute for an installed interactive UI test.
+
+**Boundaries:** no administrator installation was performed. AU was loaded directly by the test host, not rescanned
+or validated by `auval` as an installed build. No build-66 DAW compatibility run was performed in REAPER, Logic,
+Cubase, Ableton Live, FL Studio or GarageBand; historical results below do not substitute for one. No Intel or
+older-macOS runtime testing, Developer ID signing or notarization. This is an accuracy/state correctness update;
+no general CPU speedup is claimed. Startup's 65-sample priming is about 1.47 ms at 44.1 kHz (sample peaks still count).
+
 ## Build 65
 
 - **App name fix.** Build 64 installed as `/Applications/Auraliscope LABS.app`, but Finder, the Dock and the privacy
@@ -207,7 +360,9 @@ In return, Labs no longer analyses a Bridge source at all.
 - A display never receives a result of an earlier subscription, a column twice, or results of two formats in one
   generation.
 
-### Known limitations and unresolved issues
+### Known limitations and unresolved issues (historical build 3)
+
+The onset issue in item 1 below is fixed in build 66; see the current section above.
 
 1. **True-peak onset overshoot (finding in the shared analyser, not changed).** When a measurement starts in the middle
    of a waveform (capture started while audio plays, or a Reset while the DAW plays), the release true-peak detector

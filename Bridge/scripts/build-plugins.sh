@@ -29,7 +29,7 @@ newest_header="$(ls -t Bridge/Plugin/*/*.h Bridge/Plugin/Analysis/include/*.h So
 compile() {
     local object="$obj/$1" source="$2"; shift 2
     mkdir -p "${object:h}"
-    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" ]]; then
+    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" || Bridge/scripts/prototype-version.sh -nt "$object" ]]; then
         clang++ -c "$source" -o "$object" "${base[@]}" "$@" &
         pids+=($!)
     fi

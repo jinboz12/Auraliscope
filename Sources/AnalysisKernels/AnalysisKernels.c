@@ -274,8 +274,42 @@ static void k_weight_group(const double *c, double *const *state, const float *c
     }
 }
 
+// Mono/stereo is the common plugin case. A two-double vector keeps only the live
+// lanes instead of evaluating six silent lanes through both recursive filters.
+// The recurrence and its evaluation order match the eight-channel kernel.
+typedef double double2 __attribute__((ext_vector_type(2)));
+static void k_weight_pair(const double *c, double *const *state, const float *const *inputs,
+                          uint32_t channels, uint32_t count, double *energy) {
+    const double2 b0 = c[0], b1 = c[1], b2 = c[2], f1 = c[3], f2 = c[4];
+    const double2 d0 = c[5], d1 = c[6], d2 = c[7], e1 = c[8], e2 = c[9];
+    double2 s0 = {state[0][0], channels > 1 ? state[1][0] : 0};
+    double2 s1 = {state[0][1], channels > 1 ? state[1][1] : 0};
+    double2 s2 = {state[0][2], channels > 1 ? state[1][2] : 0};
+    double2 s3 = {state[0][3], channels > 1 ? state[1][3] : 0};
+    double2 sum = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        double2 x = {inputs[0][i], channels > 1 ? inputs[1][i] : 0};
+        double2 y = b0 * x + s0;
+        s0 = b1 * x - f1 * y + s1;
+        s1 = b2 * x - f2 * y;
+        double2 z = d0 * y + s2;
+        s2 = d1 * y - e1 * z + s3;
+        s3 = d2 * y - e2 * z;
+        sum += z * z;
+    }
+    for (uint32_t lane = 0; lane < channels; ++lane) {
+        state[lane][0] = s0[lane]; state[lane][1] = s1[lane];
+        state[lane][2] = s2[lane]; state[lane][3] = s3[lane];
+        energy[lane] += sum[lane];
+    }
+}
+
 void k_weight_energy(const double *coefficients, double *const *state, const float *const *inputs, uint32_t channels,
                      uint32_t count, double *energy) {
+    if (channels > 0 && channels <= 2) {
+        k_weight_pair(coefficients, state, inputs, channels, count, energy);
+        return;
+    }
     for (uint32_t first = 0; first < channels; first += 8) {
         uint32_t lanes = channels - first < 8 ? channels - first : 8;
         k_weight_group(coefficients, state + first, inputs + first, lanes, count, energy + first);
@@ -304,7 +338,15 @@ void band_filter(const float *coefficients, float *state, const float *left, con
             }
             y[g] = v;
         }
-        for (uint32_t lane = 0; lane < lanes; lane++) outputs[lane][i] = y[lane / 4][lane % 4];
+        // Fixed vector element indices avoid spilling y to a stack array for a
+        // runtime lane lookup. Keep the independent cascades interleaved.
+        #pragma clang loop unroll(full)
+        for (uint32_t g = 0; g < groups; ++g) {
+            if (g * 4 < lanes) outputs[g * 4][i] = y[g][0];
+            if (g * 4 + 1 < lanes) outputs[g * 4 + 1][i] = y[g][1];
+            if (g * 4 + 2 < lanes) outputs[g * 4 + 2][i] = y[g][2];
+            if (g * 4 + 3 < lanes) outputs[g * 4 + 3][i] = y[g][3];
+        }
     }
     memcpy(state, s, sizeof s);
 }

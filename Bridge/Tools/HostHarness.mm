@@ -5,7 +5,7 @@
 // the instances between live processing, host bypass, offline render, idle (no process calls) and new formats,
 // so the receiving side (Auraliscope Labs or the probe) can be checked against a known sequence.
 //
-//   HostHarness --format vst3|au [--bundle <path.vst3>] [--channels 1|2] [--rate 48000] [--block 256]
+//   HostHarness --format vst3|au [--bundle <path.vst3|path.component>] [--channels 1|2] [--rate 48000] [--block 256]
 //               [--instances n] [--copies n] [--name <base>] [--id <32 hex>] [--phases live:4,bypass:2,live:2]
 //               [--editor-snapshot <file.png>] [--editor-seconds s] [--cycles n]
 //
@@ -23,6 +23,7 @@
 #import <AudioUnit/AUCocoaUIView.h>
 #import <Cocoa/Cocoa.h>
 #include <fcntl.h>
+#include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach/thread_policy.h>
@@ -256,7 +257,31 @@ class AUInstance : public Instance {
 public:
     AUInstance(const Options &options, uint32_t index) {
         AudioComponentDescription description{kAudioUnitType_Effect, 'Abrg', 'Jnbz', 0, 0};
-        AudioComponent component = AudioComponentFindNext(nullptr, &description);
+        AudioComponent component = nullptr;
+        if (options.bundle.empty()) {
+            component = AudioComponentFindNext(nullptr, &description);
+        } else {
+            // Register exactly the staged AU in this process. Installed copies and the registrar
+            // cache must not decide which build this test validates. Keep its code loaded for the
+            // process lifetime, as a DAW does for Swift/Objective-C plugins.
+            static AudioComponent staged = nullptr;
+            if (!staged) {
+                NSBundle *bundle = [NSBundle bundleWithPath:[NSString stringWithUTF8String:options.bundle.c_str()]];
+                const char *path = bundle.executablePath.fileSystemRepresentation;
+                void *library = path ? dlopen(path, RTLD_NOW | RTLD_LOCAL) : nullptr;
+                auto factory = library ? reinterpret_cast<AudioComponentFactoryFunction>(dlsym(library, "BridgeAUFactory")) : nullptr;
+                if (!factory) {
+                    std::fprintf(stderr, "cannot load staged AU: %s\n", options.bundle.c_str());
+                    return;
+                }
+                NSNumber *version = bundle.infoDictionary[@"AudioComponents"][0][@"version"];
+                staged = AudioComponentRegister(&description, CFSTR("JINBOZ: Auraliscope Bridge (test)"),
+                                                version.unsignedIntValue, factory);
+                std::printf("[harness] staged AU build %s: %s\n",
+                            [bundle.infoDictionary[@"CFBundleVersion"] UTF8String], path);
+            }
+            component = staged;
+        }
         if (!component || AudioComponentInstanceNew(component, &unit_) != noErr) {
             std::fprintf(stderr, "cannot instantiate aufx Abrg Jnbz (installed?)\n");
             unit_ = nullptr;

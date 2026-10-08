@@ -131,7 +131,7 @@ Types 3 (FORMAT) and 4 (AUDIO) belonged to version 2, which streamed audio. Vers
 COMMAND: 1 u32 command ID (chosen by the display, echoed), 2 u32 code, 3 bytes[16] the target's session ID, 4 u32 the
 generation it is meant for (0: whichever is current).
 
-Codes: 1 RESET (a new generation: every measurement starts afresh), 2 RESET_TRUE_PEAK (clear the held true peaks),
+Codes: 1 RESET (a new generation: every measurement starts afresh), 2 RESET_TRUE_PEAK (clear the held true peaks, also in the next RESULT while paused or idle),
 3 PAUSE (pause measurement), 4 RESUME.
 
 ACK: 1 u32 command ID, 2 u32 code, 3 u32 outcome, 4 u32 generation after it, 5 u32 measurement after it, 6
