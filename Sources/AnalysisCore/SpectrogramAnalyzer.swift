@@ -143,13 +143,23 @@ package final class SpectrogramAnalyzer {
     package func length(ofRow row: Int) -> Int { zones[plan[row].next >= 0 ? plan[row].next : plan[row].zone].length }
 
     /// Fills `output` (`rows` dBFS values) from the history rings: ring `role` starts at `rings + role · span` and its
-    /// oldest sample is at `cursor`. `roles` are summed (and halved); an empty list writes silence.
-    package func column(rings: UnsafePointer<Float>, cursor: Int, roles: [Int], into output: UnsafeMutablePointer<Float>) {
+    /// oldest sample is at `cursor`. `roles` are summed (and halved); an empty list writes silence. `longest`, when
+    /// given, is that display power already transformed over the whole span with the same Hann window (the
+    /// spectrum's, `span / 2` bins), and stands in for the longest zone's own transforms.
+    package func column(rings: UnsafePointer<Float>, cursor: Int, roles: [Int], longest: UnsafePointer<Float>? = nil,
+                        into output: UnsafeMutablePointer<Float>) {
         guard !roles.isEmpty else {
             output.update(repeating: -120, count: rows)
             return
         }
-        for zone in zones where zone.used { analyse(zone, rings: rings, cursor: cursor, roles: roles) }
+        for zone in zones where zone.used {
+            if let longest, zone.length == span {
+                zone.power.withUnsafeMutableBufferPointer { $0.baseAddress!.update(from: longest, count: span / 2) }
+                decibels(zone, frames: 1, halved: true)
+            } else {
+                analyse(zone, rings: rings, cursor: cursor, roles: roles)
+            }
+        }
         for (row, entry) in plan.enumerated() {
             let a = level(zones[entry.zone], row: row)
             guard entry.next >= 0 else {
@@ -193,8 +203,15 @@ package final class SpectrogramAnalyzer {
                 index += 2
             }
         }
-        // Halved (stereo-pair reference) and averaged over the frames, then to dB for a sine, floored at −120.
-        var factor = 0.5 / Float(zone.starts.count) * zone.scale
+        decibels(zone, frames: zone.starts.count, halved: false)
+    }
+
+    /// `zone.power` (summed over the roles, or already `halved`) averaged over `frames`, then to dB for a sine,
+    /// floored at −120.
+    private func decibels(_ zone: Zone, frames: Int, halved: Bool) {
+        let n = zone.length
+        let bins = vDSP_Length(n / 2)
+        var factor = (halved ? 1 : 0.5) / Float(frames) * zone.scale
         var floor: Float = 1e-12
         var ceiling = Float.greatestFiniteMagnitude
         var ten: Float = 10

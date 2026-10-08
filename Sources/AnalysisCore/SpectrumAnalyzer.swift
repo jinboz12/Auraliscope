@@ -567,9 +567,13 @@ package final class SpectrumAnalyzer {
     /// of history. Silent rings add nothing and are skipped, as in `transform`.
     package func spectrogram(into rows: inout [Float]) {
         let roles = analysedRoles.allSatisfy { silentFrames[$0] >= Self.fftSize } ? [] : analysedRoles
+        // The newest transform is the longest zone's own: the same Hann window over the same ring and roles.
         history.withUnsafeBufferPointer { rings in
-            rows.withUnsafeMutableBufferPointer { out in
-                spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: roles, into: out.baseAddress!)
+            power.withUnsafeBufferPointer { longest in
+                rows.withUnsafeMutableBufferPointer { out in
+                    spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: roles,
+                                               longest: longest.baseAddress!, into: out.baseAddress!)
+                }
             }
         }
     }
