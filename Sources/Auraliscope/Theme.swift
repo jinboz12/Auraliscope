@@ -523,11 +523,15 @@ enum Theme {
 
     static var rampStops: [RGB] { style.rampStops }
 
-    /// The waterfall shader's colour for a level (its `rampMap` after the −90…−12 dB curve), so the live spectrum
-    /// can wear the same colours as the waterfall's newest column.
-    static func ramp(decibels db: Float) -> RGB {
-        var x = pow(max(0, min(1, (db + 90) / 78)), 1.6)
-        x += (x * x * (3 - 2 * x) - x) * 0.6
+    /// The waterfall's colour for a level, through the same tone curve and range (`SpectrogramTone`), so the live
+    /// spectrum and the legend wear the colours the waterfall shows.
+    static func ramp(decibels db: Float, range: SpectrogramRange) -> RGB {
+        ramp(position: SpectrogramTone.position(db, range: range))
+    }
+
+    /// The colour at `x` (0…1) along `rampStops`, eased between stops as the shader's `rampMap` is.
+    static func ramp(position x: Float) -> RGB {
+        let x = max(0, min(1, x))
         let stops = rampStops
         let scaled = x * Float(stops.count - 1)
         let index = min(Int(scaled), stops.count - 2)

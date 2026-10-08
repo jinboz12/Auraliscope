@@ -187,11 +187,10 @@
 "Third-party notices" = "Third-party notices";
 "Third-party notices are included in the packaged app." = "Third-party notices are included in the packaged app.";
 "Copy Version Info" = "Copy Version Info";
-"Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard." = "Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard.";
+"Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer." = "Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer.";
 "LUFS, loudness range and True Peak against your target." = "LUFS, loudness range and True Peak against your target.";
 "Real-time waveforms for each monitored channel." = "Real-time waveforms for each monitored channel.";
 "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded.";
-"Spectrogram inspired by AudioSpectrogram. MIT license included." = "Spectrogram inspired by AudioSpectrogram. MIT license included.";
 "Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them." = "Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them.";
 
 /* Meter window, theme names and the language restart (1.0.1). */
@@ -381,3 +380,14 @@
 "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window" = "Host plugins · choose an insert in Settings → Audio, or click the button in its plugin window";
 "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here." = "Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here.";
 "LABS Indigo" = "LABS Indigo";
+"Deep" = "Deep";
+"Hot" = "Hot";
+"Flat" = "Flat";
+"%@ dB/oct" = "%@ dB/oct";
+"Color range" = "Color range";
+"Tilt" = "Tilt";
+"live" = "live";
+"Color scale from %@ to %@ dBFS" = "Color scale from %@ to %@ dBFS";
+"The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters.";
+"A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true." = "A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true.";
+"Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure.";

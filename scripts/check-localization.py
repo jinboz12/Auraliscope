@@ -29,7 +29,7 @@ PROTECTED = [
     # Standards, products and technologies
     "ITU-R BS.1770-5", "BS.1770", "EBU Tech 3342", "EBU R128", "ATSC A/85", "Dolby Atmos", "Apple Music",
     "Spotify", "YouTube", "Tidal", "Netflix", "EDM", "Core Audio", "AUHAL", "HAL", "AudioUnit", "Accelerate",
-    "vDSP", "Metal", "SwiftUI", "AppKit", "C11", "MIT", "AudioSpectrogram", "OSStatus", "Float32 PCM", "FFT",
+    "vDSP", "Metal", "SwiftUI", "AppKit", "C11", "MIT", "OSStatus", "Float32 PCM", "FFT",
     "Auraliscope", "Atmos", "macOS", "Mac", "DAW",
     # Units and abbreviations
     "LUFS", "LKFS", "LU", "dBFS", "dBTP", "dB", "RMS", "VU", "kHz", "Hz",

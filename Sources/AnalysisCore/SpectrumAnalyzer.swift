@@ -253,8 +253,8 @@ package struct MeterSnapshot: Equatable {
 
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
 package final class SpectrumAnalyzer {
-    // 8192 points: 5.9 Hz bins at 48 kHz, so the bottom octaves get real detail. At 30 columns/s the
-    // windows overlap by ~80 %, which keeps the waterfall continuous. Channels share complex transforms in
+    // 8192 points: 5.9 Hz bins at 48 kHz, so the bottom octaves get real detail. The waterfall reads the same
+    // history at several resolutions of its own (`SpectrogramAnalyzer`). Channels share complex transforms in
     // pairs (one real, one imaginary) and are separated by conjugate symmetry, which halves the FFT cost without
     // giving up any resolution; that is cheaper than dropping to 4096 points and keeps the 5.9 Hz bins.
     package static let fftSize = 8192
@@ -285,11 +285,14 @@ package final class SpectrumAnalyzer {
     /// For L and R alone that is their mean, exactly as before; stereo content reads the same in both modes.
     private var power = [Float](repeating: 0, count: fftSize / 2)
     private var bands: [BandMap] = []
-    private var spectrogramBands: [BandMap] = []
-    /// dB of the low bins that interpolated rows read (one vectorised log per tick instead of three per row).
+    /// The waterfall's own multi-resolution analysis of the same history rings.
+    private let spectrogramAnalyzer: SpectrogramAnalyzer
+    /// Roles of the newest transform, which the waterfall column follows (L and R, or every sounding Spatial role).
+    private var analysedRoles = [Role.left, Role.right]
+    /// dB of the low bins that interpolated bands read (one vectorised log per tick instead of three per band).
     private var lowDecibels: [Float] = []
-    /// Scratch for one pass of row powers, converted to dB together.
-    private var rowPower = [Float](repeating: 0, count: max(MeterSnapshot.bandCount, MeterSnapshot.spectrogramBandCount))
+    /// Scratch for one pass of band powers, converted to dB together.
+    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.bandCount)
     private var amplitudeScale: Float = 0
     /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
     private var binBands: [Int8] = []
@@ -311,8 +314,10 @@ package final class SpectrumAnalyzer {
     /// `recording` marks the routed roles whose history is kept for Spatial analysis (L and R always are).
     package init?(sampleRate: Double, recording roles: [Bool] = []) {
         guard sampleRate.isFinite, sampleRate > 100,
+              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate),
               let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.fftSize), .FORWARD) else { return nil }
         self.setup = setup
+        self.spectrogramAnalyzer = spectrogramAnalyzer
         self.sampleRate = sampleRate
         recordedRoles = [Role.left, Role.right] + (0..<min(roles.count, Role.count)).filter { $0 > Role.right && roles[$0] }
         vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_DENORM))
@@ -331,8 +336,7 @@ package final class SpectrumAnalyzer {
             return first..<(last + 1)
         }
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
-        spectrogramBands = Self.bandMaps(count: MeterSnapshot.spectrogramBandCount, sampleRate: sampleRate)
-        let lowBins = (bands + spectrogramBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
+        let lowBins = bands.filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
         lowDecibels = [Float](repeating: -120, count: min(Self.fftSize / 2, lowBins))
     }
 
@@ -559,10 +563,19 @@ package final class SpectrumAnalyzer {
         }
     }
 
-    /// Waterfall rows of the most recent transform.
+    /// A waterfall column (`SpectrogramAnalyzer`) of the roles the newest transform analysed, from the same window
+    /// of history. Silent rings add nothing and are skipped, as in `transform`.
     package func spectrogram(into rows: inout [Float]) {
-        levels(spectrogramBands, into: &rows)
+        let roles = analysedRoles.allSatisfy { silentFrames[$0] >= Self.fftSize } ? [] : analysedRoles
+        history.withUnsafeBufferPointer { rings in
+            rows.withUnsafeMutableBufferPointer { out in
+                spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: roles, into: out.baseAddress!)
+            }
+        }
     }
+
+    /// The waterfall's analysis (resolutions in use, for diagnostics).
+    package var spectrogramResolutions: [(length: Int, frames: Int)] { spectrogramAnalyzer.resolutions }
 
     package func snapshot() -> MeterSnapshot {
         var result = MeterSnapshot()
@@ -582,17 +595,21 @@ package final class SpectrumAnalyzer {
         return result
     }
 
-    /// A log-spaced display row. Rows wider than ~1.5 bins take the loudest bin they cover;
-    /// narrower rows (the low octaves) interpolate power at their centre frequency instead of
-    /// repeating one bin, which removes the staircase at the bottom of the waterfall.
+    /// A log-spaced display band (the spectrum's 64, or a waterfall row at one of its resolutions). Bands wider than
+    /// ~1.5 bins take the loudest bin they cover; narrower ones (the low octaves) interpolate at their centre
+    /// frequency instead of repeating one bin, which removes the staircase at the bottom of the axis.
     package struct BandMap {
         package let first: Int
         package let last: Int
         package let fraction: Float
+        /// Half the band's width in bins, for an interpolated band (which reads the loudest point within it).
+        package var halfWidth: Float = 0
         package var interpolated: Bool { fraction >= 0 }
+        /// The band's centre, in fractional bins (interpolated bands).
+        package var position: Float { Float(first) + fraction }
     }
 
-    package static func bandMaps(count: Int, sampleRate: Double) -> [BandMap] {
+    package static func bandMaps(count: Int, sampleRate: Double, fftSize: Int = SpectrumAnalyzer.fftSize) -> [BandMap] {
         let upper = min(20_000, sampleRate / 2)
         let binWidth = sampleRate / Double(fftSize)
         let lastBin = fftSize / 2 - 1
@@ -602,7 +619,8 @@ package final class SpectrumAnalyzer {
             if (high - low) / binWidth < 1.5 {
                 let position = min(Double(lastBin - 1), max(1, sqrt(low * high) / binWidth))
                 let first = Int(position)
-                return BandMap(first: first, last: first + 1, fraction: Float(position - Double(first)))
+                return BandMap(first: first, last: first + 1, fraction: Float(position - Double(first)),
+                               halfWidth: Float((high - low) / binWidth / 2))
             }
             let first = max(1, min(lastBin, Int(low / binWidth)))
             return BandMap(first: first, last: max(first, min(lastBin, Int(high / binWidth))), fraction: -1)
@@ -644,13 +662,39 @@ package final class SpectrumAnalyzer {
                 output[index] = rowPower[index]
                 continue
             }
-            let position = Float(map.first) + map.fraction
-            let nearest = min(lowDecibels.count - 2, max(1, Int(position.rounded())))
-            let a = lowDecibels[nearest - 1], b = lowDecibels[nearest], c = lowDecibels[nearest + 1]
-            let x = position - Float(nearest)
-            let value = b + 0.5 * (c - a) * x + 0.5 * (a - 2 * b + c) * x * x
-            output[index] = max(-120, min(max(a, max(b, c)), value))
+            output[index] = lowDecibels.withUnsafeBufferPointer {
+                Self.interpolatedLevel($0, at: map.position, halfWidth: map.halfWidth)
+            }
         }
+    }
+
+    /// The loudest level within `position ± halfWidth` (fractional bins) of a spectrum in dB, read from the parabola
+    /// through three bins: a band narrower than a bin stands for an interval of frequency, and a tone anywhere in it
+    /// reads its full level there, as it does in a wide band (its loudest bin). The parabola is centred on the local
+    /// maximum beside `position` when there is one, so it is the peak's own model (the one `dominantPeak` uses);
+    /// sampled at the band's centre around the nearest bin, a tone between rows read up to ~1.4 dB low. Elsewhere
+    /// (a flank or the floor) it is centred on the nearest bin. Never above the vertex or below −120 dB.
+    package static func interpolatedLevel(_ d: UnsafeBufferPointer<Float>, at position: Float, halfWidth: Float = 0) -> Float {
+        guard d.count >= 3 else { return d.first ?? -120 }
+        var centre = min(d.count - 2, max(1, Int(position.rounded())))
+        if centre - 1 >= 1, d[centre - 1] > d[centre], d[centre - 1] >= d[centre - 2] {
+            centre -= 1
+        } else if centre + 2 < d.count, d[centre + 1] > d[centre], d[centre + 1] >= d[centre + 2] {
+            centre += 1
+        }
+        let a = d[centre - 1], b = d[centre], c = d[centre + 1]
+        let curvature = a - 2 * b + c
+        // The band's loudest point: the vertex if it lies within the band, else the band's edge nearer to it.
+        var x = position - Float(centre)
+        if curvature < 0 {
+            let vertex = 0.5 * (a - c) / curvature
+            x = max(x - halfWidth, min(x + halfWidth, vertex))
+        }
+        x = max(-1.5, min(1.5, x))
+        let value = b + 0.5 * (c - a) * x + 0.5 * curvature * x * x
+        // A concave parabola peaks at its vertex; a flat or convex one is held within its samples.
+        let ceiling = curvature < 0 ? b - (c - a) * (c - a) / (8 * curvature) : max(a, max(b, c))
+        return max(-120, min(ceiling, value))
     }
 
     /// Loudest bin k in 20 Hz…upper, refined by parabolic interpolation of the dB values at k−1, k, k+1.
@@ -686,6 +730,7 @@ package final class SpectrumAnalyzer {
         let roles = requested.count > 2
             ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < Self.fftSize }
             : requested
+        analysedRoles = roles
         let bins = vDSP_Length(Self.fftSize / 2)
         if roles.allSatisfy({ silentFrames[$0] >= Self.fftSize }) {
             // Digital silence everywhere (a paused player still delivers zeros): the transforms would be zeros.

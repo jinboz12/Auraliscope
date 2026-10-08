@@ -238,6 +238,82 @@ enum FrequencyAxis {
     static let labelHeight: CGFloat = 20
 }
 
+/// The levels the spectrogram's colours span, chosen in Settings › Panels. Standard suits most programme; Deep
+/// lifts quiet detail (reverb tails, noise floors, low-level hum) into view; Hot keeps a loud master's upper
+/// partials apart instead of letting them all reach the brightest colour.
+enum SpectrogramRange: String, CaseIterable {
+    case standard, deep, hot
+
+    static let key = "spectrogram.range"
+    static var stored: SpectrogramRange { SpectrogramRange(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .standard }
+
+    /// The darkest and brightest colours' levels, in dBFS.
+    var floor: Float {
+        switch self {
+        case .standard: return -90
+        case .deep: return -114
+        case .hot: return -72
+        }
+    }
+    var ceiling: Float {
+        switch self {
+        case .standard: return -12
+        case .deep: return -24
+        case .hot: return 0
+        }
+    }
+    var title: String {
+        switch self {
+        case .standard: return L("Standard")
+        case .deep: return L("Deep")
+        case .hot: return L("Hot")
+        }
+    }
+}
+
+/// A display slope for the spectrum and the spectrogram, pivoting at 1 kHz. Music falls by roughly 3 to 4.5 dB per
+/// octave, so a tilt of that much shows a balanced mix as level across the axis and makes the treble's detail as
+/// readable as the bass's. Readouts (the peak badge, the inspector) always give the true level.
+enum SpectrumTilt: String, CaseIterable {
+    case flat, three, fourAndHalf
+
+    static let key = "spectrum.tilt"
+    static var stored: SpectrumTilt { SpectrumTilt(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .flat }
+    static let pivot = 1_000.0
+
+    var decibelsPerOctave: Float {
+        switch self {
+        case .flat: return 0
+        case .three: return 3
+        case .fourAndHalf: return 4.5
+        }
+    }
+    var title: String {
+        switch self {
+        case .flat: return L("Flat")
+        case .three: return L("%@ dB/oct", "3")
+        case .fourAndHalf: return L("%@ dB/oct", "4.5")
+        }
+    }
+    /// What the slope adds at `frequency`.
+    func offset(frequency: Double) -> Float { decibelsPerOctave * Float(log2(max(frequency, 1) / Self.pivot)) }
+}
+
+/// How a spectrogram level becomes a colour: the position on `Theme.rampStops` (0 the empty well, 1 the brightest).
+/// The Metal waterfall evaluates the same curve (`waterfallTone`), the live spectrum's fill and the header legend
+/// call it here, so the three always agree. A level is mapped linearly over the range, then shaped: a power curve
+/// keeps the noise floor dark, and a partial S-curve separates quiet detail from loud partials.
+enum SpectrogramTone {
+    static let gamma: Float = 1.6
+    static let contrast: Float = 0.6
+
+    static func position(_ db: Float, range: SpectrogramRange) -> Float {
+        let linear = max(0, min(1, (db - range.floor) / (range.ceiling - range.floor)))
+        let x = pow(linear, gamma)
+        return x + (x * x * (3 - 2 * x) - x) * contrast
+    }
+}
+
 /// The Spectrum card's display well, which holds the spectrogram and the live spectrum on one frequency axis:
 /// frequency runs bottom to top on the log axis. A vertical piano keyboard on the left shares that axis, so
 /// each key sits exactly on its pitch band, with octave labels (C1, C2…) left of the keys. The waterfall
@@ -332,6 +408,19 @@ struct SpectrogramLayout {
     func x(decibels db: Float) -> CGFloat {
         let offset = MeterScale.spectrumFraction(db) * spectrum.width
         return mirrored ? spectrum.maxX - offset : spectrum.minX + offset
+    }
+
+    /// Inverse of `y(frequency:)`: the frequency at `y` on the shared axis.
+    func frequency(y: CGFloat, sampleRate: Double) -> Double {
+        let fraction = Double((plot.maxY - y) / max(1, plot.height))
+        return 20 * pow(MeterScale.upperFrequency(sampleRate: sampleRate) / 20, fraction)
+    }
+    /// The fractional waterfall row (and spectrum band, with `rows` 64) at `y`, row 0 centred on the bottom one.
+    func row(y: CGFloat, rows: Int) -> Double { Double((plot.maxY - y) / max(1, plot.height)) * Double(rows) - 0.5 }
+    /// Across the waterfall at `x`: 0 at its oldest edge, 1 at "now", whichever side "now" is on.
+    func timeFraction(x: CGFloat) -> Double {
+        let fraction = Double((x - plot.minX) / max(1, plot.width))
+        return mirrored ? 1 - fraction : fraction
     }
 
     /// Frequency marks along the spectrum: 20, 50, 100, 200, 500 Hz… up to the ceiling, each at least 13 pt

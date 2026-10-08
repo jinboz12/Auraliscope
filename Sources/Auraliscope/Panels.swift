@@ -110,8 +110,8 @@ struct SpectrumPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"),
-                            detail: "\(source) · FFT \(SpectrumAnalyzer.fftSize) · " + L("pitch")) {
-                    WaterfallLegend()
+                            detail: "\(source) · FFT \(SpectrogramAnalyzer.minimumLength)–\(SpectrumAnalyzer.fftSize) · " + L("pitch")) {
+                    SpectrogramLegend()
                 }
                 GeometryReader { proxy in
                     let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
@@ -121,6 +121,7 @@ struct SpectrumPanel: View {
                         PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
                         PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
                         SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left)
+                        SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left)
                         // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
                         PanelDivider(axis: .horizontal, leading: layout.dividerLeading,
                                      onResize: { setStrip(layout.strip(forDivider: $0), size: proxy.size, left: left) },
@@ -193,16 +194,169 @@ private struct BadgeSurface: View {
     }
 }
 
-private struct WaterfallLegend: View {
+/// The colour scale in the header: the range's floor and ceiling either side of a bar that runs the tone curve
+/// itself (`SpectrogramTone`), linear in dB, with a notch every 24 dB; and the display slope when one is set.
+private struct SpectrogramLegend: View {
+    @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
+    @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
+    @ObservedObject private var theme = ThemeSettings.shared
+    @ObservedObject private var l10n = Localizer.shared
+
     var body: some View {
+        let range = SpectrogramRange(rawValue: rangeKey) ?? .standard
+        let tilt = SpectrumTilt(rawValue: tiltKey) ?? .flat
+        let width: CGFloat = 72
         HStack(spacing: 5) {
-            Text("−90").font(.axis).foregroundStyle(Theme.tertiary)
-            // Same stops and range as the waterfall shader's rampMap.
-            Capsule()
-                .fill(LinearGradient(colors: Theme.rampStops.map(\.color), startPoint: .leading, endPoint: .trailing))
-                .frame(width: 64, height: 5)
-                .overlay { Capsule().strokeBorder(Theme.hairline.opacity(0.10), lineWidth: 0.5) }
-            Text("−12 dB").font(.axis).foregroundStyle(Theme.tertiary)
+            Text(verbatim: MeterScale.signedInteger(range.floor)).font(.axis).foregroundStyle(Theme.tertiary)
+            Canvas { context, size in
+                let steps = 24
+                let span = range.ceiling - range.floor
+                let stops = (0...steps).map { step -> Gradient.Stop in
+                    let fraction = Float(step) / Float(steps)
+                    let color = Theme.ramp(decibels: range.floor + span * fraction, range: range).color
+                    return Gradient.Stop(color: color, location: CGFloat(fraction))
+                }
+                let bar = Path(roundedRect: CGRect(x: 0, y: 0, width: size.width, height: 5), cornerRadius: 2.5)
+                context.fill(bar, with: .linearGradient(Gradient(stops: stops), startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)))
+                context.stroke(bar, with: .color(Theme.hairline.opacity(0.12)), lineWidth: 0.5)
+                var db = (range.floor / 24).rounded(.up) * 24
+                if db <= range.floor { db += 24 }
+                while db < range.ceiling {
+                    let x = CGFloat((db - range.floor) / span) * size.width
+                    context.fill(Path(CGRect(x: x - 0.25, y: 6, width: 0.5, height: 2)), with: .color(Theme.tertiary))
+                    db += 24
+                }
+            }
+            .frame(width: width, height: 8)
+            .offset(y: 1.5)
+            Text(verbatim: MeterScale.signedInteger(range.ceiling) + " dB").font(.axis).foregroundStyle(Theme.tertiary)
+            if tilt != .flat {
+                Text(verbatim: "· +" + tilt.title).font(.axis).foregroundStyle(Theme.secondary)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L("Color scale from %@ to %@ dBFS", MeterScale.signedInteger(range.floor), MeterScale.signedInteger(range.ceiling)))
+    }
+}
+
+/// Hover over the Spectrum well to read it: over the waterfall, the level of the very cell on screen, with its
+/// pitch, frequency and age; over the live spectrum, the level of the band under the pointer. A crosshair marks the
+/// spot. Pause first to read a moment at leisure: the waterfall holds still and so do its values.
+private struct SpectrogramInspector: View {
+    let sampleRate: Double
+    let strip: CGFloat
+    let left: Bool
+    @State private var location: CGPoint? = Diagnostics.inspectPoint
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        GeometryReader { proxy in
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let point): location = point
+                        case .ended: location = nil
+                        }
+                    }
+                if let location, let reading = reading(at: location, layout: layout) {
+                    TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
+                        overlay(self.reading(at: location, layout: layout) ?? reading, at: location, layout: layout, size: proxy.size)
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private struct Reading {
+        let frequency: Double
+        let level: Float?
+        /// Seconds before the newest column, over the waterfall; nil over the live spectrum.
+        let secondsAgo: Double?
+    }
+
+    private func reading(at point: CGPoint, layout: SpectrogramLayout) -> Reading? {
+        guard point.y >= layout.plot.minY, point.y <= layout.plot.maxY else { return nil }
+        let frequency = layout.frequency(y: point.y, sampleRate: sampleRate)
+        if layout.plot.contains(point) {
+            let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene
+            let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: layout.row(y: point.y, rows: SpectrogramHistory.rows))
+            return Reading(frequency: frequency, level: cell?.level,
+                           secondsAgo: cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds)
+        }
+        if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
+            let bands = (SceneStore.existing(.spectrum) as? SpectrumScene)?.shown ?? []
+            let band = Int(layout.row(y: point.y, rows: MeterSnapshot.bandCount).rounded())
+            return Reading(frequency: frequency, level: bands.indices.contains(band) ? bands[band] : nil, secondsAgo: nil)
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func overlay(_ reading: Reading, at point: CGPoint, layout: SpectrogramLayout, size: CGSize) -> some View {
+        let lineColor = Theme.ink.opacity(Theme.dark ? 0.45 : 0.4)
+        let dash = StrokeStyle(lineWidth: 0.75, dash: [3, 3])
+        let span = layout.plot.union(layout.spectrum)
+        ZStack(alignment: .topLeading) {
+            Path { path in
+                path.move(to: CGPoint(x: span.minX, y: point.y))
+                path.addLine(to: CGPoint(x: span.maxX, y: point.y))
+                if reading.secondsAgo != nil {
+                    path.move(to: CGPoint(x: point.x, y: layout.plot.minY))
+                    path.addLine(to: CGPoint(x: point.x, y: layout.plot.maxY))
+                }
+            }
+            .stroke(lineColor, style: dash)
+            let tag = InspectorTag(reading: reading)
+            let width = InspectorTag.width(reading)
+            let flip = point.x + 14 + width > span.maxX
+            let x = flip ? point.x - 14 - width : point.x + 14
+            let y = min(max(span.minY + 2, point.y - 30), span.maxY - 24)
+            tag.frame(width: width, alignment: .leading).offset(x: max(span.minX + 2, x), y: y)
+        }
+    }
+
+    private struct InspectorTag: View {
+        let reading: Reading
+        @ObservedObject private var l10n = Localizer.shared
+
+        /// Fixed per kind, so the tag never changes size as the pointer moves.
+        static func width(_ reading: Reading) -> CGFloat { reading.secondsAgo == nil ? 200 : 246 }
+
+        var body: some View {
+            let pitch = Pitch(frequency: reading.frequency)
+            let font = Font.caption2.weight(.medium).monospacedDigit()
+            HStack(spacing: 5) {
+                Text(verbatim: pitch.map { "\($0.label) \($0.centsLabel)" } ?? "--").font(font.weight(.semibold)).foregroundStyle(Theme.sage)
+                dot
+                Text(verbatim: Self.frequency(reading.frequency)).font(font).foregroundStyle(Theme.ink)
+                if let seconds = reading.secondsAgo {
+                    dot
+                    Text(verbatim: seconds < 0.02 ? L("now") : String(format: "−%.2f s", seconds)).font(font).foregroundStyle(Theme.secondary)
+                }
+                dot
+                Text(verbatim: reading.level.map { MeterScale.tenths($0, floor: -119.9) + " dBFS" } ?? "-- dBFS")
+                    .font(font).foregroundStyle(reading.level == nil ? Theme.tertiary : Theme.ink)
+                if reading.secondsAgo == nil {
+                    Text(L("live")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                }
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background { BadgeSurface() }
+        }
+
+        private var dot: some View { Text("•").font(.caption2).foregroundStyle(Theme.tertiary) }
+
+        static func frequency(_ hertz: Double) -> String {
+            hertz < 100 ? String(format: "%.1f Hz", hertz)
+                : hertz < 1_000 ? String(format: "%.0f Hz", hertz) : String(format: "%.2f kHz", hertz / 1_000)
         }
     }
 }
@@ -859,6 +1013,9 @@ struct DisplayOptions: Equatable {
     var waveSeconds = 4
     /// The Immersive room's band markers (the BANDS menu's Off hides them).
     var bandMarkers = true
+    /// The levels the spectrogram's colors span, and the display slope of the spectrum and spectrogram.
+    var spectrogramRange = SpectrogramRange.standard
+    var tilt = SpectrumTilt.flat
 
     static let peakHoldsKey = "spectrum.peakHolds"
     static let waveSecondsKey = "waveform.seconds"
@@ -871,7 +1028,8 @@ struct DisplayOptions: Equatable {
         return DisplayOptions(spectrumSide: .stored,
                               peakHolds: defaults.object(forKey: peakHoldsKey) == nil ? true : defaults.bool(forKey: peakHoldsKey),
                               waveSeconds: waveChoices.contains(seconds) ? seconds : 4,
-                              bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey))
+                              bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
+                              spectrogramRange: .stored, tilt: .stored)
     }
 }
 

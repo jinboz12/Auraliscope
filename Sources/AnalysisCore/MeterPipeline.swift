@@ -43,7 +43,8 @@ package enum SnapshotSlots {
 /// - L/R correlation integrates L², R² and L·R with a 0.25 s time constant, weighted by energy as a hardware
 ///   correlation meter's integrator is, so it reads the mix rather than each tick; silence rests it and restarts
 ///   the average; the five `StereoBands` integrate their L/R cross spectrum the same way, once per transform;
-/// - the waterfall still gains exactly 30 columns per second, each from the newest 8192-point FFT;
+/// - the waterfall still gains exactly 30 columns per second, each a multi-resolution analysis of the newest audio
+///   (`SpectrogramAnalyzer`: 8192-point windows in the bass down to 512 in the treble, centred on one instant);
 /// - the format detector still sees consecutive, non-overlapping 1/30 s windows at 30 Hz;
 /// - loudness (M, S, I, LRA) is block-based and does not depend on the tick rate at all.
 /// In Spatial monitoring the spectrum and waterfall sum every routed role instead of showing L and R.

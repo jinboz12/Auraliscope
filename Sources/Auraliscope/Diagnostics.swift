@@ -44,6 +44,22 @@ enum Diagnostics {
         guard let index = arguments.firstIndex(of: "--preview-layout"), index + 1 < arguments.count else { return .s916 }
         return SpeakerLayout(rawValue: arguments[index + 1]) ?? .s916
     }
+    /// `--preview-audio <file>` fills `--render-preview`'s spectrum and waterfall from an audio file run through the
+    /// real analysis (`PreviewAudio`) instead of the synthetic demo, drawn in Stereo; `--preview-output <png>` names
+    /// the image (the temporary directory's Auraliscope-preview.png otherwise).
+    static var previewAudio: URL? { argument("--preview-audio").map { URL(fileURLWithPath: $0) } }
+    static var previewOutput: URL? { argument("--preview-output").map { URL(fileURLWithPath: $0) } }
+    private static func argument(_ name: String) -> String? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
+    }
+    /// `--snapshot-inspect x,y` holds the Spectrum well's inspector at that point of the well (points), so a
+    /// snapshot shows its crosshair and readout without a pointer.
+    static var inspectPoint: CGPoint? {
+        let parts = argument("--snapshot-inspect")?.split(separator: ",").compactMap { Double($0) } ?? []
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }
     static var requestedDeviceID: UInt32? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--input-device"), index + 1 < arguments.count else { return nil }
@@ -62,7 +78,7 @@ enum Diagnostics {
         }
         if CommandLine.arguments.contains("--render-preview") {
             do {
-                let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")
+                let destination = previewOutput ?? FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")
                 try CanvasRenderer.writePreview(to: destination)
                 print(destination.path)
                 exit(0)

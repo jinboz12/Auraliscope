@@ -1,5 +1,7 @@
 import AnalysisCore
 import AppKit
+import AudioRing
+import AudioToolbox
 import Combine
 import ImageIO
 import MetalKit
@@ -451,56 +453,66 @@ final class MeterGPU {
         return mix(stops[index], stops[index + 1], t * t * (3.0 - 2.0 * t));
     }
 
-    struct WaterfallState { uint head; uint rows; float phase; float span; };
+    // The waterfall (SpectrogramScene). `history` holds dBFS levels: texel x is a ring slot of columns, y a row,
+    // low frequencies first. `head` is the slot the next column goes to; `phase` (0–1) is how far the scroll has
+    // moved toward the next column, so the image glides at the display rate between 30 Hz columns; `span` is the
+    // columns across the quad.
+    struct WaterfallState {
+        uint head; uint capacity; float phase; float span;
+        float floorDB; float rangeDB; float tilt; float floorOctave; float octaves;
+    };
 
-    constant float waterfallBands = \(Float(SpectrogramHistory.height));
+    constant int waterfallRows = \(SpectrogramHistory.rows);
 
-    // The ring wraps across x through the sampler; bands clamp at the ends of the axis.
-    constexpr sampler ringSampler(coord::normalized, s_address::repeat, t_address::clamp_to_edge, filter::linear);
-
-    // Column (head − 1 − age) of the ring and band row `band`, blended with their neighbours by the hardware
-    // filter in one fetch.
-    float historyAt(texture2d<float, access::sample> history, constant WaterfallState &state, float age, float band) {
-        float clampedAge = clamp(age, 0.0, float(state.rows) - 1.001);
-        float2 uv = float2((float(state.head) - 0.5 - clampedAge) / float(state.rows), (band + 0.5) / waterfallBands);
-        return history.sample(ringSampler, uv).r;
+    float waterfallTexel(texture2d<float, access::read> history, uint capacity, int slot, int row) {
+        int wrapped = ((slot % int(capacity)) + int(capacity)) % int(capacity);
+        return history.read(uint2(uint(wrapped), uint(clamp(row, 0, waterfallRows - 1)))).r;
     }
 
-    // local: pixels from the quad centre; shape.xy: half size; shape.zw: uv.
-    // `phase` (0–1) slides the history between 30 Hz analysis columns so scrolling is continuous at 60 Hz.
+    // Level `age` columns before the newest at fractional `row`, interpolated between columns and rows
+    // (SpectrogramHistory.level reads it the same way for the inspector).
+    float waterfallLevel(texture2d<float, access::read> history, constant WaterfallState &state, float age, float row) {
+        float a = clamp(age, 0.0, float(state.capacity) - 2.0);
+        float r = clamp(row, 0.0, float(waterfallRows - 1));
+        int a0 = int(floor(a)), r0 = int(floor(r));
+        float ta = a - float(a0), tr = r - float(r0);
+        int newer = int(state.head) - 1 - a0;
+        float n0 = waterfallTexel(history, state.capacity, newer, r0), n1 = waterfallTexel(history, state.capacity, newer, r0 + 1);
+        float o0 = waterfallTexel(history, state.capacity, newer - 1, r0), o1 = waterfallTexel(history, state.capacity, newer - 1, r0 + 1);
+        return mix(mix(n0, n1, tr), mix(o0, o1, tr), ta);
+    }
+
+    // SpectrogramTone: linear over the range, a power curve for a dark floor, part of an S-curve for contrast.
+    float waterfallTone(float db, constant WaterfallState &state) {
+        float x = pow(saturate((db - state.floorDB) / state.rangeDB), \(SpectrogramTone.gamma));
+        return mix(x, x * x * (3.0 - 2.0 * x), \(SpectrogramTone.contrast));
+    }
+
+    // local: pixels from the quad centre; shape.xy: half size; shape.zw: uv (u = 1 at "now").
     fragment float4 waterfallFragment(Raster in [[stage_in]],
-                                      texture2d<float, access::sample> history [[texture(0)]],
+                                      texture2d<float, access::read> history [[texture(0)]],
                                       constant WaterfallState &state [[buffer(0)]]) {
         float2 uv = in.shape.zw;
-        // Horizontal: frequency rises bottom to top, time runs left to right with the newest column at the right.
-        float band = clamp((1.0 - uv.y) * waterfallBands - 0.5, 0.0, waterfallBands - 1.0);
-        // `span` columns across the quad: the newest slice of the ring, not all of it.
+        float row = (1.0 - uv.y) * float(waterfallRows) - 0.5;
         float age = (1.0 - uv.x) * state.span - state.phase;
-        // More bands than pixel rows: take the loudest band under the pixel, so a narrow partial never falls
-        // between two rows and blurs away.
-        float footprint = clamp(abs(dfdy(band)), 1.0, 4.0);
-        float level = 0.0;
-        int taps = int(ceil(footprint));
-        for (int tap = 0; tap < taps; tap++) {
-            float offset = ((float(tap) + 0.5) / float(taps) - 0.5) * footprint;
-            level = max(level, historyAt(history, state, age, clamp(band + offset, 0.0, waterfallBands - 1.0)));
+        // Where a pixel covers several rows, it shows the loudest of them, so a partial one row wide never falls
+        // between two pixels and fades. Up to six taps across the pixel's rows.
+        float footprint = abs(dfdy(row));
+        float level = waterfallLevel(history, state, age, row);
+        if (footprint > 1.0) {
+            int taps = min(6, int(ceil(footprint)));
+            for (int tap = 0; tap < taps; tap++) {
+                float offset = ((float(tap) + 0.5) / float(taps) - 0.5) * footprint;
+                level = max(level, waterfallLevel(history, state, age, row + offset));
+            }
         }
-        // Unsharp mask, mostly across frequency: partials lift above the window's skirt around them. Time gets a
-        // light share and the lift is capped, so onsets sharpen without a bright halo.
-        float reach = 2.0 * footprint;
-        float blur = 0.4 * (historyAt(history, state, age, max(band - reach, 0.0))
-                          + historyAt(history, state, age, min(band + reach, waterfallBands - 1.0)))
-                   + 0.1 * (historyAt(history, state, age - 1.0, band) + historyAt(history, state, age + 1.0, band));
-        float sharp = level + clamp(0.9 * (level - blur), -0.04, 0.08);
-        // Stored 0–1 covers −120…0 dB; show −90…−12 dB. A steep curve keeps the noise floor black and an S-curve
-        // separates quiet detail from loud partials; older columns dim only slightly, so the history stays legible.
-        float db = sharp * 120.0 - 120.0;
-        float x = pow(saturate((db + 90.0) / 78.0), 1.6);
-        x = mix(x, x * x * (3.0 - 2.0 * x), 0.6);
+        // The display slope, pivoting at 1 kHz: octaves from the pivot at this row's centre.
+        float octave = state.floorOctave + (row + 0.5) / float(waterfallRows) * state.octaves;
+        float tone = waterfallTone(level + state.tilt * octave, state);
+        // Older columns recede a little toward the empty well, so "now" reads first; the history stays legible.
+        float recede = 1.0 - 0.14 * saturate(age / max(state.span, 1.0));
         float mask = saturate(0.5 - roundedBox(in.local, in.shape.xy, 7.0));
-        // Older columns recede toward the empty well colour: darker on dark, paler on light.
-        float fade = 0.86 + 0.14 * uv.x;
-        return float4(mix(rampMap(0.0), rampMap(x), fade), mask);
+        return float4(mix(rampMap(0.0), rampMap(tone), recede), mask);
     }
 
     // Straight-alpha "over" so the scope can layer screen, fill, bloom and edge in one pass.
@@ -799,13 +811,20 @@ struct ShapeBuilder {
     }
 }
 
-/// 16 bytes, laid out like both Metal underlay states: `WaterfallState` (head, rows, phase, span) and
-/// `ScopeState` (newest, capacity, phase, span).
+/// Laid out like both Metal underlay states: `WaterfallState` (all eight fields) and `ScopeState` (the first four:
+/// newest, capacity, phase, span), which ignores the rest.
 struct UnderlayState {
     var head: UInt32 = 0
     var rows: UInt32 = 1
     var phase: Float = 0
     var span: Float = 0
+    /// Waterfall only: the colour range's floor and width in dB, the tilt in dB per octave, and the octaves the
+    /// rows span below the pivot (`floorOctave`, from the bottom row's edge) and in all (`octaves`).
+    var floor: Float = -90
+    var range: Float = 78
+    var tilt: Float = 0
+    var floorOctave: Float = 0
+    var octaves: Float = 10
 }
 
 enum UnderlayKind { case waterfall, waveform }
@@ -839,6 +858,9 @@ enum SceneStore {
         dampings[kind] = damping
         return damping
     }
+
+    /// The window's scene for `kind` if one has been made (read by overlays such as the inspector).
+    static func existing(_ kind: CanvasKind) -> CanvasScene? { scenes[kind] }
 
     static func scene(_ kind: CanvasKind, device: MTLDevice) throws -> CanvasScene {
         if let scene = scenes[kind] { return scene }
@@ -1021,12 +1043,16 @@ final class CanvasRenderer {
         guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { throw MetalError.allocation }
         var frame = CanvasFrame(running: true)
         frame.layout = Diagnostics.previewLayout
-        // Spatial part of the demo cycle, so the preview shows every lane and channel of the layout.
-        let steps = SpectrogramHistory.width
-        frame.spatial = !Diagnostics.previewStereo
+        frame.options = DisplayOptions.stored
+        // Spatial part of the demo cycle, so the preview shows every lane and channel of the layout; or the columns
+        // of an audio file, through the real analysis.
+        let audio = try Diagnostics.previewAudio.map { try PreviewAudio.snapshots($0) }
+        let steps = audio?.snapshots.count ?? SpectrogramHistory.capacity
+        frame.spatial = audio == nil && !Diagnostics.previewStereo
+        if let audio { frame.sampleRate = audio.sampleRate }
         // Fill the waterfall history, then settle holds and damping on the final frame.
         for step in 0..<steps {
-            frame.snapshot = DemoSignal.snapshot(at: Double(step % 400) / DemoSignal.updateRate, sequence: step)
+            frame.snapshot = audio?.snapshots[step] ?? DemoSignal.snapshot(at: Double(step % 400) / DemoSignal.updateRate, sequence: step)
             spectrum.scene.prepare(frame: frame)
             spectrogram.scene.prepare(frame: frame)
             waveform.scene.prepare(frame: frame)
@@ -1081,6 +1107,8 @@ final class SpectrumScene: CanvasScene {
     private var holdTimers = [Float](repeating: 0, count: MeterSnapshot.bandCount)
     private var curve: [CGPoint] = []
     private var epoch = -1
+    /// The levels last drawn (damped, untilted), for the inspector.
+    private(set) var shown = [Float](repeating: -120, count: MeterSnapshot.bandCount)
 
     // Shapes only: no underlay quad is ever added, so the texture is never bound.
     var underlayKind: UnderlayKind { .waterfall }
@@ -1116,8 +1144,12 @@ final class SpectrumScene: CanvasScene {
 
         // Spectrum: Catmull-Rom curve with a level-anchored fill and per-band peak dashes. Band i covers the i-th
         // 64th of the log axis, bottom to top, exactly as the waterfall's rows.
-        let bands = display.spectrum
-        let count = bands.count
+        shown = display.spectrum
+        let count = shown.count
+        // The display slope at each band's centre (`SpectrumTilt`); zero when flat.
+        let upper = MeterScale.upperFrequency(sampleRate: frame.sampleRate)
+        let tilt = (0..<count).map { frame.options.tilt.offset(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count))) }
+        let bands = zip(shown, tilt).map { $0 + $1 }
         let step = strip.height / CGFloat(count)
         func point(_ index: Int) -> CGPoint {
             let i = max(0, min(count - 1, index))
@@ -1145,7 +1177,8 @@ final class SpectrumScene: CanvasScene {
             MeterScale.spectrumFloor * (1 - Float(abs(point.x - layout.floorX) / max(1, strip.width)))
         }
         for (p, q) in zip(curve, curve.dropFirst()) {
-            let cp = Theme.ramp(decibels: level(p)), cq = Theme.ramp(decibels: level(q))
+            let range = frame.options.spectrogramRange
+            let cp = Theme.ramp(decibels: level(p), range: range), cq = Theme.ramp(decibels: level(q), range: range)
             let pb = CGPoint(x: layout.floorX, y: p.y), qb = CGPoint(x: layout.floorX, y: q.y)
             b.triangle(p, q, qb, cp.simd(0.85), cq.simd(0.85), cq.simd(0.35))
             b.triangle(p, qb, pb, cp.simd(0.85), cq.simd(0.35), cp.simd(0.35))
@@ -1170,38 +1203,47 @@ final class SpectrumScene: CanvasScene {
                 holds[index] = max(-120, holds[index] - 18 * dt)
             }
             // Only show a hold where it floats clearly beyond the live curve.
-            guard holds[index] > MeterScale.spectrumFloor + 1, holds[index] - bands[index] > 2 else { continue }
-            let x = layout.x(decibels: holds[index])
+            guard holds[index] > MeterScale.spectrumFloor + 1, holds[index] - shown[index] > 2 else { continue }
+            let x = layout.x(decibels: holds[index] + tilt[index])
             let y = strip.maxY - CGFloat(index + 1) * step
             b.rect(CGRect(x: x - 0.5, y: y + step * 0.2, width: 1, height: step * 0.6), ink.simd(0.42))
         }
     }
 }
 
-// MARK: - Spectrogram: scrolling history, newest at the top, on the Spectrum's frequency axis
+// MARK: - Spectrogram: scrolling history beside the live spectrum, on its frequency axis
 
+/// The waterfall: `SpectrogramHistory` drawn by `waterfallFragment`, with the octave and seconds grid over it. One
+/// column arrives per analysis serial (30 Hz); between them the image glides by `phase`. Paused, it holds still, and
+/// the inspector (`SpectrogramInspector`) reads the very values on screen through `level(atU:row:)`.
 final class SpectrogramScene: CanvasScene {
     private let texture: MTLTexture
-    private let history = SpectrogramHistory()
+    let history = SpectrogramHistory()
     private var previousColumn: Float = 0
     private var previousStream: Float = 0
     private var previousRate: Double = 0
     private var lastUpload: CFTimeInterval = 0
-    private var phase: Float = 0
+    private(set) var phase: Float = 0
     /// Columns the waterfall spans at its current width (`SpectrogramLayout.seconds`).
-    private var span = SpectrogramLayout.maxSeconds * SpectrogramLayout.analysisRate
+    private(set) var span = SpectrogramLayout.maxSeconds * SpectrogramLayout.analysisRate
+    private var options = DisplayOptions()
+    private var sampleRate = 48_000.0
 
     var usesDampedLevels: Bool { false }
     var underlayKind: UnderlayKind { .waterfall }
     var underlayTexture: MTLTexture? { texture }
     var underlayState: UnderlayState {
-        UnderlayState(head: UInt32(history.writeIndex), rows: UInt32(SpectrogramHistory.width), phase: phase,
-                      span: Float(span))
+        let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+        return UnderlayState(head: UInt32(history.head), rows: UInt32(SpectrogramHistory.capacity), phase: phase,
+                             span: Float(span), floor: options.spectrogramRange.floor,
+                             range: options.spectrogramRange.ceiling - options.spectrogramRange.floor,
+                             tilt: options.tilt.decibelsPerOctave, floorOctave: Float(log2(20 / SpectrumTilt.pivot)),
+                             octaves: Float(log2(upper / 20)))
     }
 
     init(device: MTLDevice) throws {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: SpectrogramHistory.width,
-                                                                  height: SpectrogramHistory.height, mipmapped: false)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r32Float, width: SpectrogramHistory.capacity,
+                                                                  height: SpectrogramHistory.rows, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = .shaderRead
         guard let texture = device.makeTexture(descriptor: descriptor) else { throw MetalError.allocation }
@@ -1213,25 +1255,28 @@ final class SpectrogramScene: CanvasScene {
         history.reset()
         lastUpload = 0
         phase = 0
-        let blank = [UInt8](repeating: 0, count: SpectrogramHistory.width * SpectrogramHistory.height)
-        texture.replace(region: MTLRegionMake2D(0, 0, SpectrogramHistory.width, SpectrogramHistory.height),
-                        mipmapLevel: 0, withBytes: blank, bytesPerRow: SpectrogramHistory.width)
+        for slot in 0..<SpectrogramHistory.capacity { upload(slot) }
+    }
+
+    private func upload(_ slot: Int) {
+        history.withColumn(slot) { column in
+            texture.replace(region: MTLRegionMake2D(slot, 0, 1, SpectrogramHistory.rows), mipmapLevel: 0,
+                            withBytes: column.baseAddress!, bytesPerRow: MemoryLayout<Float>.stride)
+        }
     }
 
     func prepare(frame: CanvasFrame) {
         let snapshot = frame.snapshot
+        options = frame.options
+        sampleRate = frame.sampleRate
         let streamChanged = snapshot.streamID > 0 && snapshot.streamID != previousStream
         if streamChanged || (previousRate > 0 && frame.sampleRate != previousRate) { clear() }
-        // One column per waterfall serial (30 Hz), however often snapshots arrive.
+        // One column per analysis serial (30 Hz), however often snapshots arrive.
         if frame.running && snapshot.spectrogramSerial > 0 && (streamChanged || snapshot.spectrogramSerial != previousColumn) {
-            let index = history.append(snapshot.spectrogram)
-            history.column.withUnsafeBytes { bytes in
-                texture.replace(region: MTLRegionMake2D(index, 0, 1, SpectrogramHistory.height),
-                                mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: 1)
-            }
+            upload(history.append(snapshot.spectrogram))
             lastUpload = CACurrentMediaTime()
         }
-        // Freeze in place while paused; otherwise advance within the current analysis interval.
+        // Held while paused; otherwise the scroll advances within the current column interval.
         if frame.running && lastUpload > 0 {
             phase = Float(min(1, (CACurrentMediaTime() - lastUpload) * SpectrogramLayout.analysisRate))
         }
@@ -1240,20 +1285,31 @@ final class SpectrogramScene: CanvasScene {
         previousRate = frame.sampleRate
     }
 
+    /// The level drawn at `u` across the waterfall (0 its oldest edge, 1 "now") and fractional `row`, and how many
+    /// seconds before the newest column that is; nil where nothing has been written.
+    func level(atU u: Double, row: Double) -> (level: Float, secondsAgo: Double)? {
+        let age = (1 - u) * span - Double(phase)
+        guard let level = history.level(age: max(0, age), row: row) else { return nil }
+        return (level, max(0, age) / SpectrogramLayout.analysisRate)
+    }
+
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
         let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
         let plot = layout.plot
         b.underlayQuad(plot, mirrored: layout.mirrored)
-        // Octave lines at every C, continuing the keyboard's C keys across the plot.
+        span = Double(layout.visibleColumns)
+        let ink = Theme.inkRGB
+        // Octave lines at every C, continuing the keyboard's C keys across the plot; middle C a little firmer.
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > plot.minY + 1, y < plot.maxY - 1 else { continue }
-            b.rect(CGRect(x: plot.minX, y: y, width: plot.width, height: 0.5), Theme.inkRGB.simd(octave == 4 ? 0.12 : 0.06))
+            b.rect(CGRect(x: plot.minX, y: y, width: plot.width, height: 0.5), ink.simd(octave == 4 ? 0.12 : 0.06))
         }
-        span = Double(layout.visibleColumns)
+        // A hairline each second, and a short tick at the foot of each so the time labels have something to name.
         for seconds in stride(from: 1.0, to: layout.seconds, by: 1) {
             let x = (layout.x(secondsAgo: seconds) * 2).rounded() / 2
-            b.rect(CGRect(x: x, y: plot.minY, width: 0.5, height: plot.height), Theme.inkRGB.simd(0.06))
+            b.rect(CGRect(x: x, y: plot.minY, width: 0.5, height: plot.height), ink.simd(0.06))
+            b.rect(CGRect(x: x, y: plot.maxY - 4, width: 0.5, height: 4), ink.simd(0.22))
         }
     }
 }
@@ -2355,5 +2411,47 @@ extension SoundstageScene {
         guard !scene.clipped[Role.left] else { return false }
         print("PASS: peak warnings clear while paused, ignore stale frames and relight for new overs")
         return true
+    }
+}
+
+/// `--preview-audio`: an audio file's snapshots as the analysis makes them, one per waterfall column (1/30 s), for
+/// the offscreen preview. Up to the waterfall's capacity of columns from the start of the file, L and R (a mono file
+/// feeds both).
+enum PreviewAudio {
+    struct Failure: Error, CustomStringConvertible { let description: String }
+
+    static func snapshots(_ url: URL) throws -> (sampleRate: Double, snapshots: [MeterSnapshot]) {
+        var file: ExtAudioFileRef?
+        guard ExtAudioFileOpenURL(url as CFURL, &file) == noErr, let file else { throw Failure(description: "cannot open \(url.path)") }
+        defer { ExtAudioFileDispose(file) }
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        ExtAudioFileGetProperty(file, kExtAudioFileProperty_FileDataFormat, &size, &format)
+        let rate = format.mSampleRate
+        var client = AudioStreamBasicDescription(mSampleRate: rate, mFormatID: kAudioFormatLinearPCM,
+                                                 mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                                                 mBytesPerPacket: 8, mFramesPerPacket: 1, mBytesPerFrame: 8,
+                                                 mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+        ExtAudioFileSetProperty(file, kExtAudioFileProperty_ClientDataFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size), &client)
+        guard let analyzer = SpectrumAnalyzer(sampleRate: rate) else { throw Failure(description: "unsupported rate \(rate)") }
+        let hop = Int((rate / SpectrogramLayout.analysisRate).rounded())
+        var buffer = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: hop)
+        var result: [MeterSnapshot] = []
+        while result.count < SpectrogramHistory.capacity {
+            var frames = UInt32(hop)
+            let status = buffer.withUnsafeMutableBytes { bytes -> OSStatus in
+                var list = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(bytes.count), mData: bytes.baseAddress))
+                return ExtAudioFileRead(file, &frames, &list)
+            }
+            guard status == noErr, frames > 0 else { break }
+            buffer.withUnsafeBufferPointer { analyzer.consume(UnsafeBufferPointer(rebasing: $0[0..<Int(frames)])) }
+            var snapshot = analyzer.snapshot()
+            snapshot.streamID = 1
+            snapshot.sequence = Float(result.count + 1)
+            snapshot.spectrogramSerial = Float(result.count + 1)
+            result.append(snapshot)
+        }
+        guard !result.isEmpty else { throw Failure(description: "no audio in \(url.path)") }
+        return (rate, result)
     }
 }

@@ -13,7 +13,7 @@ clang -std=c11 -O2 -I Sources/AnalysisKernels/include -I Sources/AudioRing/inclu
 clang -std=c11 -O2 -I Sources/AnalysisKernels/include -I Sources/AudioRing/include -c Sources/AudioRing/CaptureCallback.c -o "$out/CaptureCallback.o"
 a=Sources/Auraliscope
 swiftc -O -swift-version 5 -module-cache-path "$out/modules-$cache_key" -module-name AnalysisCore -package-name Auraliscope -I Sources/AnalysisKernels/include -I Sources/AudioRing/include -framework AudioToolbox \
-    Sources/AnalysisCore/SpectrumAnalyzer.swift Sources/AnalysisCore/LoudnessAnalyzer.swift $a/SpectrogramHistory.swift $a/DampedDisplayState.swift \
+    Sources/AnalysisCore/SpectrumAnalyzer.swift Sources/AnalysisCore/SpectrogramAnalyzer.swift Sources/AnalysisCore/LoudnessAnalyzer.swift $a/SpectrogramHistory.swift $a/DampedDisplayState.swift \
     $a/MeterScale.swift $a/SpeakerLayout.swift Sources/AnalysisCore/Role.swift $a/FormatMode.swift $a/StereoBandLabels.swift Sources/AnalysisCore/FormatDetector.swift $a/VUScale.swift Sources/AnalysisCore/WaveformEnvelope.swift \
     $a/MinMaxPyramid.swift Sources/AnalysisCore/MeterPipeline.swift $a/Localizer.swift $a/SystemMenus.swift $a/BridgeRestoration.swift \
     Sources/AnalysisCore/StreamAnalyzer.swift Sources/AnalysisCore/ResultProtocol.swift Sources/AnalysisCore/ResultAssembler.swift \

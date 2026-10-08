@@ -29,7 +29,7 @@ struct AboutView: View {
 
     private var features: [(title: String, detail: String)] {
         [(L("Loudness"), L("LUFS, loudness range and True Peak against your target.")),
-         (L("Spectrogram & Spectrum"), L("Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard.")),
+         (L("Spectrogram & Spectrum"), L("Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer.")),
          (L("Waveform"), L("Real-time waveforms for each monitored channel.")),
          (L("Soundstage"), L("The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive.")),
          (L("Channel Levels"), L("Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo."))]
@@ -68,7 +68,6 @@ struct AboutView: View {
                     }
                     AboutGroup(title: L("Acknowledgements")) {
                         VStack(alignment: .leading, spacing: 10) {
-                            paragraph(L("Spectrogram inspired by AudioSpectrogram. MIT license included."))
                             paragraph(L("Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them."))
                             DisclosureGroup(L("Third-party notices")) {
                                 ScrollView {

@@ -67,6 +67,8 @@ final class SettingsDraft: ObservableObject {
     @Published var stageStyle: StageStyle?
     @Published var spectrumSide: SpectrumSide?
     @Published var peakHolds: Bool?
+    @Published var spectrogramRange: SpectrogramRange?
+    @Published var tilt: SpectrumTilt?
     @Published var waveSeconds: Int?
     @Published var headline: LoudnessReading?
 
@@ -143,6 +145,14 @@ final class SettingsDraft: ObservableObject {
             store(value, DisplayOptions.peakHoldsKey)
             model.displayOptions.peakHolds = value
         }, applied: { value, model in model.displayOptions.peakHolds == value && DisplayOptions.stored.peakHolds == value }),
+        field(\.spectrogramRange, { L("Color range") }, live: { $0.displayOptions.spectrogramRange }, write: { value, model in
+            store(value.rawValue, SpectrogramRange.key)
+            model.displayOptions.spectrogramRange = value
+        }, applied: { value, model in model.displayOptions.spectrogramRange == value && SpectrogramRange.stored == value }),
+        field(\.tilt, { L("Tilt") }, live: { $0.displayOptions.tilt }, write: { value, model in
+            store(value.rawValue, SpectrumTilt.key)
+            model.displayOptions.tilt = value
+        }, applied: { value, model in model.displayOptions.tilt == value && SpectrumTilt.stored == value }),
         field(\.waveSeconds, { L("Time span") }, live: { $0.displayOptions.waveSeconds }, write: { value, model in
             store(value, DisplayOptions.waveSecondsKey)
             model.displayOptions.waveSeconds = value
@@ -822,6 +832,19 @@ private struct PanelsPane: View {
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
             SettingsNote(L("A short mark at each band's recent peak on the live spectrum, held 1.2 s and then falling."))
+            Divider()
+            SettingsRow(title: L("Color range")) {
+                segments(L("Color range"), SpectrogramRange.allCases.map { ($0, $0.title) }, \.spectrogramRange,
+                         live: { model.displayOptions.spectrogramRange })
+            }
+            SettingsNote(L("The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters."))
+            Divider()
+            SettingsRow(title: L("Tilt")) {
+                segments(L("Tilt"), SpectrumTilt.allCases.map { ($0, $0.title) }, \.tilt,
+                         live: { model.displayOptions.tilt })
+            }
+            SettingsNote(L("A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true."))
+            SettingsNote(L("Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure."))
         }
         SettingsSection(title: L("WAVEFORM")) {
             SettingsRow(title: L("Time span")) {

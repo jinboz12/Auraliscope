@@ -1104,20 +1104,117 @@ final class CoreTests {
         checkEqual(snapshot.spectrogram.count, 512)
         checkTrue(snapshot.spectrogram[detailedBand] > -9)
         checkTrue(snapshot.spectrogram[detailedBand] > snapshot.spectrogram[0] + 15)
+        // The display history keeps dBFS as analysed: no 8-bit step, interpolated as the waterfall draws it.
         let history = SpectrogramHistory()
-        checkEqual(SpectrogramHistory.intensity(-120), 0)
-        checkEqual(SpectrogramHistory.intensity(-60), 128)
-        checkEqual(SpectrogramHistory.intensity(0), 255)
-        for index in 0..<SpectrogramHistory.width + 3 {
-            checkEqual(history.append(snapshot.spectrogram), index % SpectrogramHistory.width)
+        let rows = SpectrogramHistory.rows
+        checkTrue(history.level(age: 0, row: 0) == nil)
+        var column = [Float](repeating: -100, count: rows)
+        column[10] = -20
+        for index in 0..<SpectrogramHistory.capacity + 3 {
+            checkEqual(history.append(column), index % SpectrogramHistory.capacity)
         }
-        checkEqual(history.writeIndex, 3)
-        checkEqual(history.columnsWritten, SpectrogramHistory.width)
-        checkTrue(history.column[detailedBand] > 200)
+        checkEqual(history.head, 3)
+        checkEqual(history.count, SpectrogramHistory.capacity)
+        checkEqual(try unwrap(history.level(age: 0, row: 10)), -20, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0, row: 10.5)), -60, accuracy: 0.0001)
+        history.append([Float](repeating: -40, count: rows))
+        checkEqual(try unwrap(history.level(age: 0.5, row: 0)), -70, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 1, row: 10)), -20, accuracy: 0.0001)
+        history.append(snapshot.spectrogram)
+        checkTrue(try unwrap(history.level(age: 0, row: Double(detailedBand))) > -9)
+        // Missing and non-finite levels are silence.
+        history.append([Float.nan])
+        checkEqual(try unwrap(history.level(age: 0, row: 0)), SpectrogramHistory.silence)
+        checkEqual(try unwrap(history.level(age: 0, row: 300)), SpectrogramHistory.silence)
         history.reset()
-        checkEqual(history.writeIndex, 0)
-        checkEqual(history.columnsWritten, 0)
-        checkTrue(history.column.allSatisfy { $0 == 0 })
+        checkEqual(history.head, 0)
+        checkEqual(history.count, 0)
+        checkTrue(history.level(age: 0, row: 0) == nil)
+        checkTrue(history.levels.allSatisfy { $0 == SpectrogramHistory.silence })
+        // One tone curve for the shader, the spectrum fill and the legend: dark at the floor, brightest at the
+        // ceiling, rising throughout; and a tilt that pivots at 1 kHz.
+        for range in SpectrogramRange.allCases {
+            checkEqual(SpectrogramTone.position(range.floor, range: range), 0)
+            checkEqual(SpectrogramTone.position(range.ceiling, range: range), 1, accuracy: 0.0001)
+            checkEqual(SpectrogramTone.position(range.floor - 30, range: range), 0)
+            var previous: Float = -1
+            for db in stride(from: range.floor, through: range.ceiling, by: 1) {
+                let x = SpectrogramTone.position(db, range: range)
+                checkGreaterOrEqual(x, previous)
+                previous = x
+            }
+        }
+        checkEqual(SpectrumTilt.flat.offset(frequency: 8_000), 0)
+        checkEqual(SpectrumTilt.three.offset(frequency: 1_000), 0, accuracy: 0.0001)
+        checkEqual(SpectrumTilt.three.offset(frequency: 4_000), 6, accuracy: 0.0001)
+        checkEqual(SpectrumTilt.fourAndHalf.offset(frequency: 500), -4.5, accuracy: 0.0001)
+    }
+
+    /// The waterfall's analysis (`SpectrogramAnalyzer`): the window lengths it chooses, sine calibration in every
+    /// zone and across the blends between them, and the treble's time resolution.
+    func testMultiResolutionSpectrogram() throws {
+        let rows = MeterSnapshot.spectrogramBandCount
+        func row(_ hz: Double, upper: Double = 20_000) -> Int { Int(log(hz / 20) / log(upper / 20) * Double(rows)) }
+        let analysis = try unwrap(SpectrogramAnalyzer(sampleRate: 48_000))
+        checkEqual(analysis.resolutions.map(\.length), [8192, 4096, 2048, 1024, 512])
+        // Short windows repeat across the 1/30 s column at 50 % overlap, so no transient falls between them.
+        checkEqual(analysis.resolutions.map(\.frames), [1, 1, 2, 4, 7])
+        checkEqual(analysis.length(ofRow: row(100)), 8192)
+        checkEqual(analysis.length(ofRow: row(15_000)), 512)
+        // Every row keeps at least 64 × its bin width, so its main lobe stays within about ±½ semitone.
+        for index in 0..<rows {
+            let centre = 20 * pow(1_000, (Double(index) + 0.5) / Double(rows))
+            let length = analysis.length(ofRow: index)
+            checkTrue(length == 8192 || centre / (48_000 / Double(length)) >= SpectrogramAnalyzer.resolvingPower * 0.999)
+        }
+        // Rates change the zones, not the rule: 96 kHz needs twice the window for the same resolution.
+        let fast = try unwrap(SpectrogramAnalyzer(sampleRate: 96_000))
+        checkEqual(fast.length(ofRow: row(1_000)), 8192)
+        checkEqual(fast.length(ofRow: row(1_000)), analysis.length(ofRow: row(500)))
+
+        // A sine of amplitude ½ in L and R reads −6.02 dBFS in its row, in every zone and inside every blend.
+        for (rate, hz) in [(48_000.0, 50.0), (48_000, 440), (48_000, 800), (48_000, 1_100), (48_000, 1_700), (48_000, 2_600),
+                           (48_000, 3_500), (48_000, 4_500), (48_000, 7_000), (48_000, 12_345), (48_000, 18_000),
+                           (44_100, 997), (44_100, 9_000), (96_000, 6_000), (96_000, 15_000)] {
+            let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+            let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                let sample = Float(sin(2 * Double.pi * hz * Double(index) / rate)) * 0.5
+                return StereoFrame(left: sample, right: sample)
+            }
+            frames.withUnsafeBufferPointer { analyzer.consume($0) }
+            let column = analyzer.snapshot().spectrogram
+            let upper = min(20_000, rate / 2)
+            let centre = row(hz, upper: upper)
+            let peak = (centre - 2...min(rows - 1, centre + 2)).map { column[$0] }.max()!
+            checkEqual(peak, -6.02, accuracy: 0.4)
+            // Where the resolving rule holds (above the bass, which even 8192 points cannot resolve that finely),
+            // five semitones away the row is dark: no smear from the window or a blend.
+            guard hz / (rate / Double(SpectrumAnalyzer.fftSize)) >= SpectrogramAnalyzer.resolvingPower else { continue }
+            let away = row(hz * pow(2, 5.0 / 12), upper: upper)
+            if away < rows { checkTrue(column[away] < -60) }
+            checkTrue(column[row(hz * pow(2, -5.0 / 12), upper: upper)] < -60)
+        }
+
+        // Time: a 4 ms burst at 8 kHz in the middle of the analysed audio lights the treble rows; the same burst
+        // 75 ms earlier belongs to an earlier column and is gone from them, though the 8192-point window still
+        // holds it (it reads in the spectrum).
+        func burst(at middle: Int) -> SpectrumAnalyzer {
+            let analyzer = try! unwrap(SpectrumAnalyzer(sampleRate: 48_000))
+            let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                let t = Double(index - middle) / 96
+                let envelope = abs(t) < 1 ? 0.5 + 0.5 * cos(Double.pi * t) : 0
+                let sample = Float(envelope * sin(2 * Double.pi * 8_000 * Double(index) / 48_000)) * 0.5
+                return StereoFrame(left: sample, right: sample)
+            }
+            frames.withUnsafeBufferPointer { analyzer.consume($0) }
+            return analyzer
+        }
+        let near = burst(at: SpectrumAnalyzer.fftSize / 2).snapshot()
+        let early = burst(at: SpectrumAnalyzer.fftSize / 2 - 3_600).snapshot()
+        let treble = row(8_000)
+        checkTrue(near.spectrogram[treble] > -40)
+        checkTrue(early.spectrogram[treble] < near.spectrogram[treble] - 40)
+        checkTrue(early.spectrum.max()! > -80)
     }
 
     func testDampedDisplayConvergence() {
@@ -1858,7 +1955,8 @@ struct TestRunner {
             ("band powers and cross spectrum match calibrated tones at five sample rates", suite.testBandEnergyCalibrationAcrossRates),
             ("speaker layouts 3.0 to 9.1.6", suite.testSpeakerLayouts),
             ("chunk boundaries and stereo energy", suite.testChunkBoundariesAndStereoEnergy),
-            ("8192 FFT and 512-row fixed spectrogram history", suite.testFullRangeSpectrogramHistory),
+            ("8192 FFT, 512-row float spectrogram history, tone curve and tilt", suite.testFullRangeSpectrogramHistory),
+            ("multi-resolution spectrogram: window choice, calibration across zones and blends, treble timing", suite.testMultiResolutionSpectrogram),
             ("critically damped 60 Hz display convergence", suite.testDampedDisplayConvergence),
             ("IEC meter scale and shared panel layouts", suite.testMeterScaleAndLayouts),
             ("stereo ↔ spatial detector attack, hold and silence freeze", suite.testFormatDetectorHysteresis),

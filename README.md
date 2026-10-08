@@ -123,7 +123,7 @@ Anyone may download, install and run Auraliscope free of charge for their own wo
 
 This software is provided "as is", without warranty of any kind, express or implied. To the extent permitted by applicable law, the author is not liable for any loss arising from its use. Third-party components and materials included in Auraliscope are subject to their own licenses.
 
-The spectrogram's dB legend and time and frequency markings take their design cues from [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram). Auraliscope's real-time analysis and rendering are an independent implementation in Swift, Accelerate and Metal, and do not link that project's Rust library.
+Auraliscope's spectrogram (its analysis, rendering, color scale, axes and inspector) is the project's own design and implementation in Swift, Accelerate and Metal; Auraliscope links no third-party library.
 
 Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with, sponsored by or endorsed by any of them.
 
@@ -256,7 +256,7 @@ Copyright © 2026 JINBOZ.
 
 本软件按“现状”提供，不作任何明示或默示担保。在适用法律允许的范围内，作者不对因使用本软件而产生的损失承担责任。Auraliscope 所包含的第三方组件及材料适用各自的许可证。
 
-Auraliscope 的频谱图展示参考了 [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram) 中的 dB 图例及时间、频率标记设计思路。Auraliscope 的实时分析与渲染采用独立的 Swift、Accelerate 和 Metal 实现，未链接该项目的 Rust 库。
+Auraliscope 的声谱图（分析、渲染、色阶、坐标轴与读数检查器）均为本项目自行设计，并以 Swift、Accelerate 和 Metal 独立实现；Auraliscope 未链接任何第三方库。
 
 Spotify、YouTube、Tidal、Apple Music、Dolby Atmos 和 Netflix 是其各自所有者的商标。此处提及它们仅为标明这些服务公布的响度目标；Auraliscope 与它们没有关联，也未获得其赞助或认可。
 
@@ -389,6 +389,6 @@ Copyright © 2026 JINBOZ.
 
 이 소프트웨어는 명시적이든 묵시적이든 어떠한 보증도 없이 "있는 그대로" 제공됩니다. 관련 법이 허용하는 범위에서, 작성자는 이 소프트웨어 사용으로 생긴 손실에 책임지지 않습니다. Auraliscope에 포함된 서드파티 구성 요소와 자료에는 각각의 라이선스가 적용됩니다.
 
-Auraliscope 스펙트로그램의 dB 범례와 시간·주파수 표시는 [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram)의 디자인을 참고했습니다. Auraliscope의 실시간 분석과 렌더링은 Swift, Accelerate, Metal로 독자적으로 구현되었으며, 해당 프로젝트의 Rust 라이브러리를 링크하지 않습니다.
+Auraliscope 스펙트로그램(분석, 렌더링, 색상 스케일, 축, 인스펙터)은 이 프로젝트가 직접 설계하고 Swift, Accelerate, Metal로 구현한 것이며, Auraliscope는 서드파티 라이브러리를 링크하지 않습니다.
 
 Spotify, YouTube, Tidal, Apple Music, Dolby Atmos 및 Netflix는 각 소유자의 상표입니다. 이 서비스들이 공개한 라우드니스 목표를 나타내기 위해서만 이름을 사용하며, Auraliscope는 이들과 제휴하거나 이들의 후원 또는 보증을 받지 않았습니다.
