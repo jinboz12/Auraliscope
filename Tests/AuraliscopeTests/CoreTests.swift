@@ -1186,7 +1186,7 @@ final class CoreTests {
             let upper = min(20_000, rate / 2)
             let centre = row(hz, upper: upper)
             let peak = (centre - 2...min(rows - 1, centre + 2)).map { column[$0] }.max()!
-            checkEqual(peak, -6.02, accuracy: 0.4)
+            checkEqual(peak, -6.02, accuracy: 0.05)
             // Where the resolving rule holds (above the bass, which even 8192 points cannot resolve that finely),
             // five semitones away the row is dark: no smear from the window or a blend.
             guard hz / (rate / Double(SpectrumAnalyzer.fftSize)) >= SpectrogramAnalyzer.resolvingPower else { continue }
@@ -1297,6 +1297,36 @@ final class CoreTests {
         let row = Int(log(40.0 / 20) / log(1000.0) * Double(MeterSnapshot.spectrogramBandCount))
         checkTrue(snapshot.spectrogram[row] > -12)
         checkTrue(snapshot.spectrogram[row] > snapshot.spectrogram[row + MeterSnapshot.spectrogramBandCount / 10] + 20)
+    }
+
+    /// The peak readout's frequency and level (`SpectrumAnalyzer.hannPeak`) at every fraction of a bin, in the bass
+    /// where a bin is wider than a semitone and higher up, at three rates.
+    func testHannPeakEstimate() throws {
+        for (rate, base) in [(48_000.0, 41.2), (48_000, 55), (48_000, 440), (44_100, 98), (96_000, 3_000)] {
+            let bin = rate / Double(SpectrumAnalyzer.fftSize)
+            var worstCents = 0.0
+            var worstLevel: Float = 0
+            for step in 0..<20 {
+                let hz = base + bin * Double(step) / 20
+                let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+                let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                    let sample = Float(sin(2 * Double.pi * hz * Double(index) / rate + 0.3)) * 0.5
+                    return StereoFrame(left: sample, right: sample)
+                }
+                frames.withUnsafeBufferPointer { analyzer.consume($0) }
+                let snapshot = analyzer.snapshot()
+                worstCents = max(worstCents, abs(1200 * log2(Double(snapshot.peakFrequency) / hz)))
+                worstLevel = max(worstLevel, abs(snapshot.peakLevel + 6.0206))
+            }
+            checkTrue(worstCents < 0.3)
+            checkTrue(worstLevel < 0.02)
+        }
+        // A peak exactly on a bin, and one half-way between two, from the estimator alone.
+        checkEqual(SpectrumAnalyzer.hannPeak(-6.0206, 0, -6.0206).offset, 0, accuracy: 0.0001)
+        checkEqual(SpectrumAnalyzer.hannPeak(-6.0206, 0, -6.0206).level, 0, accuracy: 0.0001)
+        let half = SpectrumAnalyzer.hannPeak(-30, 0, 0)
+        checkEqual(half.offset, 0.5, accuracy: 0.0001)
+        checkEqual(half.level, 20 * log10(Float.pi * 0.5 * 0.75), accuracy: 0.0001)
     }
 
     func testPitchAndDominantPeak() throws {
@@ -1970,6 +2000,7 @@ struct TestRunner {
             ("multi-level min/max waveform pyramid, dirty uploads and 32-bit wrap", suite.testMinMaxPyramid),
             ("interpolated low-frequency spectrogram rows", suite.testLowFrequencyRowsInterpolate),
             ("pitch naming and interpolated dominant peak", suite.testPitchAndDominantPeak),
+            ("peak frequency within 0.3 cents and level within 0.02 dB at any bin offset (Hann estimator)", suite.testHannPeakEstimate),
             ("chord notes without overtones, and their keyboard holds", suite.testChordNotesAndHolds),
             ("bass notes at 44.1, 48 and 96 kHz, and silence clearing", suite.testBassNotesAcrossSampleRates),
             ("peak readout gate, hold and attack", suite.testPeakTrackerGateHoldAndAttack),

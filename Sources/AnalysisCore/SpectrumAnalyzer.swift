@@ -531,10 +531,8 @@ package final class SpectrumAnalyzer {
             .sorted { $0.level > $1.level }
             .prefix(16)
             .map { candidate in
-                let a = decibels(power[candidate.bin - 1]), b = candidate.level, c = decibels(power[candidate.bin + 1])
-                let curvature = a - 2 * b + c
-                let offset = curvature < 0 ? max(-0.5, min(0.5, 0.5 * (a - c) / curvature)) : 0
-                return (Float((Double(candidate.bin) + Double(offset)) * binWidth), b - 0.25 * (a - c) * offset)
+                let peak = Self.hannPeak(decibels(power[candidate.bin - 1]), candidate.level, decibels(power[candidate.bin + 1]))
+                return (Float((Double(candidate.bin) + Double(peak.offset)) * binWidth), peak.level)
             }
         peaks = peaks.filter { (27...4_200).contains($0.frequency) }
         // One per semitone: the louder of two peaks on the same key.
@@ -668,17 +666,13 @@ package final class SpectrumAnalyzer {
         for (index, map) in maps.enumerated() {
             guard map.interpolated else {
                 // A tone between two bins reads up to 1.4 dB low in either (Hann scalloping); where the band's loudest
-                // bin is a local maximum, its log parabola restores the level, if the vertex lies in the band.
+                // bin is a local maximum, the Hann peak estimate restores the level, if the tone lies in the band.
                 var level = rowPower[index]
                 let k = rowPeakBin[index]
-                if k > 0, k + 1 < power.count, power[k] >= power[k - 1], power[k] >= power[k + 1] {
-                    let a = decibels(k - 1), c = decibels(k + 1)
-                    let curvature = a - 2 * level + c
-                    if curvature < 0 {
-                        let offset = max(-0.5, min(0.5, 0.5 * (a - c) / curvature))
-                        let vertex = Float(k) + offset
-                        if vertex >= Float(map.first) - 0.5, vertex <= Float(map.last) + 0.5 { level -= 0.25 * (a - c) * offset }
-                    }
+                if k > 0, k + 1 < power.count, power[k] > 0, power[k] >= power[k - 1], power[k] >= power[k + 1] {
+                    let peak = Self.hannPeak(decibels(k - 1), level, decibels(k + 1))
+                    let tone = Float(k) + peak.offset
+                    if tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 { level = peak.level }
                 }
                 output[index] = level
                 continue
@@ -687,6 +681,20 @@ package final class SpectrumAnalyzer {
                 Self.interpolatedLevel($0, at: map.position, halfWidth: map.halfWidth)
             }
         }
+    }
+
+    /// A tone's offset from bin k (−½…½ bin) and its level, from the dB levels `a`, `b`, `c` of bins k−1, k, k+1 of a
+    /// Hann-windowed spectrum, k the loudest. The Hann window's lobe makes the magnitude ratio of the two loudest bins
+    /// α = (1 + δ)/(2 − δ), so δ = (2α − 1)/(α + 1) exactly (Grandke's estimator), and the lobe's shape at δ,
+    /// sinc(δ)/(1 − δ²), gives the level lost to scalloping. For one tone it is exact (to the window's leakage from
+    /// elsewhere): a fitted log parabola was off by up to 2.9 cents and 0.3 dB at 55 Hz. Neighbours louder than
+    /// `b` (not a peak) give no offset.
+    package static func hannPeak(_ a: Float, _ b: Float, _ c: Float) -> (offset: Float, level: Float) {
+        let right = c >= a
+        let ratio = pow(10, (min(b, right ? c : a) - b) / 20)
+        let delta = max(0, min(0.5, (2 * ratio - 1) / (ratio + 1)))
+        let lobe = delta < 1e-5 ? 1 : sin(Float.pi * delta) / (Float.pi * delta * (1 - delta * delta))
+        return (right ? delta : -delta, b - 20 * log10(lobe))
     }
 
     /// The loudest level within `position ± halfWidth` (fractional bins) of a spectrum in dB, read from the parabola
@@ -705,22 +713,24 @@ package final class SpectrumAnalyzer {
         }
         let a = d[centre - 1], b = d[centre], c = d[centre + 1]
         let curvature = a - 2 * b + c
-        // The band's loudest point: the vertex if it lies within the band, else the band's edge nearer to it.
         var x = position - Float(centre)
-        if curvature < 0 {
-            let vertex = 0.5 * (a - c) / curvature
-            x = max(x - halfWidth, min(x + halfWidth, vertex))
+        var ceiling = max(a, max(b, c))
+        if b >= a, b >= c, b > -120 {
+            // A peak: where the tone itself lies within the band, the band reads the tone's level (`hannPeak`);
+            // otherwise the band's edge nearer to it, on the flank.
+            let peak = hannPeak(a, b, c)
+            if abs(peak.offset - x) <= halfWidth { return max(-120, peak.level) }
+            ceiling = peak.level
+            x = peak.offset < x ? x - halfWidth : x + halfWidth
         }
         x = max(-1.5, min(1.5, x))
         let value = b + 0.5 * (c - a) * x + 0.5 * curvature * x * x
-        // A concave parabola peaks at its vertex; a flat or convex one is held within its samples.
-        let ceiling = curvature < 0 ? b - (c - a) * (c - a) / (8 * curvature) : max(a, max(b, c))
         return max(-120, min(ceiling, value))
     }
 
-    /// Loudest bin k in 20 Hz…upper, refined by parabolic interpolation of the dB values at k−1, k, k+1.
-    /// Plain `k · sampleRate / fftSize` is quantised to 5.9 Hz, which is more than a semitone below ~100 Hz;
-    /// the vertex offset (|δ| ≤ ½ bin) makes note names and cents meaningful there.
+    /// Loudest bin k in 20 Hz…upper, refined from k−1, k, k+1 (`hannPeak`). Plain `k · sampleRate / fftSize` is
+    /// quantised to 5.9 Hz, which is more than a semitone below ~100 Hz; the offset (|δ| ≤ ½ bin) makes note names
+    /// and cents meaningful there.
     private func dominantPeak() -> (Float, Float) {
         let binWidth = sampleRate / Double(Self.fftSize)
         let first = max(2, Int(20 / binWidth))
@@ -734,11 +744,8 @@ package final class SpectrumAnalyzer {
         func decibels(_ bin: Int) -> Float {
             return 20 * log10(max(sqrt(power[bin]) * amplitudeScale, 0.000001))
         }
-        let a = decibels(peakBin - 1), b = decibels(peakBin), c = decibels(peakBin + 1)
-        let curvature = a - 2 * b + c
-        let offset = curvature < 0 ? max(-0.5, min(0.5, 0.5 * (a - c) / curvature)) : 0
-        let level = b - 0.25 * (a - c) * offset
-        return (Float((Double(peakBin) + Double(offset)) * binWidth), max(-120, level))
+        let peak = Self.hannPeak(decibels(peakBin - 1), decibels(peakBin), decibels(peakBin + 1))
+        return (Float((Double(peakBin) + Double(peak.offset)) * binWidth), max(-120, peak.level))
     }
 
     /// One complex DFT per pair of roles, z = A + iB (both windowed); Z[k] and conj(Z[N−k]) give each spectrum:

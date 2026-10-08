@@ -27,9 +27,12 @@ keyboard, axes and default −90…−12 dB colours), and it is more accurate:
 - **Time-aligned columns.** Every window is centred on the same instant, so a broadband hit lands in one column
   from bass to treble. Short windows are repeated across each 1/30 s column at 50 % overlap and averaged (Welch), so
   no transient falls between columns.
-- **Calibrated rows.** A row stands for its slice of frequency and shows the loudest level in it, refined with a
-  peak-centred parabola: a sine reads its level within 0.3 dB in every zone (it could read up to 1.4 dB low between
-  bins before). The live spectrum's low bands use the same reading.
+- **Calibrated rows.** A row stands for its slice of frequency and shows the loudest level in it, corrected for the
+  Hann window's scalloping with an exact Hann peak estimator: a sine reads its level within 0.05 dB in every zone (it
+  could read up to 1.4 dB low between bins before). The live spectrum's bands use the same reading.
+- **Exact peak readout.** The peak badge and the lit notes use the same estimator (Grandke's, exact for a tone in a
+  Hann window) instead of a fitted parabola: frequency within 0.3 cents and level within 0.02 dB at any position
+  between bins (was up to 2.9 cents and 0.3 dB at 55 Hz).
 - **Float history.** The display keeps every column in dBFS (no 8-bit steps), so the colour range and tilt can change
   without losing the history.
 - **New in Settings › Panels:** *Color range* (Standard −90…−12, Deep −114…−24 for tails and noise floors, Hot −72…0

@@ -23,9 +23,10 @@ import Foundation
 ///   Welch estimate, which also steadies the noise floor).
 /// - Calibration: levels are in dBFS for a sine (amplitude-normalised windows), the same scale as the spectrum, and
 ///   the display power is the sum over the analysed roles, halved, so it is referenced to a stereo pair.
-/// - Rows: a row narrower than 1.5 bins reads the parabola through the dB values of the nearest bin and its
-///   neighbours at the row's centre frequency (the peak model of the spectrum); a wider row reads its loudest bin,
-///   so a narrow partial is never averaged away.
+/// - Rows: a row stands for its slice of frequency and shows the loudest level in it. A row wider than 1.5 bins reads
+///   its loudest bin, corrected for the window's scalloping when a tone peaks inside the row; a narrower one reads
+///   the tone's level where the tone lies inside it, and the main lobe's flank where it does not
+///   (`SpectrumAnalyzer.interpolatedLevel`, `hannPeak`). A sine reads its level within 0.05 dB in every zone.
 package final class SpectrogramAnalyzer {
     /// Frequency over bin width that every row keeps (see the type's notes).
     package static let resolvingPower = 64.0
@@ -229,16 +230,13 @@ package final class SpectrogramAnalyzer {
             var peak = map.first
             for bin in map.first...map.last where d[bin] > d[peak] { peak = bin }
             // A tone between two bins reads up to 1.4 dB low in either (the Hann window's scalloping). Where the
-            // loudest bin is a local maximum, the parabola through it and its neighbours restores the tone's level,
-            // provided its vertex lies inside this row; otherwise the row is only the tone's flank.
+            // loudest bin is a local maximum, `SpectrumAnalyzer.hannPeak` restores the tone's level, provided the
+            // tone lies inside this row; otherwise the row is only the tone's flank.
             guard peak > 0, peak + 1 < d.count, d[peak] >= d[peak - 1], d[peak] >= d[peak + 1] else { return d[peak] }
-            let a = d[peak - 1], b = d[peak], c = d[peak + 1]
-            let curvature = a - 2 * b + c
-            guard curvature < 0 else { return b }
-            let offset = max(-0.5, min(0.5, 0.5 * (a - c) / curvature))
-            let vertex = Float(peak) + offset
-            guard vertex >= Float(map.first) - 0.5, vertex <= Float(map.last) + 0.5 else { return b }
-            return b - 0.25 * (a - c) * offset
+            let estimate = SpectrumAnalyzer.hannPeak(d[peak - 1], d[peak], d[peak + 1])
+            let tone = Float(peak) + estimate.offset
+            guard d[peak] > -120, tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 else { return d[peak] }
+            return estimate.level
         }
         return d.withUnsafeBufferPointer { SpectrumAnalyzer.interpolatedLevel($0, at: map.position, halfWidth: map.halfWidth) }
     }
