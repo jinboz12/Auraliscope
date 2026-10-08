@@ -4,7 +4,7 @@
 # Build numbers continue the release sequence: 63 is the first after Auraliscope 1.2.2 (build 62).
 ABR_LABEL=1.3dev
 ABR_VERSION=1.3
-ABR_BUILD=67
+ABR_BUILD=68
 # The plugins' bundle and AU versions sit below any official release (0.<build>), so an official Auraliscope Bridge
 # installer replaces these test plugins; the label above is what the plugin window and hosts show.
 ABR_PLUGIN_BUNDLE_VERSION=0.${ABR_BUILD}

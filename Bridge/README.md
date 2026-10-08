@@ -6,12 +6,39 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 67 (build numbers continue after Auraliscope 1.2.2, build 62: 63–66 were earlier LABS test packages; builds 1 to 3 were
+Build 68 (build numbers continue after Auraliscope 1.2.2, build 62: 63–67 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
 [VALIDATION.md](VALIDATION.md) for what was tested.
+
+## Build 68 changes
+
+**A new spectrogram, written from scratch.** Nothing of the earlier presentation remains, so the third-party credit
+(AudioSpectrogram, MIT) is gone from About, the notices and the README. It looks and reads as before (same palette,
+keyboard, axes and default −90…−12 dB colours), and it is more accurate:
+
+- **Multi-resolution analysis** (`Sources/AnalysisCore/SpectrogramAnalyzer.swift`, compiled into the plugins too).
+  Each row uses the shortest Hann window that still resolves pitch there (at least 64 × its bin width, a main lobe
+  within about ±½ semitone): 8192 points in the bass, 4096, 2048, 1024 and 512 points up the axis, blended over half
+  an octave at each change. The treble is up to 16 times sharper in time: hi-hats and onsets are thin strokes, not
+  170 ms smears.
+- **Time-aligned columns.** Every window is centred on the same instant, so a broadband hit lands in one column
+  from bass to treble. Short windows are repeated across each 1/30 s column at 50 % overlap and averaged (Welch), so
+  no transient falls between columns.
+- **Calibrated rows.** A row stands for its slice of frequency and shows the loudest level in it, refined with a
+  peak-centred parabola: a sine reads its level within 0.3 dB in every zone (it could read up to 1.4 dB low between
+  bins before). The live spectrum's low bands use the same reading.
+- **Float history.** The display keeps every column in dBFS (no 8-bit steps), so the colour range and tilt can change
+  without losing the history.
+- **New in Settings › Panels:** *Color range* (Standard −90…−12, Deep −114…−24 for tails and noise floors, Hot −72…0
+  for loud masters) and *Tilt* (flat, 3 or 4.5 dB/oct around 1 kHz) for the spectrum and spectrogram.
+- **Inspector:** hover over the spectrogram to read the pitch, frequency, age and level of the cell under the pointer
+  (over the live spectrum, the band's level). Pause to read a moment at leisure.
+
+The Bridge protocol is unchanged (512 rows per column): build 67 plugins still work with build 68 LABS, but show the
+old analysis until the build 68 plugins are installed.
 
 ## Build 67 changes
 
@@ -44,7 +71,7 @@ See [TESTING-zh.md](TESTING-zh.md) for the short Chinese installation and listen
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 67/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 68/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -71,10 +98,10 @@ static library per format; the Swift runtime is the system's). Other scripts: `f
 
 ## Install
 
-**Testers: the installer.** `Auraliscope LABS 1.3dev build 67.pkg` installs, for every user of the Mac, the app
+**Testers: the installer.** `Auraliscope LABS 1.3dev build 68.pkg` installs, for every user of the Mac, the app
 into `/Applications` and both plugins into `/Library/Audio/Plug-Ins/{VST3,Components}` (three choices, all selected).
 The app stays independent of Auraliscope. The plugins use the paths, names and bundle IDs an official Auraliscope
-Bridge would use, with bundle versions below any release (0.67; the plugin window and hosts show "1.3dev build 67"),
+Bridge would use, with bundle versions below any release (0.68; the plugin window and hosts show "1.3dev build 68"),
 so an official installer replaces them, and this package never replaces a newer plugin. Nothing is relocated to
 another copy. The package is not signed: open it with Control-click ▸ Open, or System Settings ▸ Privacy & Security ▸
 Open Anyway. Apple silicon, macOS 13 or later. Build it with:
@@ -156,7 +183,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 67/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 68/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz

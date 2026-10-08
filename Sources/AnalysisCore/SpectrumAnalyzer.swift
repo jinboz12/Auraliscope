@@ -293,6 +293,8 @@ package final class SpectrumAnalyzer {
     private var lowDecibels: [Float] = []
     /// Scratch for one pass of band powers, converted to dB together.
     private var rowPower = [Float](repeating: 0, count: MeterSnapshot.bandCount)
+    /// The loudest bin of each wide band in the newest pass, refined in dB afterwards.
+    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.bandCount)
     private var amplitudeScale: Float = 0
     /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
     private var binBands: [Int8] = []
@@ -637,12 +639,16 @@ package final class SpectrumAnalyzer {
             for (index, map) in maps.enumerated() where !map.interpolated {
                 let width = map.last - map.first + 1
                 var power: Float = 0
+                var peak = map.first
                 if width < 8 {
-                    for bin in map.first...map.last { power = max(power, bins[bin]) }
+                    for bin in map.first...map.last where bins[bin] > power { power = bins[bin]; peak = bin }
                 } else {
-                    vDSP_maxv(bins.baseAddress! + map.first, 1, &power, vDSP_Length(width))
+                    var offset: vDSP_Length = 0
+                    vDSP_maxvi(bins.baseAddress! + map.first, 1, &power, &offset, vDSP_Length(width))
+                    peak = map.first + Int(offset)
                 }
                 rowPower[index] = max(0, power)
+                rowPeakBin[index] = peak
             }
         }
         var scale = amplitudeScale * amplitudeScale
@@ -657,9 +663,24 @@ package final class SpectrumAnalyzer {
             vvlog10f(base, base, &n)
             vDSP_vsmul(base, 1, &ten, base, 1, vDSP_Length(count))
         }
+        let scale2 = amplitudeScale * amplitudeScale
+        func decibels(_ bin: Int) -> Float { 10 * log10(max(power[bin] * scale2, 1e-12)) }
         for (index, map) in maps.enumerated() {
             guard map.interpolated else {
-                output[index] = rowPower[index]
+                // A tone between two bins reads up to 1.4 dB low in either (Hann scalloping); where the band's loudest
+                // bin is a local maximum, its log parabola restores the level, if the vertex lies in the band.
+                var level = rowPower[index]
+                let k = rowPeakBin[index]
+                if k > 0, k + 1 < power.count, power[k] >= power[k - 1], power[k] >= power[k + 1] {
+                    let a = decibels(k - 1), c = decibels(k + 1)
+                    let curvature = a - 2 * level + c
+                    if curvature < 0 {
+                        let offset = max(-0.5, min(0.5, 0.5 * (a - c) / curvature))
+                        let vertex = Float(k) + offset
+                        if vertex >= Float(map.first) - 0.5, vertex <= Float(map.last) + 0.5 { level -= 0.25 * (a - c) * offset }
+                    }
+                }
+                output[index] = level
                 continue
             }
             output[index] = lowDecibels.withUnsafeBufferPointer {
