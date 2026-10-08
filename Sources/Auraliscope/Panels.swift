@@ -205,8 +205,20 @@ private struct SpectrogramLegend: View {
 
     var body: some View {
         let range = SpectrogramRange(rawValue: rangeKey) ?? .standard
-        let tilt = SpectrumTilt(rawValue: tiltKey) ?? .flat
-        let width: CGFloat = 72
+        let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(rawValue: tiltKey) ?? .flat)
+        // Narrow headers drop the average's key, then the tilt, before the scale itself.
+        ViewThatFits(in: .horizontal) {
+            legend(range, tilt: tilt, average: average)
+            legend(range, tilt: tilt, average: false)
+            legend(range, tilt: nil, average: false)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L("Color scale from %@ to %@ dBFS", MeterScale.signedInteger(range.floor), MeterScale.signedInteger(range.ceiling)))
+    }
+
+    static func tiltLabel(_ tilt: SpectrumTilt) -> String? { tilt == .flat ? nil : "+" + tilt.title }
+
+    private func legend(_ range: SpectrogramRange, tilt: String?, average: Bool) -> some View {
         HStack(spacing: 5) {
             Text(verbatim: MeterScale.signedInteger(range.floor)).font(.axis).foregroundStyle(Theme.tertiary)
             Canvas { context, size in
@@ -228,11 +240,11 @@ private struct SpectrogramLegend: View {
                     db += 24
                 }
             }
-            .frame(width: width, height: 8)
+            .frame(width: 64, height: 8)
             .offset(y: 1.5)
             Text(verbatim: MeterScale.signedInteger(range.ceiling) + " dB").font(.axis).foregroundStyle(Theme.tertiary)
-            if tilt != .flat {
-                Text(verbatim: "· +" + tilt.title).font(.axis).foregroundStyle(Theme.secondary)
+            if let tilt {
+                Text(verbatim: "· " + tilt).font(.axis).foregroundStyle(Theme.secondary)
             }
             if average {
                 HStack(spacing: 2) {
@@ -242,8 +254,8 @@ private struct SpectrogramLegend: View {
                 Text(L("avg")).font(.axis).foregroundStyle(Theme.tertiary)
             }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(L("Color scale from %@ to %@ dBFS", MeterScale.signedInteger(range.floor), MeterScale.signedInteger(range.ceiling)))
+        .lineLimit(1)
+        .fixedSize()
     }
 }
 
