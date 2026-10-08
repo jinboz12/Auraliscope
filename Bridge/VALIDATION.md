@@ -1,5 +1,80 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+## Build 68 — 2026-10-08
+
+This round rewrites the spectrogram end to end (analysis in the shared core, display, legend, inspector, export) and
+makes the spectrum's and peak readout's level and frequency estimates exact for Hann windows. Protocol 3, schema 1,
+the 512-row column format, tick rates, loudness, true peak and history capacities are unchanged. Logs are in the
+scratch directory of the session that built it; the commands below reproduce them.
+
+### Accuracy checks (core suite)
+
+- Sine calibration of the new spectrogram: a −6.02 dBFS sine reads within **0.05 dB** at 50 Hz, 440 Hz, inside each
+  zone blend (800 Hz, 1.1, 1.7, 3.5, 7 kHz) and up to 18 kHz at 48 kHz, and at 44.1 and 96 kHz (build 67: up to
+  1.4 dB low between bins).
+- Window choice: 8192/4096/2048/1024/512 points at 48 kHz with 1/1/2/4/7 frames per column; every row keeps at least
+  64 × its bin width (the bass below that is limited by the 8192-point history, as before).
+- Leakage: five semitones from a tone the row stays below −60 dBFS wherever the resolving rule holds.
+- Time: a 4 ms 8 kHz burst at the column's instant reads above −40 dBFS in its row, and the same burst 75 ms earlier
+  at least 40 dB lower (with 8192 points alone it would still show).
+- Peak readout: frequency within **0.3 cents** and level within **0.02 dB** at 20 offsets across a bin, at 41.2, 55,
+  440 Hz (48 kHz), 98 Hz (44.1 kHz) and 3 kHz (96 kHz). Build 67 measured 2.85 cents / 0.32 dB worst at 55 Hz.
+- Display history: float storage, interpolation, wrap, non-finite input, reset; tone curve monotonic with exact
+  end points for every color range; tilt pivots at 1 kHz; fixed spectrogram spans fit the history.
+
+### Offline rendering
+
+`--render-preview --preview-audio <file>` runs a file through the real analysis into the waterfall; the same 18 s
+synthetic programme (bass, chords, vibrato lead, kick, snare, hi-hats, sweep) rendered with build 67 and build 68
+code shows the same palette and layout, with hi-hats and onsets as thin strokes instead of ~170 ms smears and the
+sweep and vibrato sharper. `--preview-image` checks the exported image; `--snapshot-inspect x,y` the inspector.
+
+### CPU
+
+App DSP benchmark (`--benchmark-dsp`, 100 simulated seconds at 48 kHz, release build, median of 3):
+
+| Pipeline | Build 67 | Build 68 |
+|---|---:|---:|
+| Full 9.1.6, stereo spectrum | 0.61 % | 0.77 % |
+| Full 9.1.6, 16-channel Spatial spectrum | 1.23 % | 1.90 % |
+
+One spectrogram column (micro-benchmark, P-core): 48 µs at 48 kHz (0.145 % of a core at 30 columns/s), 85 µs at
+192 kHz. The 8192-point zone reuses the spectrum's transform; zones keep preallocated scratch (no allocation per
+column); the Hann estimator is table-driven.
+
+Paired full-plugin comparison, `CompareResources.py <build67.vst3> <build68.vst3>` (15 s runs, three
+alternating-order pairs, medians; every run bitwise passthrough, zero process errors):
+
+| Scenario | Build 67 CPU | Build 68 CPU | Relative change |
+|---|---:|---:|---:|
+| 8 mono instances, 48 kHz, 256 frames | 11.215% | 12.427% | +10.8% |
+| 32 stereo instances, 48 kHz, 256 frames | 29.885% | 31.543% | +5.5% |
+| 8 stereo instances, 192 kHz, 1024 frames | 22.729% | 26.398% | +16.1% |
+
+The plugins' analysis threads run at background priority and usually on efficiency cores, so their percentages are
+larger than the P-core micro-benchmark. At 192 kHz the treble windows are repeated more often to cover each 1/30 s
+column, which is the main cost there. One mono pair ran far below the others in both builds (5.6 / 4.8 %); the
+medians exclude it.
+
+### Completed validation
+
+| Check | Build 68 result |
+|---|---|
+| Core suite | 45/45 (new: multi-resolution spectrogram, Hann estimator; extended history, tone, tilt, span) |
+| AddressSanitizer | core 45/45 and kernel checks pass |
+| Localization | 359 keys, en / zh-Hans / ko |
+| Bridge analysis | 95/95 |
+| Bridge transport | 95/95 |
+| Steinberg VST3 validator | 537 passed, 0 failed |
+| Plugin → ResultProbe | 12/12, VST3 and AU at 44.1–192 kHz; bitwise audio passthrough; plugin spectrum within 0.5 dB of the app's own analysis (the probe must be rebuilt with `build-tools.sh`: a build-67 probe compares against the old, uncorrected levels and fails at 192 kHz by 1.2 dB) |
+| Plugin → LABS | 11/11: reconnect, mono, multiple instances, rate change, states, restart, duplicate, hold, held, controls, analysis before app launch |
+| Paired resource runs | 18/18, zero output mismatches and process errors |
+| Window snapshots | dark and light, minimum 1000 × 628 window (legend drops its extras instead of wrapping), mirrored orientation, Settings › Panels |
+
+**Boundaries:** as for build 67: no administrator install of the package, no auval rescan of an installed AU, no
+real audio hardware, no DAW (REAPER, Logic, Cubase, Live) rerun, no Intel hardware. The hover inspector and context
+menu were checked through diagnostics and offline renders, not with a real pointer.
+
 ## Build 67 — 2026-10-05
 
 This round starts from the delivered build 66 and retains its true-peak priming/reset fixes. It changes only two
