@@ -199,6 +199,7 @@ private struct BadgeSurface: View {
 private struct SpectrogramLegend: View {
     @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
     @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
+    @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
     @ObservedObject private var theme = ThemeSettings.shared
     @ObservedObject private var l10n = Localizer.shared
 
@@ -233,6 +234,13 @@ private struct SpectrogramLegend: View {
             if tilt != .flat {
                 Text(verbatim: "· +" + tilt.title).font(.axis).foregroundStyle(Theme.secondary)
             }
+            if average {
+                HStack(spacing: 2) {
+                    ForEach(0..<2, id: \.self) { _ in Capsule().fill(Theme.sand).frame(width: 4, height: 2) }
+                }
+                .padding(.leading, 4)
+                Text(L("avg")).font(.axis).foregroundStyle(Theme.tertiary)
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L("Color scale from %@ to %@ dBFS", MeterScale.signedInteger(range.floor), MeterScale.signedInteger(range.ceiling)))
@@ -247,11 +255,13 @@ private struct SpectrogramInspector: View {
     let strip: CGFloat
     let left: Bool
     @State private var location: CGPoint? = Diagnostics.inspectPoint
+    @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
             ZStack(alignment: .topLeading) {
                 Color.clear
                     .contentShape(Rectangle())
@@ -277,6 +287,8 @@ private struct SpectrogramInspector: View {
         let level: Float?
         /// Seconds before the newest column, over the waterfall; nil over the live spectrum.
         let secondsAgo: Double?
+        /// The long-term average of the band, over the live spectrum while it is shown.
+        var average: Float? = nil
     }
 
     private func reading(at point: CGPoint, layout: SpectrogramLayout) -> Reading? {
@@ -289,9 +301,12 @@ private struct SpectrogramInspector: View {
                            secondsAgo: cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds)
         }
         if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
-            let bands = (SceneStore.existing(.spectrum) as? SpectrumScene)?.shown ?? []
+            let scene = SceneStore.existing(.spectrum) as? SpectrumScene
+            let bands = scene?.shown ?? []
             let band = Int(layout.row(y: point.y, rows: MeterSnapshot.bandCount).rounded())
-            return Reading(frequency: frequency, level: bands.indices.contains(band) ? bands[band] : nil, secondsAgo: nil)
+            let average = DisplayOptions.stored.averageSpectrum ? scene?.average : nil
+            return Reading(frequency: frequency, level: bands.indices.contains(band) ? bands[band] : nil, secondsAgo: nil,
+                           average: average.flatMap { $0.indices.contains(band) ? $0[band] : nil })
         }
         return nil
     }
@@ -325,7 +340,7 @@ private struct SpectrogramInspector: View {
         @ObservedObject private var l10n = Localizer.shared
 
         /// Fixed per kind, so the tag never changes size as the pointer moves.
-        static func width(_ reading: Reading) -> CGFloat { reading.secondsAgo == nil ? 200 : 246 }
+        static func width(_ reading: Reading) -> CGFloat { reading.secondsAgo != nil ? 246 : (reading.average == nil ? 200 : 268) }
 
         var body: some View {
             let pitch = Pitch(frequency: reading.frequency)
@@ -343,6 +358,11 @@ private struct SpectrogramInspector: View {
                     .font(font).foregroundStyle(reading.level == nil ? Theme.tertiary : Theme.ink)
                 if reading.secondsAgo == nil {
                     Text(L("live")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                }
+                if let average = reading.average {
+                    dot
+                    Text(verbatim: MeterScale.tenths(average, floor: -119.9)).font(font).foregroundStyle(Theme.sand)
+                    Text(L("avg")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
                 }
             }
             .lineLimit(1)
@@ -367,11 +387,13 @@ private struct SpectrogramLabels: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
             let octave = abs(layout.y(midi: 60, sampleRate: sampleRate) - layout.y(midi: 72, sampleRate: sampleRate))
             let labelStep = max(1, Int(ceil(18 / max(1, octave))))
             let perSecond = layout.plot.width / CGFloat(layout.seconds)
@@ -1016,10 +1038,15 @@ struct DisplayOptions: Equatable {
     /// The levels the spectrogram's colors span, and the display slope of the spectrum and spectrogram.
     var spectrogramRange = SpectrogramRange.standard
     var tilt = SpectrumTilt.flat
+    /// The live spectrum's long-term average since the last reset.
+    var averageSpectrum = true
+    /// Seconds across the spectrogram.
+    var spectrogramSpan = SpectrogramSpan.auto
 
     static let peakHoldsKey = "spectrum.peakHolds"
     static let waveSecondsKey = "waveform.seconds"
     static let bandMarkersKey = "soundstage.bandMarkers"
+    static let averageSpectrumKey = "spectrum.average"
     static let waveChoices = [2, 4, 8]
 
     static var stored: DisplayOptions {
@@ -1029,7 +1056,9 @@ struct DisplayOptions: Equatable {
                               peakHolds: defaults.object(forKey: peakHoldsKey) == nil ? true : defaults.bool(forKey: peakHoldsKey),
                               waveSeconds: waveChoices.contains(seconds) ? seconds : 4,
                               bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
-                              spectrogramRange: .stored, tilt: .stored)
+                              spectrogramRange: .stored, tilt: .stored,
+                              averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
+                              spectrogramSpan: .stored)
     }
 }
 

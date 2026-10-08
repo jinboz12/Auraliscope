@@ -271,6 +271,26 @@ enum SpectrogramRange: String, CaseIterable {
     }
 }
 
+/// How many seconds the spectrogram shows: Auto fits 3 to 8 s to the panel's width (about 100 pt a second); a fixed
+/// span shows that much at any width, up to 15 s to see a whole phrase (the history keeps 17 s).
+enum SpectrogramSpan: String, CaseIterable {
+    case auto, four, eight, fifteen
+
+    static let key = "spectrogram.span"
+    static var stored: SpectrogramSpan { SpectrogramSpan(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .auto }
+
+    /// 0 for Auto.
+    var seconds: Double {
+        switch self {
+        case .auto: return 0
+        case .four: return 4
+        case .eight: return 8
+        case .fifteen: return 15
+        }
+    }
+    var title: String { self == .auto ? L("Auto") : L("%d s", Int(seconds)) }
+}
+
 /// A display slope for the spectrum and the spectrogram, pivoting at 1 kHz. Music falls by roughly 3 to 4.5 dB per
 /// octave, so a tilt of that much shows a balanced mix as level across the axis and makes the treble's detail as
 /// readable as the bass's. Readouts (the peak badge, the inspector) always give the true level.
@@ -352,8 +372,9 @@ struct SpectrogramLayout {
     let mirrored: Bool
     var visibleColumns: Int { Int(seconds * Self.analysisRate) }
 
-    /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair.
-    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false) {
+    /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair;
+    /// `span` fixes the seconds shown (`SpectrogramSpan`), `0` fits them to the width.
+    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false, span: Double = 0) {
         mirrored = spectrumLeft
         let top: CGFloat = 8, margin: CGFloat = 12
         let height = max(1, size.height - top - FrequencyAxis.labelHeight)
@@ -377,7 +398,7 @@ struct SpectrogramLayout {
             plot = CGRect(x: left, y: top, width: waterfall, height: height)
             spectrum = CGRect(x: plot.maxX + Self.spectrumGap, y: top, width: spectrumWidth, height: height)
         }
-        seconds = max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
+        seconds = span > 0 ? span : max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
     }
 
     /// Centre of the octave labels' column, beside the keyboard on its outer side.

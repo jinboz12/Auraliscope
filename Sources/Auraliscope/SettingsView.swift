@@ -69,6 +69,8 @@ final class SettingsDraft: ObservableObject {
     @Published var peakHolds: Bool?
     @Published var spectrogramRange: SpectrogramRange?
     @Published var tilt: SpectrumTilt?
+    @Published var averageSpectrum: Bool?
+    @Published var spectrogramSpan: SpectrogramSpan?
     @Published var waveSeconds: Int?
     @Published var headline: LoudnessReading?
 
@@ -149,6 +151,14 @@ final class SettingsDraft: ObservableObject {
             store(value.rawValue, SpectrogramRange.key)
             model.displayOptions.spectrogramRange = value
         }, applied: { value, model in model.displayOptions.spectrogramRange == value && SpectrogramRange.stored == value }),
+        field(\.averageSpectrum, { L("Average spectrum") }, live: { $0.displayOptions.averageSpectrum }, write: { value, model in
+            store(value, DisplayOptions.averageSpectrumKey)
+            model.displayOptions.averageSpectrum = value
+        }, applied: { value, model in model.displayOptions.averageSpectrum == value && DisplayOptions.stored.averageSpectrum == value }),
+        field(\.spectrogramSpan, { L("Spectrogram span") }, live: { $0.displayOptions.spectrogramSpan }, write: { value, model in
+            store(value.rawValue, SpectrogramSpan.key)
+            model.displayOptions.spectrogramSpan = value
+        }, applied: { value, model in model.displayOptions.spectrogramSpan == value && SpectrogramSpan.stored == value }),
         field(\.tilt, { L("Tilt") }, live: { $0.displayOptions.tilt }, write: { value, model in
             store(value.rawValue, SpectrumTilt.key)
             model.displayOptions.tilt = value
@@ -832,6 +842,18 @@ private struct PanelsPane: View {
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
             SettingsNote(L("A short mark at each band's recent peak on the live spectrum, held 1.2 s and then falling."))
+            Divider()
+            SettingsRow(title: L("Average spectrum")) {
+                Toggle(L("Average spectrum"), isOn: draft.binding(\.averageSpectrum, live: { model.displayOptions.averageSpectrum }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            }
+            SettingsNote(L("A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle."))
+            Divider()
+            SettingsRow(title: L("Spectrogram span")) {
+                segments(L("Spectrogram span"), SpectrogramSpan.allCases.map { ($0, $0.title) }, \.spectrogramSpan,
+                         live: { model.displayOptions.spectrogramSpan })
+            }
+            SettingsNote(L("How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase."))
             Divider()
             SettingsRow(title: L("Color range")) {
                 segments(L("Color range"), SpectrogramRange.allCases.map { ($0, $0.title) }, \.spectrogramRange,

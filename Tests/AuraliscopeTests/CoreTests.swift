@@ -1855,6 +1855,12 @@ final class CoreTests {
             let narrow = SpectrogramLayout(size: CGSize(width: 1_300, height: 300), strip: 5_000)
             checkEqual(wide.seconds, SpectrogramLayout.maxSeconds)
             checkEqual(SpectrogramLayout(size: CGSize(width: 400, height: 300)).seconds, SpectrogramLayout.minSeconds)
+            // A fixed span holds at any width and always fits the display history.
+            for span in SpectrogramSpan.allCases where span != .auto {
+                let fixed = SpectrogramLayout(size: CGSize(width: 400, height: 300), span: span.seconds)
+                checkEqual(fixed.seconds, span.seconds)
+                checkTrue(fixed.visibleColumns < SpectrogramHistory.capacity)
+            }
             checkTrue(narrow.seconds < wide.seconds)
             checkEqual(Double(spectrogram.y(frequency: 20, sampleRate: 48_000)), Double(spectrogram.plot.maxY), accuracy: 0.001)
             checkEqual(Double(spectrogram.y(midi: 69, sampleRate: 48_000)), Double(spectrogram.y(frequency: 440, sampleRate: 48_000)), accuracy: 0.001)

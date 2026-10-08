@@ -1109,6 +1109,20 @@ final class SpectrumScene: CanvasScene {
     private var epoch = -1
     /// The levels last drawn (damped, untilted), for the inspector.
     private(set) var shown = [Float](repeating: -120, count: MeterSnapshot.bandCount)
+    /// Long-term average spectrum since the last reset: each band's mean power over every snapshot that carried
+    /// signal, the average engineers compare a mix's tonal balance with. Averaged in power, not dB, so loud passages
+    /// weigh as they sound; silence (a stopped transport, a pause) is left out instead of dragging it down.
+    private var averagePower = [Double](repeating: 0, count: MeterSnapshot.bandCount)
+    private(set) var averageCount = 0
+    private var averagedSequence: Float = 0
+    private var averagedStream: Float = 0
+    /// Snapshots before the average is drawn: one second at 60 Hz.
+    static let averageMinimum = 60
+    /// The average in dBFS per band (untilted), once it rests on `averageMinimum` snapshots.
+    var average: [Float]? {
+        guard averageCount >= Self.averageMinimum else { return nil }
+        return averagePower.map { Float(10 * log10(max($0 / Double(averageCount), 1e-12))) }
+    }
 
     // Shapes only: no underlay quad is ever added, so the texture is never bound.
     var underlayKind: UnderlayKind { .waterfall }
@@ -1119,10 +1133,21 @@ final class SpectrumScene: CanvasScene {
 
     /// A reset clears the peak holds, as it does the channel meters'.
     func prepare(frame: CanvasFrame) {
-        guard frame.epoch != epoch else { return }
-        epoch = frame.epoch
-        holds = Array(repeating: -120, count: MeterSnapshot.bandCount)
-        holdTimers = Array(repeating: 0, count: MeterSnapshot.bandCount)
+        let snapshot = frame.snapshot
+        if frame.epoch != epoch || (snapshot.streamID > 0 && snapshot.streamID != averagedStream) {
+            epoch = frame.epoch
+            holds = Array(repeating: -120, count: MeterSnapshot.bandCount)
+            holdTimers = Array(repeating: 0, count: MeterSnapshot.bandCount)
+            for i in averagePower.indices { averagePower[i] = 0 }
+            averageCount = 0
+            if snapshot.streamID > 0 { averagedStream = snapshot.streamID }
+        }
+        // Each new snapshot with signal joins the average once.
+        guard frame.running, snapshot.sequence != averagedSequence else { return }
+        averagedSequence = snapshot.sequence
+        guard let loudest = snapshot.spectrum.max(), loudest > -100 else { return }
+        for (i, db) in snapshot.spectrum.enumerated() { averagePower[i] += pow(10, Double(db) / 10) }
+        averageCount += 1
     }
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
@@ -1189,6 +1214,16 @@ final class SpectrumScene: CanvasScene {
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
             b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(octave == 4 ? 0.10 : 0.045))
         }
+        // The long-term average, under the live curve, in the second accent.
+        if frame.options.averageSpectrum, let average {
+            let points = (0..<count).map { CGPoint(x: layout.x(decibels: average[$0] + tilt[$0]), y: strip.maxY - (CGFloat($0) + 0.5) * step) }
+            let smooth = Self.spline(points, clampX: strip.minX...strip.maxX)
+            let sand = Theme.sandRGB
+            // Dashed (two spline segments on, one off), so it reads apart from the live curve in any palette.
+            for (index, (p, q)) in zip(smooth, smooth.dropFirst()).enumerated() where index % 3 != 2 {
+                b.line(p, q, width: 1.5, sand.simd(0.95))
+            }
+        }
         for (p, q) in zip(curve, curve.dropFirst()) { b.line(p, q, width: 1.5, lime.simd()) }
         // Held while frozen, unless peak holds are switched off meanwhile.
         let dt = frame.options.peakHolds ? frame.signal(dt) : dt
@@ -1208,6 +1243,27 @@ final class SpectrumScene: CanvasScene {
             let y = strip.maxY - CGFloat(index + 1) * step
             b.rect(CGRect(x: x - 0.5, y: y + step * 0.2, width: 1, height: step * 0.6), ink.simd(0.42))
         }
+    }
+
+    /// Catmull-Rom through `points` (four segments each), x held within `clampX`.
+    static func spline(_ points: [CGPoint], clampX: ClosedRange<CGFloat>) -> [CGPoint] {
+        guard points.count > 1 else { return points }
+        func at(_ i: Int) -> CGPoint { points[max(0, min(points.count - 1, i))] }
+        var result: [CGPoint] = []
+        result.reserveCapacity(points.count * 4)
+        for index in 0..<(points.count - 1) {
+            let p0 = at(index - 1), p1 = at(index), p2 = at(index + 1), p3 = at(index + 2)
+            for sub in 0..<4 {
+                let t = CGFloat(sub) / 4, t2 = t * t, t3 = t2 * t
+                func spline(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat) -> CGFloat {
+                    0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
+                }
+                result.append(CGPoint(x: min(clampX.upperBound, max(clampX.lowerBound, spline(p0.x, p1.x, p2.x, p3.x))),
+                                      y: spline(p0.y, p1.y, p2.y, p3.y)))
+            }
+        }
+        result.append(points[points.count - 1])
+        return result
     }
 }
 
@@ -1294,7 +1350,8 @@ final class SpectrogramScene: CanvasScene {
     }
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
-        let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
+        let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left,
+                                       span: frame.options.spectrogramSpan.seconds)
         let plot = layout.plot
         b.underlayQuad(plot, mirrored: layout.mirrored)
         span = Double(layout.visibleColumns)
