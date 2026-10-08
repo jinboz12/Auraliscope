@@ -42,6 +42,8 @@ keyboard, axes and default −90…−12 dB colours), and it is more accurate:
   since the last Reset (silence left out): the long-term average spectrum used to compare tonal balance.
 - **Inspector:** hover over the spectrogram to read the pitch, frequency, age and level of the cell under the pointer
   (over the live spectrum, the band's level). Pause to read a moment at leisure.
+- **Export:** right-click the Spectrum well for *Copy Spectrogram Image* or *Save Spectrogram Image…*: the span on
+  screen at full resolution, with frequency and time axes and a caption (source, color range, tilt, date).
 
 The Bridge protocol is unchanged (512 rows per column): build 67 plugins still work with build 68 LABS, but show the
 old analysis until the build 68 plugins are installed.

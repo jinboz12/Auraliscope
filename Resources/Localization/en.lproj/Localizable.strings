@@ -396,3 +396,6 @@
 "A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle." = "A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle.";
 "Spectrogram span" = "Spectrogram span";
 "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase." = "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase.";
+"Copy Spectrogram Image" = "Copy Spectrogram Image";
+"Save Spectrogram Image…" = "Save Spectrogram Image…";
+"Spectrogram" = "Spectrogram";

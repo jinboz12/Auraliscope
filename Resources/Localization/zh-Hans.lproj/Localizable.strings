@@ -396,3 +396,6 @@
 "A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle." = "实时频谱上的第二条曲线：自上次重置以来各频段的平均功率，不计静音部分。可用来对照参考曲目的音色平衡，或观察母带逐渐稳定。";
 "Spectrogram span" = "声谱图时长";
 "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase." = "声谱图显示的时长。自动会按面板宽度显示 3 到 8 秒；15 秒可看到完整的乐句。";
+"Copy Spectrogram Image" = "拷贝声谱图图像";
+"Save Spectrogram Image…" = "存储声谱图图像…";
+"Spectrogram" = "声谱图";

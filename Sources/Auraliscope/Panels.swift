@@ -121,7 +121,7 @@ struct SpectrumPanel: View {
                         PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
                         PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
                         SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left)
-                        SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left)
+                        SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, source: source)
                         // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
                         PanelDivider(axis: .horizontal, leading: layout.dividerLeading,
                                      onResize: { setStrip(layout.strip(forDivider: $0), size: proxy.size, left: left) },
@@ -266,6 +266,8 @@ private struct SpectrogramInspector: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    /// What is analysed, for an exported image's caption.
+    let source: String
     @State private var location: CGPoint? = Diagnostics.inspectPoint
     @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
     @ObservedObject private var l10n = Localizer.shared
@@ -283,6 +285,10 @@ private struct SpectrogramInspector: View {
                         case .ended: location = nil
                         }
                     }
+                    .contextMenu {
+                        Button(L("Copy Spectrogram Image")) { if let image = image() { SpectrogramImage.copy(image) } }
+                        Button(L("Save Spectrogram Image…")) { if let image = image() { SpectrogramImage.save(image) } }
+                    }
                 if let location, let reading = reading(at: location, layout: layout) {
                     TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
                         overlay(self.reading(at: location, layout: layout) ?? reading, at: location, layout: layout, size: proxy.size)
@@ -292,6 +298,14 @@ private struct SpectrogramInspector: View {
             }
         }
         .accessibilityHidden(true)
+    }
+
+    /// The columns on screen as an image (`SpectrogramImage`); nil before any column has arrived.
+    private func image() -> CGImage? {
+        guard let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene else { return nil }
+        let options = DisplayOptions.stored
+        return SpectrogramImage.make(history: scene.history, columns: Int(scene.span), sampleRate: sampleRate, options: options,
+                                     caption: SpectrogramImage.caption(source: source, options: options))
     }
 
     private struct Reading {

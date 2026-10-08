@@ -49,6 +49,8 @@ enum Diagnostics {
     /// the image (the temporary directory's Auraliscope-preview.png otherwise).
     static var previewAudio: URL? { argument("--preview-audio").map { URL(fileURLWithPath: $0) } }
     static var previewOutput: URL? { argument("--preview-output").map { URL(fileURLWithPath: $0) } }
+    /// `--preview-image <png>`: also writes the spectrogram's exported image (`SpectrogramImage`).
+    static var previewImage: URL? { argument("--preview-image").map { URL(fileURLWithPath: $0) } }
     private static func argument(_ name: String) -> String? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
