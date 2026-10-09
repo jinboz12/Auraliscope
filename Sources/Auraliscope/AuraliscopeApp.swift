@@ -697,7 +697,10 @@ private struct DashboardHero: View {
     }
 
     private var heroTitle: some View {
-        Eyebrow(L("LOUDNESS"), color: Theme.ink.opacity(0.88)).fixedSize()
+        HStack(alignment: .center, spacing: 8) {
+            Eyebrow(L("LOUDNESS"), color: Theme.ink.opacity(0.88)).fixedSize()
+            PanelSettingsButton(panel: .loudness)
+        }
     }
 
     /// LIVE or PAUSED, with the monitoring format when there is room for it.
@@ -748,7 +751,7 @@ private struct HeroGauge: View {
     }
 }
 
-/// The main loudness reading (Short-term unless chosen otherwise in Settings › Panels), its value and the delta
+/// The main loudness reading (Short-term unless chosen otherwise in the panel's settings), its value and the delta
 /// chip.
 private struct HeroShortTerm: View {
     @ObservedObject var readouts: Readouts

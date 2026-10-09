@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Sections of the Settings window, in sidebar order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, audio, channels, panels, appearance
+    case general, audio, channels, appearance
 
     static let defaultsKey = "settingsPane"
     var id: String { rawValue }
@@ -14,7 +14,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: return L("General")
         case .audio: return L("Audio")
         case .channels: return L("Channels")
-        case .panels: return L("Panels")
         case .appearance: return L("Appearance")
         }
     }
@@ -24,7 +23,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .audio: return "mic"
         case .channels: return "hifispeaker.2"
-        case .panels: return "square.split.2x2"
         case .appearance: return "paintpalette"
         }
     }
@@ -64,17 +62,6 @@ final class SettingsDraft: ObservableObject {
     @Published var routing: [Int32]?
     @Published var appearance: AppearanceMode?
     @Published var palette: Theme.Palette?
-    @Published var stageStyle: StageStyle?
-    @Published var spectrumSide: SpectrumSide?
-    @Published var peakHolds: Bool?
-    @Published var spectrogramRange: SpectrogramRange?
-    @Published var spectrogramColors: SpectrogramColors?
-    @Published var tilt: SpectrumTilt?
-    @Published var averageSpectrum: Bool?
-    @Published var spectrumResponse: SpectrumResponse?
-    @Published var spectrogramSpan: SpectrogramSpan?
-    @Published var waveSeconds: Int?
-    @Published var headline: LoudnessReading?
 
     enum Outcome: Equatable { case checking, applied, failed([String]) }
     @Published private(set) var outcome: Outcome?
@@ -135,48 +122,6 @@ final class SettingsDraft: ObservableObject {
         field(\.routing, { L("Routing") }, previewable: false, live: { $0.sourceForRole },
               write: { value, model in model.assign(routing: value) },
               applied: { routing, model in model.speakerLayout.roles.allSatisfy { model.sourceForRole[$0] == routing[$0] } }),
-        field(\.headline, { L("Main reading") }, live: { _ in LoudnessReading.stored },
-              write: { value, _ in store(value.rawValue, LoudnessReading.key) }),
-        field(\.stageStyle, { L("Stereometer style") }, live: { $0.stageStyle }, write: { value, model in
-            store(value.rawValue, StageStyle.key)
-            model.stageStyle = value
-        }, applied: { value, model in model.stageStyle == value && StageStyle.stored == value }),
-        field(\.spectrumSide, { L("Orientation") }, live: { $0.displayOptions.spectrumSide }, write: { value, model in
-            store(value.rawValue, SpectrumSide.key)
-            model.displayOptions.spectrumSide = value
-        }, applied: { value, model in model.displayOptions.spectrumSide == value && SpectrumSide.stored == value }),
-        field(\.peakHolds, { L("Peak holds") }, live: { $0.displayOptions.peakHolds }, write: { value, model in
-            store(value, DisplayOptions.peakHoldsKey)
-            model.displayOptions.peakHolds = value
-        }, applied: { value, model in model.displayOptions.peakHolds == value && DisplayOptions.stored.peakHolds == value }),
-        field(\.spectrogramRange, { L("Color range") }, live: { $0.displayOptions.spectrogramRange }, write: { value, model in
-            store(value.rawValue, SpectrogramRange.key)
-            model.displayOptions.spectrogramRange = value
-        }, applied: { value, model in model.displayOptions.spectrogramRange == value && SpectrogramRange.stored == value }),
-        field(\.spectrogramColors, { L("Colors") }, live: { $0.displayOptions.spectrogramColors }, write: { value, model in
-            store(value.rawValue, SpectrogramColors.key)
-            model.displayOptions.spectrogramColors = value
-        }, applied: { value, model in model.displayOptions.spectrogramColors == value && SpectrogramColors.stored == value }),
-        field(\.averageSpectrum, { L("Average spectrum") }, live: { $0.displayOptions.averageSpectrum }, write: { value, model in
-            store(value, DisplayOptions.averageSpectrumKey)
-            model.displayOptions.averageSpectrum = value
-        }, applied: { value, model in model.displayOptions.averageSpectrum == value && DisplayOptions.stored.averageSpectrum == value }),
-        field(\.spectrumResponse, { L("Response") }, live: { $0.displayOptions.spectrumResponse }, write: { value, model in
-            store(value.rawValue, SpectrumResponse.key)
-            model.displayOptions.spectrumResponse = value
-        }, applied: { value, model in model.displayOptions.spectrumResponse == value && SpectrumResponse.stored == value }),
-        field(\.spectrogramSpan, { L("Spectrogram span") }, live: { $0.displayOptions.spectrogramSpan }, write: { value, model in
-            store(value.rawValue, SpectrogramSpan.key)
-            model.displayOptions.spectrogramSpan = value
-        }, applied: { value, model in model.displayOptions.spectrogramSpan == value && SpectrogramSpan.stored == value }),
-        field(\.tilt, { L("Tilt") }, live: { $0.displayOptions.tilt }, write: { value, model in
-            store(value.rawValue, SpectrumTilt.key)
-            model.displayOptions.tilt = value
-        }, applied: { value, model in model.displayOptions.tilt == value && SpectrumTilt.stored == value }),
-        field(\.waveSeconds, { L("Time span") }, live: { $0.displayOptions.waveSeconds }, write: { value, model in
-            store(value, DisplayOptions.waveSecondsKey)
-            model.displayOptions.waveSeconds = value
-        }, applied: { value, model in model.displayOptions.waveSeconds == value && DisplayOptions.stored.waveSeconds == value }),
     ]
 
     private static func field(for key: AnyKeyPath) -> Field? { fields.first { $0.key == key } }
@@ -322,13 +267,13 @@ final class SettingsDraft: ObservableObject {
         }
     }
 
-    /// Diagnostics (`--settings-preview`): previews Light and the spectrum on the left, changes the style while
+    /// Diagnostics (`--settings-preview`): previews the other appearance, changes the palette and Mono while
     /// previewing, then reverts, and prints what the app uses at each step.
     func rehearsePreview(model: MeterModel) {
         guard !rehearsed else { return }
         rehearsed = true
         func report(_ step: String) {
-            print("preview \(step): previewing \(previewing) dirty \(dirty) theme \(ThemeSettings.shared.mode.rawValue) side \(model.displayOptions.spectrumSide.rawValue) stored side \(SpectrumSide.stored.rawValue) style \(model.stageStyle.rawValue)")
+            print("preview \(step): previewing \(previewing) dirty \(dirty) theme \(ThemeSettings.shared.mode.rawValue) palette \(ThemeSettings.shared.palette.rawValue) mono \(model.monoEnabled)")
             fflush(stdout)
         }
         func later(_ delay: Double, _ body: @escaping @MainActor () -> Void) {
@@ -338,12 +283,11 @@ final class SettingsDraft: ObservableObject {
             report("before")
             // The opposite of what is in use, so every step changes something whatever was stored.
             let appearance: AppearanceMode = ThemeSettings.shared.mode == .light ? .dark : .light
-            let side: SpectrumSide = model.displayOptions.spectrumSide == .left ? .right : .left
-            let style: StageStyle = model.stageStyle == .filled ? .outline : .filled
+            let palette = Theme.Palette.allCases.first { $0 != ThemeSettings.shared.palette } ?? ThemeSettings.shared.palette
             self.binding(\.appearance, live: { ThemeSettings.shared.mode }).wrappedValue = appearance
             report("staged, previewing at once")
-            self.binding(\.spectrumSide, live: { model.displayOptions.spectrumSide }).wrappedValue = side
-            self.binding(\.stageStyle, live: { model.stageStyle }).wrappedValue = style
+            self.binding(\.palette, live: { ThemeSettings.shared.palette }).wrappedValue = palette
+            self.binding(\.mono, live: { model.monoEnabled }).wrappedValue = !model.monoEnabled
             report("changed while on")
             guard !CommandLine.arguments.contains("--settings-preview-hold") else { return }
             later(1) {
@@ -414,7 +358,6 @@ struct SettingsView: View {
                         case .general: GeneralPane(model: model)
                         case .audio: AudioPane(model: model)
                         case .channels: ChannelsPane(model: model)
-                        case .panels: PanelsPane(model: model)
                         case .appearance: AppearancePane()
                         }
                     }
@@ -822,95 +765,6 @@ private struct RoutingRow: View {
             .frame(width: 150)
         }
         .frame(minHeight: 28)
-    }
-}
-
-/// How the panels are laid out and drawn: the loudness summary's main reading, the Spectrum panel's orientation
-/// and peak holds, the waveform's span and the stereometer's style. Every choice here previews at once.
-private struct PanelsPane: View {
-    @ObservedObject var model: MeterModel
-    @ObservedObject private var draft = SettingsDraft.shared
-    @ObservedObject private var l10n = Localizer.shared
-
-    var body: some View {
-        SettingsSection(title: L("LOUDNESS")) {
-            SettingsRow(title: L("Main reading")) {
-                segments(L("Main reading"), LoudnessReading.allCases.map { ($0, $0.title) }, \.headline,
-                         live: { LoudnessReading.stored })
-            }
-            SettingsNote(L("The large reading, gauge and target difference follow this choice. The other two readings stay beside it. Momentary covers 400 ms; Short-term covers 3 s. Integrated measures the programme since the last reset, with loudness gating."))
-        }
-        SettingsSection(title: L("SPECTROGRAM") + " · " + L("SPECTRUM")) {
-            SettingsRow(title: L("Orientation")) {
-                segments(L("Orientation"), SpectrumSide.allCases.map { ($0, $0.title) }, \.spectrumSide,
-                         live: { model.displayOptions.spectrumSide })
-            }
-            SettingsNote(L("Standard: keyboard on the left, the spectrogram scrolling left from now, the spectrum on the right. Mirrored flips the panel: the spectrum on the left, the spectrogram scrolling right from now, the keyboard on the right."))
-            Divider()
-            SettingsRow(title: L("Peak holds")) {
-                Toggle(L("Peak holds"), isOn: draft.binding(\.peakHolds, live: { model.displayOptions.peakHolds }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-            }
-            SettingsNote(L("A short mark at each band's recent peak on the live spectrum, held 1.2 s and then falling."))
-            Divider()
-            SettingsRow(title: L("Average spectrum")) {
-                Toggle(L("Average spectrum"), isOn: draft.binding(\.averageSpectrum, live: { model.displayOptions.averageSpectrum }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-            }
-            SettingsNote(L("A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average."))
-            Divider()
-            SettingsRow(title: L("Response")) {
-                segments(L("Response"), SpectrumResponse.allCases.map { ($0, $0.title) }, \.spectrumResponse,
-                         live: { model.displayOptions.spectrumResponse })
-            }
-            SettingsNote(L("How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected."))
-            Divider()
-            SettingsRow(title: L("Spectrogram span")) {
-                segments(L("Spectrogram span"), SpectrogramSpan.allCases.map { ($0, $0.title) }, \.spectrogramSpan,
-                         live: { model.displayOptions.spectrogramSpan })
-            }
-            SettingsNote(L("How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase."))
-            Divider()
-            SettingsRow(title: L("Color range")) {
-                segments(L("Color range"), SpectrogramRange.allCases.map { ($0, $0.title) }, \.spectrogramRange,
-                         live: { model.displayOptions.spectrogramRange })
-            }
-            SettingsNote(L("The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters."))
-            Divider()
-            SettingsRow(title: L("Colors")) {
-                segments(L("Colors"), SpectrogramColors.allCases.map { ($0, $0.title) }, \.spectrogramColors,
-                         live: { model.displayOptions.spectrogramColors })
-            }
-            SettingsNote(L("The spectrogram's color map. Theme follows the app's palette. Heat turns from indigo through crimson to amber as the level rises, so nearby levels are easier to tell apart. Gray is plain grayscale."))
-            Divider()
-            SettingsRow(title: L("Tilt")) {
-                segments(L("Tilt"), SpectrumTilt.allCases.map { ($0, $0.title) }, \.tilt,
-                         live: { model.displayOptions.tilt })
-            }
-            SettingsNote(L("A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true."))
-            SettingsNote(L("Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure."))
-        }
-        SettingsSection(title: L("WAVEFORM")) {
-            SettingsRow(title: L("Time span")) {
-                segments(L("Time span"), DisplayOptions.waveChoices.map { ($0, L("%d s", $0)) }, \.waveSeconds,
-                         live: { model.displayOptions.waveSeconds })
-            }
-            SettingsNote(L("How much history the lanes show. A short span resolves single transients; a long one shows the shape of a phrase."))
-        }
-        SettingsSection(title: L("SOUNDSTAGE")) {
-            SettingsRow(title: L("Stereometer style")) {
-                segments(L("Stereometer style"), StageStyle.allCases.map { ($0, $0.title) }, \.stageStyle,
-                         live: { model.stageStyle })
-            }
-            SettingsNote(L("How the Stereo stereometer draws each band. Dots shows every sample; Outlines traces where each band's samples reach; Filled tints each outline, laying the smaller shapes over the larger so every edge stays visible."))
-        }
-    }
-
-    private func segments<T: Hashable>(_ label: String, _ options: [(T, String)],
-                                       _ key: ReferenceWritableKeyPath<SettingsDraft, T?>, live: @escaping () -> T) -> some View {
-        let binding = draft.binding(key, live: live)
-        return GlassSegments(label: label, options: options.map { ($0.0, $0.1, $0.1) }, selection: binding.wrappedValue,
-                             select: { binding.wrappedValue = $0 })
     }
 }
 

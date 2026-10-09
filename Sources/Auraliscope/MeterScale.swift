@@ -238,7 +238,7 @@ enum FrequencyAxis {
     static let labelHeight: CGFloat = 20
 }
 
-/// The levels the spectrogram's colours span, chosen in Settings › Panels. Standard suits most programme; Deep
+/// The levels the spectrogram's colours span, chosen in the panel's settings. Standard suits most programme; Deep
 /// lifts quiet detail (reverb tails, noise floors, low-level hum) into view; Hot keeps a loud master's upper
 /// partials apart instead of letting them all reach the brightest colour.
 enum SpectrogramRange: String, CaseIterable {
@@ -271,7 +271,7 @@ enum SpectrogramRange: String, CaseIterable {
     }
 }
 
-/// The spectrogram's colour map, chosen in Settings › Panels. Theme runs from the well through the accent to cream;
+/// The spectrogram's colour map, chosen in the panel's settings. Theme runs from the well through the accent to cream;
 /// Heat is a perceptually ordered black–indigo–crimson–amber map, whose hue turns as the level rises, so neighbouring
 /// levels are easier to tell apart; Gray is plain greyscale, the most neutral picture. On a light appearance each runs
 /// from the paper-white well toward ink instead (`Theme.rampStops(_:)`).
@@ -290,7 +290,7 @@ enum SpectrogramColors: String, CaseIterable {
     }
 }
 
-/// How quickly the live spectrum follows the newest column, chosen in Settings › Panels. Fast shows every attack;
+/// How quickly the live spectrum follows the newest column, chosen in the panel's settings. Fast shows every attack;
 /// Slow steadies the curve so a mix's tonal balance reads at a glance. Peak holds and the average are unaffected.
 enum SpectrumResponse: String, CaseIterable {
     case fast, medium, slow

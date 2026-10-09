@@ -458,8 +458,12 @@ final class MeterModel: ObservableObject {
     var levelsBands = MeterModel.storedBands("levels.bands")
     /// The stereometer's style, chosen on the Soundstage header; plain, like the band resolutions.
     var stageStyle = StageStyle.stored
-    /// Spectrum side, peak holds and waveform span, chosen in Settings › Panels.
+    /// The panels' display choices, made on each panel (`PanelSettingsButton`).
     var displayOptions = DisplayOptions.stored
+    /// `SpectrogramMode` of the newest column shown (plain: the panel settings read it when they open).
+    private(set) var lastSpectrogramMode: Float = 0
+    /// Whether the source is a DAW plugin, which analyses (and so chooses the spectrogram's analysis) itself.
+    var sourceIsBridge: Bool { selectedID.bridge != nil }
     static func storedBands(_ key: String) -> StereoBands.Resolution {
         StereoBands.Resolution(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .five
     }
@@ -642,7 +646,9 @@ final class MeterModel: ObservableObject {
         let mode: SpectrogramMode = displayOptions.spectrogramAnalysis == .enhanced ? .enhanced : .classic
         worker?.setSpectrogramMode(mode)
         bridge?.setSpectrogram(mode)
-        return CanvasFrame(snapshot: pollSnapshot(), sampleRate: sampleRate, running: running, frozen: frozen,
+        let snapshot = pollSnapshot()
+        lastSpectrogramMode = snapshot.spectrogramMode
+        return CanvasFrame(snapshot: snapshot, sampleRate: sampleRate, running: running, frozen: frozen,
                     activeRoles: routedRoles, epoch: epoch, spatial: format == .spatial, mono: format == .mono,
                     layout: speakerLayout, spectrumStrip: spectrumStrip, truePeakEpoch: truePeakEpoch,
                     stageBands: stageBands, levelsBands: levelsBands, stageStyle: stageStyle,

@@ -26,37 +26,38 @@ extension SettingsDraft {
                 fflush(stdout)
             }
             func settle() async { try? await Task.sleep(nanoseconds: 650_000_000) }
-            let original = model.displayOptions.waveSeconds
-            let next = original == 2 ? 8 : 2
-            let span = binding(\.waveSeconds, live: { model.displayOptions.waveSeconds })
+            let theme = ThemeSettings.shared
+            let original = theme.mode
+            let next: AppearanceMode = original == .dark ? .light : .dark
+            let appearance = binding(\.appearance, live: { theme.mode })
 
-            span.wrappedValue = original
+            appearance.wrappedValue = original
             check(!dirty && !previewing, "unchanged selection does not start a preview")
-            span.wrappedValue = next
-            check(dirty && previewing && model.displayOptions.waveSeconds == next, "edits preview immediately")
-            span.wrappedValue = original
-            check(!dirty && !previewing && model.displayOptions.waveSeconds == original, "original choice ends preview")
+            appearance.wrappedValue = next
+            check(dirty && previewing && theme.mode == next, "edits preview immediately")
+            appearance.wrappedValue = original
+            check(!dirty && !previewing && theme.mode == original, "original choice ends preview")
             check(defaults.object(forKey: SettingsBackup.key) == nil, "completed preview clears recovery backup")
 
-            span.wrappedValue = next
+            appearance.wrappedValue = next
             apply(model: model)
-            span.wrappedValue = original
-            check(outcome == .checking && model.displayOptions.waveSeconds == next, "edits wait for Apply verification")
+            appearance.wrappedValue = original
+            check(outcome == .checking && theme.mode == next, "edits wait for Apply verification")
             await settle()
             check(outcome == .applied && !dirty && !previewing, "Apply verifies and clears pending changes")
-            span.wrappedValue = original
+            appearance.wrappedValue = original
             revert()
-            check(model.displayOptions.waveSeconds == next, "Revert after Apply uses the newly committed value")
+            check(theme.mode == next, "Revert after Apply uses the newly committed value")
 
-            span.wrappedValue = original
+            appearance.wrappedValue = original
             apply(model: model)
             // Closing Settings calls Revert. Its obsolete verification must not appear in the next visit.
             revert()
-            span.wrappedValue = next
+            appearance.wrappedValue = next
             await settle()
             check(outcome == nil && dirty && previewing, "a closed visit cannot finish over a new preview")
             revert()
-            check(model.displayOptions.waveSeconds == original, "new preview still reverts to its baseline")
+            check(theme.mode == original, "new preview still reverts to its baseline")
 
             routing = [Int32](repeating: -1, count: Role.count)
             let otherLayout: SpeakerLayout = model.speakerLayout == .s916 ? .standard : .s916

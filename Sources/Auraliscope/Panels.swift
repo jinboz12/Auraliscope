@@ -101,8 +101,10 @@ struct SpectrumPanel: View {
     @ObservedObject private var l10n = Localizer.shared
     /// Width of the live spectrum beside the waterfall, dragged by the divider between them; 0 is automatic.
     @AppStorage("layout.spectrumStrip") private var strip: Double = 0
-    /// The spectrum's side, chosen in Settings › Panels.
+    /// The spectrum's side, the spectrogram's analysis and its view, chosen in the panel's settings.
     @AppStorage(SpectrumSide.key) private var side = SpectrumSide.right.rawValue
+    @AppStorage(SpectrogramAnalysis.key) private var analysis = SpectrogramAnalysis.classic.rawValue
+    @AppStorage(SpectrogramView.key) private var view = SpectrogramView.flat.rawValue
 
     var body: some View {
         let strip = CGFloat(self.strip)
@@ -110,8 +112,10 @@ struct SpectrumPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"),
-                            detail: source) {
+                            detail: ([source] + (analysis == SpectrogramAnalysis.enhanced.rawValue ? [L("Enhanced")] : [])
+                                     + (view == SpectrogramView.surface.rawValue ? ["3D"] : [])).joined(separator: " · ")) {
                     SpectrogramLegend()
+                    PanelSettingsButton(panel: .spectrum, model: model)
                 }
                 GeometryReader { proxy in
                     let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
@@ -1007,7 +1011,10 @@ struct ChannelLevelsPanel: View {
         let resolution = StereoBands.Resolution(rawValue: bands) ?? .five
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                PanelHeader(title: L("CHANNEL LEVELS"), detail: "dBFS") { MeterLegend() }
+                PanelHeader(title: L("CHANNEL LEVELS"), detail: "dBFS") {
+                    MeterLegend()
+                    PanelSettingsButton(panel: .levels, model: model)
+                }
                 GeometryReader { proxy in
                     let mix = FormatMix(format)
                     ZStack(alignment: .topLeading) {
@@ -1181,7 +1188,7 @@ struct DisplayOptions: Equatable {
 }
 
 /// How the Stereo stereometer draws each band: the sample cloud, the outline of where the band's samples reach,
-/// or that outline over a tinted fill. Chosen in Settings › Metering.
+/// or that outline over a tinted fill. Chosen in the panel's settings.
 enum StageStyle: String, CaseIterable {
     case dots, outline, filled
 
@@ -1266,6 +1273,7 @@ private struct WaveHeader: View {
                 if layout.hasLFE { LegendDot(color: Theme.clay, text: "LFE") }
             }
             LegendDot(color: Theme.ember, text: L("Clip"))
+            PanelSettingsButton(panel: .waveform)
         }
     }
 }
@@ -1288,6 +1296,7 @@ private struct StageHeader<Trailing: View>: View {
                 .fixedSize()
             Spacer(minLength: 4)
             trailing.layoutPriority(1)
+            PanelSettingsButton(panel: .soundstage)
         }
         .padding(.horizontal, 4)
     }
