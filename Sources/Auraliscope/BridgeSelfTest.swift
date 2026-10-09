@@ -405,6 +405,15 @@ enum BridgeSelfTest {
             let spectrumDelta = loud.map { spectrum[$0] }.max() ?? 0
             say(String(format: "  spectrum: %d bands above −60 dBFS, largest difference %.3f dB (tolerance 0.5)", loud.count, spectrumDelta))
             if spectrumDelta > 0.5 { fail("spectrum differs from the reference analysis") }
+            // The fine bands the live curve draws (result tag 51; a plugin before build 71 sends none).
+            if result.spectrumFine.count == MeterSnapshot.fineBandCount {
+                let loudFine = (0..<MeterSnapshot.fineBandCount).filter { values[SnapshotSlots.spectrumFine + $0] > -60 }
+                let fineDelta = loudFine.map { abs(Double(result.spectrumFine[$0]) - Double(values[SnapshotSlots.spectrumFine + $0])) }.max() ?? 0
+                say(String(format: "  fine spectrum: %d bands above −60 dBFS, largest difference %.3f dB (tolerance 0.5)", loudFine.count, fineDelta))
+                if loudFine.isEmpty || fineDelta > 0.5 { fail("fine spectrum differs from the reference analysis") }
+            } else {
+                say("  fine spectrum: not sent by this plugin (before build 71)")
+            }
         }
 
         /// Controls from Labs, each acknowledged by the plugin: pause (nothing accumulates), resume (carries on),
