@@ -260,10 +260,8 @@ private struct SpectrogramLegend: View {
                 Text(verbatim: "· " + tilt).font(.axis).foregroundStyle(Theme.secondary)
             }
             if average {
-                HStack(spacing: 2) {
-                    ForEach(0..<2, id: \.self) { _ in Capsule().fill(Theme.sand).frame(width: 4, height: 2) }
-                }
-                .padding(.leading, 4)
+                Capsule().fill(Theme.sand).frame(width: 10, height: 1.5)
+                    .padding(.leading, 4)
                 Text(L("avg")).font(.axis).foregroundStyle(Theme.tertiary)
             }
         }
@@ -1293,6 +1291,7 @@ private struct MeterLegend: View {
         }
         .font(.system(size: 10)).foregroundStyle(Theme.secondary)
         .lineLimit(1)
+        .fixedSize()
     }
 
     private func item<Mark: View>(_ label: Text, @ViewBuilder mark: () -> Mark) -> some View {

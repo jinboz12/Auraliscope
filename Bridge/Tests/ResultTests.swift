@@ -122,6 +122,18 @@ enum ResultChecks {
         check(m.spectrogramFirst == m.spectrogramLatest - UInt64(StreamAnalyzer.spectrogramCapacity) + 1 && m.spectrogramColumns == 24
                   && m.waveformFirst == m.waveformLatest - UInt64(StreamAnalyzer.waveformCapacity) + 1 && m.waveformColumns == 256,
               "a new receiver starts from the oldest columns held (spectrogram \(m.spectrogramFirst) of \(m.spectrogramLatest), waveform \(m.waveformFirst) of \(m.waveformLatest)), at most 24 and 256 per result")
+        check(m.spectrogramMode == SpectrogramMode.classic.rawValue, "the columns say which analysis made them (Classic by default)")
+        // A display asking for Enhanced gets reassigned columns from then on, and the result says so.
+        a.spectrogramMode = .enhanced
+        let more = interleaved(channels: 2, start: 48_000 * 4, count: 4_800, rate: 48_000)
+        more.withUnsafeBufferPointer { a.consume($0.baseAddress!, frames: 4_800, position: 1000 + 192_000, now: 4) }
+        let enhanced = buffer.withUnsafeMutableBytes {
+            a.encode(into: $0.baseAddress!, capacity: $0.count, subscription: 42, layout: 2, afterSpectrogram: m.spectrogramLatest, afterWaveform: 0)
+        }
+        let e = buffer.withUnsafeBytes { ResultMessage.decode(UnsafeRawBufferPointer(rebasing: $0[0..<enhanced.bytes])) }
+        check(e.valid && e.spectrogramMode == SpectrogramMode.enhanced.rawValue && a.snapshot[SnapshotSlots.spectrogramMode] == 1,
+              "Enhanced chosen: the new columns are reassigned, and tag 65 and the snapshot say so")
+        a.spectrogramMode = .classic
         // The next result carries only what is new.
         audio.withUnsafeBufferPointer { a.consume($0.baseAddress!, frames: 800, position: 193_000, now: 0) }
         let next = buffer.withUnsafeMutableBytes {

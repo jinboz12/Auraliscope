@@ -81,6 +81,9 @@ let seconds = arg("--seconds").flatMap(Double.init) ?? 5
 let verify = arg("--verify")
 let instance = arg("--instance").flatMap(Int.init) ?? 0
 let subscribeAfter = arg("--subscribe-after").flatMap(Double.init) ?? 0
+/// Asks for the Enhanced spectrogram this many seconds after subscribing (the same subscription, retuned).
+let enhancedAfter = arg("--enhanced-after").flatMap(Double.init)
+var enhancedAsked = false
 let controls = CommandLine.arguments.contains("--controls")
 let trace = CommandLine.arguments.contains("--trace")
 
@@ -124,6 +127,11 @@ while CFAbsoluteTimeGetCurrent() - start < seconds {
         subscribedAt = CFAbsoluteTimeGetCurrent()
         withUnsafeBytes(of: target.session_id) { abr_server_select(server, $0.bindMemory(to: UInt8.self).baseAddress) }
         say("subscribed to \"\(verify)\"")
+    }
+    if let after = enhancedAfter, !enhancedAsked, selected != nil, CFAbsoluteTimeGetCurrent() - subscribedAt >= after {
+        enhancedAsked = true
+        abr_server_set_spectrogram(server, SpectrogramMode.enhanced.rawValue)
+        say("asked for the Enhanced spectrogram")
     }
     if let s = selected, let info = sources(server).first(where: { $0.connection_serial == s.connection_serial }) { newest = info }
     if trace, verify == nil {
@@ -240,6 +248,16 @@ for r in results.map(\.message) {
     }
     if r.timelineEnd < previousTimeline { timelineBack += 1 }
     previousTimeline = r.timelineEnd
+}
+if enhancedAfter != nil {
+    let modes = results.map { $0.message.spectrogramMode ?? 0 }
+    let switched = modes.firstIndex(of: SpectrogramMode.enhanced.rawValue)
+    check(switched != nil && modes[switched!...].allSatisfy { $0 == SpectrogramMode.enhanced.rawValue },
+          "the plugin switched to the Enhanced spectrogram and stayed there (from result \(switched ?? -1) of \(modes.count))")
+    // Columns of the Enhanced stretch (the last results may follow the audio's end, all silence).
+    let columns = results[(switched ?? results.count)...].flatMap(\.message.spectrogram)
+    check(!columns.isEmpty && columns.allSatisfy { $0.isFinite && $0 >= -120 && $0 <= 12 } && columns.contains { $0 > -60 },
+          "Enhanced columns hold calibrated levels (loudest \(columns.max() ?? -120) dBFS)")
 }
 check(gaps == 0 && repeats == 0 && timelineBack == 0,
       "spectrogram and waveform columns in order, the timeline never going back (gaps \(gaps), repeats \(repeats))")

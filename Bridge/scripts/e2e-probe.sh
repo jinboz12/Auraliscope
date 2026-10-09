@@ -44,6 +44,8 @@ run au-mono-48k       Harness 0 "" --format au --bundle "$au" --channels 1 --rat
 run au-stereo-192k    Harness 0 "" --format au --bundle "$au" --channels 2 --rate 192000 --block 1024 --name Harness $live
 run vst3-3-instances  "Multi 2" 1 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Multi --instances 3 $live
 run au-3-instances    "Multi 3" 2 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Multi --instances 3 $live
+run vst3-enhanced     Harness 0 "--enhanced-after 2" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
+run au-enhanced-96k   Harness 0 "--enhanced-after 2" --format au --bundle "$au" --channels 2 --rate 96000 --block 512 --name Harness $live
 run vst3-before-labs  Harness 0 "--subscribe-after 3" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
 run au-controls       Harness 0 "--controls --seconds 3" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness --phases live:12
 run vst3-editor-close Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live \
