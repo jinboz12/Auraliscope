@@ -388,6 +388,11 @@
 "live" = "실시간";
 "Color scale from %@ to %@ dBFS" = "색상 스케일 %@ ~ %@ dBFS";
 "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "스펙트로그램 색상이 나타내는 레벨 범위입니다. 표준: −90 ~ −12 dBFS. 저레벨: −114 ~ −24 dBFS, 잔향 꼬리, 노이즈 플로어, 험 확인용. 고레벨: −72 ~ 0 dBFS, 큰 음량의 마스터용.";
+"Response" = "응답 속도";
+"Fast" = "빠름";
+"Medium" = "보통";
+"Slow" = "느림";
+"How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected." = "실시간 스펙트럼이 소리를 따라가는 속도입니다. 빠름은 모든 어택을 보여 주고, 느림은 곡선을 안정시켜 톤 밸런스를 읽기 쉽게 합니다. 피크 홀드와 평균에는 영향을 주지 않습니다.";
 "Colors" = "색상";
 "Theme" = "테마";
 "Heat" = "히트";

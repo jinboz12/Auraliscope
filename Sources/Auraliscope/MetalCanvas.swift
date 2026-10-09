@@ -1186,8 +1186,6 @@ final class SpectrumScene: CanvasScene {
     /// Waterfall rows per curve point, and the points.
     static let rowsPerPoint = 4
     static let pointCount = MeterSnapshot.spectrogramBandCount / rowsPerPoint
-    /// How quickly the curve follows the newest column (critically damped, as the meters are): about 45 ms.
-    static let response: Float = 22
 
     private var holds = [Float](repeating: -120, count: pointCount)
     private var holdTimers = [Float](repeating: 0, count: pointCount)
@@ -1282,7 +1280,8 @@ final class SpectrumScene: CanvasScene {
             velocity = Array(repeating: 0, count: Self.pointCount)
         } else {
             let step = max(0, min(0.1, frame.signal(dt)))
-            for i in 0..<Self.pointCount { Self.damp(&shown[i], &velocity[i], target[i], step) }
+            let rate = frame.options.spectrumResponse.rate
+            for i in 0..<Self.pointCount { Self.damp(&shown[i], &velocity[i], target[i], step, rate: rate) }
         }
         let count = Self.pointCount
         // The display slope at each point's centre (`SpectrumTilt`); zero when flat.
@@ -1341,13 +1340,13 @@ final class SpectrumScene: CanvasScene {
         }
     }
 
-    /// Critically damped step toward `target` (`DampedDisplayState`'s filter at `response`).
-    private static func damp(_ position: inout Float, _ velocity: inout Float, _ target: Float, _ dt: Float) {
+    /// Critically damped step toward `target` (`DampedDisplayState`'s filter) at `rate` (`SpectrumResponse`).
+    private static func damp(_ position: inout Float, _ velocity: inout Float, _ target: Float, _ dt: Float, rate: Float) {
         let displacement = position - target
-        let factor = exp(-response * dt)
-        let impulse = velocity + response * displacement
+        let factor = exp(-rate * dt)
+        let impulse = velocity + rate * displacement
         position = target + (displacement + impulse * dt) * factor
-        velocity = (velocity - response * impulse * dt) * factor
+        velocity = (velocity - rate * impulse * dt) * factor
     }
 
     /// Exercise the actual scene's average lifecycle without creating a window or touching an audio device.

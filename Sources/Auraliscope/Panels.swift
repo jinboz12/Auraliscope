@@ -1150,6 +1150,8 @@ struct DisplayOptions: Equatable {
     var tilt = SpectrumTilt.flat
     /// The live spectrum's long-term average since the last reset.
     var averageSpectrum = true
+    /// How quickly the live spectrum follows the sound.
+    var spectrumResponse = SpectrumResponse.medium
     /// Seconds across the spectrogram.
     var spectrogramSpan = SpectrogramSpan.auto
 
@@ -1168,7 +1170,7 @@ struct DisplayOptions: Equatable {
                               bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
                               spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored,
                               averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
-                              spectrogramSpan: .stored)
+                              spectrumResponse: .stored, spectrogramSpan: .stored)
     }
 }
 

@@ -290,6 +290,31 @@ enum SpectrogramColors: String, CaseIterable {
     }
 }
 
+/// How quickly the live spectrum follows the newest column, chosen in Settings › Panels. Fast shows every attack;
+/// Slow steadies the curve so a mix's tonal balance reads at a glance. Peak holds and the average are unaffected.
+enum SpectrumResponse: String, CaseIterable {
+    case fast, medium, slow
+
+    static let key = "spectrum.response"
+    static var stored: SpectrumResponse { SpectrumResponse(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .medium }
+
+    /// Rate of the critically damped filter, per second: settling times of about 0.2, 0.45 and 1.2 s.
+    var rate: Float {
+        switch self {
+        case .fast: return 22
+        case .medium: return 10
+        case .slow: return 4
+        }
+    }
+    var title: String {
+        switch self {
+        case .fast: return L("Fast")
+        case .medium: return L("Medium")
+        case .slow: return L("Slow")
+        }
+    }
+}
+
 /// How many seconds the spectrogram shows: Auto fits 3 to 8 s to the panel's width (about 100 pt a second); a fixed
 /// span shows that much at any width, up to 15 s to see a whole phrase (the history keeps 17 s).
 enum SpectrogramSpan: String, CaseIterable {

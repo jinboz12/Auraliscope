@@ -388,6 +388,11 @@
 "live" = "实时";
 "Color scale from %@ to %@ dBFS" = "色阶从 %@ 到 %@ dBFS";
 "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "声谱图颜色覆盖的电平范围。标准：−90 至 −12 dBFS。低电平：−114 至 −24 dBFS，适合观察混响尾音、底噪和交流哼声。高电平：−72 至 0 dBFS，适合响亮的母带。";
+"Response" = "响应速度";
+"Fast" = "快";
+"Medium" = "中";
+"Slow" = "慢";
+"How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected." = "实时频谱跟随声音的快慢。快显示每一次起音；慢让曲线更稳定，便于判断音色平衡。峰值保持和平均值不受影响。";
 "Colors" = "配色";
 "Theme" = "主题";
 "Heat" = "热度";

@@ -388,6 +388,11 @@
 "live" = "live";
 "Color scale from %@ to %@ dBFS" = "Color scale from %@ to %@ dBFS";
 "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters.";
+"Response" = "Response";
+"Fast" = "Fast";
+"Medium" = "Medium";
+"Slow" = "Slow";
+"How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected." = "How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected.";
 "Colors" = "Colors";
 "Theme" = "Theme";
 "Heat" = "Heat";

@@ -71,6 +71,7 @@ final class SettingsDraft: ObservableObject {
     @Published var spectrogramColors: SpectrogramColors?
     @Published var tilt: SpectrumTilt?
     @Published var averageSpectrum: Bool?
+    @Published var spectrumResponse: SpectrumResponse?
     @Published var spectrogramSpan: SpectrogramSpan?
     @Published var waveSeconds: Int?
     @Published var headline: LoudnessReading?
@@ -160,6 +161,10 @@ final class SettingsDraft: ObservableObject {
             store(value, DisplayOptions.averageSpectrumKey)
             model.displayOptions.averageSpectrum = value
         }, applied: { value, model in model.displayOptions.averageSpectrum == value && DisplayOptions.stored.averageSpectrum == value }),
+        field(\.spectrumResponse, { L("Response") }, live: { $0.displayOptions.spectrumResponse }, write: { value, model in
+            store(value.rawValue, SpectrumResponse.key)
+            model.displayOptions.spectrumResponse = value
+        }, applied: { value, model in model.displayOptions.spectrumResponse == value && SpectrumResponse.stored == value }),
         field(\.spectrogramSpan, { L("Spectrogram span") }, live: { $0.displayOptions.spectrogramSpan }, write: { value, model in
             store(value.rawValue, SpectrogramSpan.key)
             model.displayOptions.spectrogramSpan = value
@@ -853,6 +858,12 @@ private struct PanelsPane: View {
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
             SettingsNote(L("A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average."))
+            Divider()
+            SettingsRow(title: L("Response")) {
+                segments(L("Response"), SpectrumResponse.allCases.map { ($0, $0.title) }, \.spectrumResponse,
+                         live: { model.displayOptions.spectrumResponse })
+            }
+            SettingsNote(L("How quickly the live spectrum follows the sound. Fast shows every attack; Slow steadies the curve so tonal balance is easy to read. Peak holds and the average are unaffected."))
             Divider()
             SettingsRow(title: L("Spectrogram span")) {
                 segments(L("Spectrogram span"), SpectrogramSpan.allCases.map { ($0, $0.title) }, \.spectrogramSpan,
