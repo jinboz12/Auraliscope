@@ -57,8 +57,6 @@ package final class SpectrogramAnalyzer {
         let length: Int
         let shape: SpectralWindow
         let estimator: PeakEstimator
-        /// Lowest row frequency (Hz) this zone may serve under the resolving rule; 0 for the span's bass zone.
-        var floor = 0.0
         let setup: OpaquePointer
         /// dB per unit of |X|² for a sine: (2 / Σw)².
         let scale: Float
@@ -181,6 +179,43 @@ package final class SpectrogramAnalyzer {
     private var zones: [Zone] = []
     private var plan: [RowPlan] = []
 
+    /// Lightweight row metadata shared by analysis and readouts. Constructing a label must never allocate
+    /// FFT plans, window samples, or analysis scratch on the UI thread.
+    package struct Resolution {
+        package let length: Int
+        package let window: SpectralWindow
+        package let previousLength: Int?
+        package let previousWindow: SpectralWindow?
+        package let blend: Float
+        fileprivate let zone: Int
+        fileprivate let previous: Int
+    }
+
+    package static func rowResolutions(sampleRate: Double, rows: Int = MeterSnapshot.spectrogramBandCount,
+                                      span: Int, window: SpectralWindow = SpectrogramAnalyzer.window,
+                                      resolvingPower: Double = SpectrogramAnalyzer.resolvingPower) -> [Resolution] {
+        guard sampleRate.isFinite, sampleRate > 100, rows > 0, span >= minimumLength else { return [] }
+        var configurations: [(length: Int, window: SpectralWindow, floor: Double)] = []
+        if window != .hann { configurations.append((span, .hann, 0)) }
+        var length = span
+        while length >= minimumLength {
+            configurations.append((length, window, configurations.isEmpty ? 0 : resolvingPower * window.mainLobe * sampleRate / Double(length)))
+            length /= 2
+        }
+        let upper = min(20_000, sampleRate / 2)
+        return (0..<rows).map { row in
+            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
+            let index = configurations.indices.last { configurations[$0].floor <= centre } ?? 0
+            let current = configurations[index]
+            let blend = index > 0 ? min(1, max(0, log2(centre / current.floor) / blendOctaves)) : 1
+            let previous = index > 0 && blend < 1 ? index - 1 : -1
+            return Resolution(length: current.length, window: current.window,
+                              previousLength: previous >= 0 ? configurations[previous].length : nil,
+                              previousWindow: previous >= 0 ? configurations[previous].window : nil,
+                              blend: Float(blend), zone: index, previous: previous)
+        }
+    }
+
     /// `span` is the length of the history rings it reads (`SpectrumAnalyzer.fftSize`). `window` and
     /// `resolvingPower` default to the display's; others serve comparisons and tests (a Hann analysis has no
     /// separate bass zone).
@@ -192,9 +227,6 @@ package final class SpectrogramAnalyzer {
         self.span = span
         self.window = window
         let hop = Int((sampleRate / Self.columnRate).rounded())
-        func floor(_ shape: SpectralWindow, _ length: Int) -> Double {
-            resolvingPower * shape.mainLobe * sampleRate / Double(length)
-        }
         if window != .hann {
             guard let bass = Zone(length: span, span: span, hop: hop, window: .hann) else { return nil }
             zones.append(bass)
@@ -202,20 +234,13 @@ package final class SpectrogramAnalyzer {
         var length = span
         while length >= Self.minimumLength {
             guard let zone = Zone(length: length, span: span, hop: hop, window: window) else { return nil }
-            zone.floor = zones.isEmpty ? 0 : floor(window, length)
             zones.append(zone)
             length /= 2
         }
-        let upper = min(20_000, sampleRate / 2)
-        let edges = (0...rows).map { 20 * pow(upper / 20, Double($0) / Double(rows)) }
-        plan = (0..<rows).map { row in
-            let centre = (edges[row] * edges[row + 1]).squareRoot()
-            let zone = zones.indices.last { zones[$0].floor <= centre } ?? 0
-            // Just above a boundary the previous (longer) zone fades out over `blendOctaves`.
-            guard zone > 0 else { return RowPlan(zone: 0, next: -1, blend: 0) }
-            let position = log2(centre / zones[zone].floor) / Self.blendOctaves
-            guard position < 1 else { return RowPlan(zone: zone, next: -1, blend: 0) }
-            return RowPlan(zone: zone - 1, next: zone, blend: Float(max(0, position)))
+        plan = Self.rowResolutions(sampleRate: sampleRate, rows: rows, span: span,
+                                   window: window, resolvingPower: resolvingPower).map { row in
+            row.previous >= 0 ? RowPlan(zone: row.previous, next: row.zone, blend: row.blend)
+                              : RowPlan(zone: row.zone, next: -1, blend: 0)
         }
         for row in plan {
             zones[row.zone].used = true

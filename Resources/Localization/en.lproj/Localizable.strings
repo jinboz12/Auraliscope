@@ -243,7 +243,6 @@
 "all channels" = "all channels";
 "SPECTRUM" = "SPECTRUM";
 "SPECTROGRAM" = "SPECTROGRAM";
-"pitch" = "pitch";
 "WAVEFORM" = "WAVEFORM";
 "linear" = "linear";
 "min/max" = "min/max";
@@ -393,7 +392,7 @@
 "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure.";
 "avg" = "avg";
 "Average spectrum" = "Average spectrum";
-"A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle." = "A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle.";
+"A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average." = "A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average.";
 "Spectrogram span" = "Spectrogram span";
 "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase." = "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase.";
 "Copy Spectrogram Image" = "Copy Spectrogram Image";

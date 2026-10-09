@@ -1,5 +1,22 @@
 # Auraliscope LABS 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
+## 1.3dev build 70: spectrogram and spectrum readability
+
+Install **Auraliscope LABS 1.3dev build 70.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
+This is a local tester build, not a notarized public release. App: Apple silicon, macOS 13+; plugins: arm64/x86_64.
+
+- Sharp, one-screen-pixel spectrogram edges when zoomed; small displays retain narrow peaks.
+- Equal levels use equal colors at every age; the calibrated underlying measurements are unchanged from build 69.
+- Smooth live/average spectrum curves no longer invent peaks between measured bands.
+- Cleaner compact header, frequency-band bounds in spectrum hover, and honest blended-window information.
+- Average spectrum clears on source, rate and Stereo/Immersive changes; labels no longer allocate an FFT analyzer.
+
+For a useful comparison, keep Color range, Tilt, span, window size and input identical. Try a sustained tone,
+two neighboring notes, percussion and a slow sweep; then resize, mirror the panel, pause/resume and reset.
+Use the included plugins when checking resolution labels. Please report build, Mac/OS, DAW/plugin format,
+sample rate, source, settings and steps to reproduce. See VALIDATION.md for measured evidence and limits.
+
+
 Auraliscope Bridge is an audio effect (VST3 and AUv2) that you insert on a DAW track, bus or master. It passes the
 audio through unchanged and **measures it itself**, with Auraliscope's own analysis compiled into the plugin:
 levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. **Auraliscope LABS**, the 1.3dev test

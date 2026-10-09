@@ -243,7 +243,6 @@
 "all channels" = "전체 채널";
 "SPECTRUM" = "스펙트럼";
 "SPECTROGRAM" = "스펙트로그램";
-"pitch" = "음높이";
 "WAVEFORM" = "파형";
 "linear" = "선형";
 "min/max" = "최소/최대";
@@ -393,7 +392,7 @@
 "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "스펙트로그램이나 스펙트럼 위에 포인터를 올리면 음높이, 주파수, 레벨을 읽을 수 있습니다. 일시 정지하면 한 순간을 천천히 살펴볼 수 있습니다.";
 "avg" = "평균";
 "Average spectrum" = "평균 스펙트럼";
-"A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle." = "실시간 스펙트럼 위의 두 번째 선: 마지막 리셋 이후 들린 모든 소리에서 각 대역의 파워를 평균하며, 무음은 제외합니다. 믹스의 음색 균형을 레퍼런스와 비교하거나 마스터가 자리 잡는 과정을 볼 수 있습니다.";
+"A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average." = "두 번째 곡선은 수신한 스펙트럼 측정값을 전력 기준으로 평균하며 무음은 제외합니다. 초기화, 소스 또는 샘플레이트 변경, 스테레오와 이머시브 모드 전환 시 새 평균을 시작합니다.";
 "Spectrogram span" = "스펙트로그램 시간 범위";
 "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase." = "스펙트로그램이 보여 주는 시간입니다. 자동은 패널 폭에 맞춰 3~8초를 표시하고, 15초는 한 프레이즈 전체를 보여 줍니다.";
 "Copy Spectrogram Image" = "스펙트로그램 이미지 복사";

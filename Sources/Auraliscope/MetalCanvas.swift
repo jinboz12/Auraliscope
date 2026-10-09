@@ -477,18 +477,17 @@ final class MeterGPU {
 
     // The cells a pixel covers along one axis, as up to two ranges of cells and their weights. A cell is the box it
     // stands for (a column 1/30 s, a row its slice of frequency), centred on its index. Wider than the pixel, it is
-    // drawn flat and meets its neighbour in a short ramp: one pixel, or `waterfallEdge` of a cell where cells are
-    // large, so a sweep reads as a line rather than a staircase. (Linear interpolation ramped across the whole cell
-    // and spread a click over two columns.) Narrower, every cell the pixel covers counts and the loudest is shown,
+    // drawn flat and meets its neighbour in a one-device-pixel antialiasing ramp. The ramp does not grow with
+    // enlarged cells: zooming the time axis should not introduce more blur. Narrower, every cell the pixel covers
+    // counts and the loudest is shown,
     // so a click one column wide or a partial one row high is never averaged away.
-    constant float waterfallEdge = \(SpectrogramLayout.cellEdge);
     struct WaterfallAxis { int first[2]; int last[2]; float weight[2]; int ranges; };
 
     WaterfallAxis waterfallAxis(float p, float footprint) {
         WaterfallAxis axis;
         if (footprint <= 1.0) {
             float k = floor(p);
-            float upper = saturate((p - k - 0.5) / max(footprint, waterfallEdge) + 0.5);
+            float upper = saturate((p - k - 0.5) / max(footprint, 1e-6) + 0.5);
             axis.first[0] = axis.last[0] = int(k);
             axis.first[1] = axis.last[1] = int(k) + 1;
             axis.weight[0] = 1.0 - upper;
@@ -496,7 +495,7 @@ final class MeterGPU {
             axis.ranges = 2;
         } else {
             axis.first[0] = int(floor(p - 0.5 * footprint + 0.5));
-            axis.last[0] = int(floor(p + 0.5 * footprint + 0.5));
+            axis.last[0] = int(ceil(p + 0.5 * footprint + 0.5)) - 1;
             axis.weight[0] = 1.0;
             axis.first[1] = axis.last[1] = 0;
             axis.weight[1] = 0.0;
@@ -506,16 +505,18 @@ final class MeterGPU {
     }
 
     // The loudest tilted level in a block of cells, `age` columns before the newest and `row` up from 20 Hz, read at
-    // up to six evenly spread cells along each axis.
+    // every cell intersecting the pixel footprint.
     float waterfallBlock(texture2d<float, access::read> history, constant WaterfallState &state,
                          int firstAge, int lastAge, int firstRow, int lastRow) {
-        int ages = lastAge - firstAge, rows = lastRow - firstRow;
-        int ageTaps = min(6, ages + 1), rowTaps = min(6, rows + 1);
+        // Clip the footprint once, then visit every covered cell. Sparse taps can miss an isolated
+        // partial or transient when a small view fits more than six rows/columns in a pixel.
+        firstAge = clamp(firstAge, 0, int(state.capacity) - 1);
+        lastAge = clamp(lastAge, 0, int(state.capacity) - 1);
+        firstRow = clamp(firstRow, 0, waterfallRows - 1);
+        lastRow = clamp(lastRow, 0, waterfallRows - 1);
         float loudest = -1000.0;
-        for (int i = 0; i < ageTaps; i++) {
-            int age = clamp(firstAge + (ageTaps > 1 ? (i * ages + (ageTaps - 1) / 2) / (ageTaps - 1) : 0), 0, int(state.capacity) - 1);
-            for (int j = 0; j < rowTaps; j++) {
-                int row = clamp(firstRow + (rowTaps > 1 ? (j * rows + (rowTaps - 1) / 2) / (rowTaps - 1) : 0), 0, waterfallRows - 1);
+        for (int age = firstAge; age <= lastAge; age++) {
+            for (int row = firstRow; row <= lastRow; row++) {
                 float level = waterfallTexel(history, state.capacity, int(state.head) - 1 - age, row);
                 // The display slope, pivoting at 1 kHz: octaves from the pivot at this row's centre.
                 float octave = state.floorOctave + (float(row) + 0.5) / float(waterfallRows) * state.octaves;
@@ -544,10 +545,9 @@ final class MeterGPU {
                 tone += weight * waterfallTone(level, state);
             }
         }
-        // Older columns recede a little toward the empty well, so "now" reads first; the history stays legible.
-        float recede = 1.0 - 0.14 * saturate(age / max(state.span, 1.0));
+        // A given level has the same colour at every age; only the selected range and tilt affect it.
         float mask = saturate(0.5 - roundedBox(in.local, in.shape.xy, 7.0));
-        return float4(mix(rampMap(0.0), rampMap(tone), recede), mask);
+        return float4(rampMap(tone), mask);
     }
 
     // Straight-alpha "over" so the scope can layer screen, fill, bloom and edge in one pass.
@@ -1159,7 +1159,9 @@ final class SpectrumScene: CanvasScene {
     private(set) var averageCount = 0
     private var averagedSequence: Float = 0
     private var averagedStream: Float = 0
-    /// Snapshots before the average is drawn: one second at 60 Hz.
+    private var averagedRate: Double = 0
+    private var averagedSpatial = false
+    /// Distinct received snapshots before the average is drawn; skipped display frames are not reconstructed.
     static let averageMinimum = 60
     /// The average in dBFS per band (untilted), once it rests on `averageMinimum` snapshots.
     var average: [Float]? {
@@ -1177,13 +1179,17 @@ final class SpectrumScene: CanvasScene {
     /// A reset clears the peak holds, as it does the channel meters'.
     func prepare(frame: CanvasFrame) {
         let snapshot = frame.snapshot
-        if frame.epoch != epoch || (snapshot.streamID > 0 && snapshot.streamID != averagedStream) {
+        if frame.epoch != epoch || snapshot.streamID != averagedStream || frame.sampleRate != averagedRate || frame.spatial != averagedSpatial {
             epoch = frame.epoch
             holds = Array(repeating: -120, count: MeterSnapshot.bandCount)
             holdTimers = Array(repeating: 0, count: MeterSnapshot.bandCount)
             for i in averagePower.indices { averagePower[i] = 0 }
             averageCount = 0
-            if snapshot.streamID > 0 { averagedStream = snapshot.streamID }
+            averagedStream = snapshot.streamID
+            averagedRate = frame.sampleRate
+            averagedSpatial = frame.spatial
+            // The snapshot at a configuration change may still belong to the old analysis. Wait for a new one.
+            averagedSequence = snapshot.sequence
         }
         // Each new snapshot with signal joins the average once.
         guard frame.running, snapshot.sequence != averagedSequence else { return }
@@ -1210,7 +1216,7 @@ final class SpectrumScene: CanvasScene {
             b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(decade ? 0.12 : 0.06))
         }
 
-        // Spectrum: Catmull-Rom curve with a level-anchored fill and per-band peak dashes. Band i covers the i-th
+        // Spectrum: shape-preserving curve with a level-anchored fill and per-band peak dashes. Band i covers the i-th
         // 64th of the log axis, bottom to top, exactly as the waterfall's rows.
         shown = display.spectrum
         let count = shown.count
@@ -1225,18 +1231,7 @@ final class SpectrumScene: CanvasScene {
         }
         curve.removeAll(keepingCapacity: true)
         curve.append(CGPoint(x: point(0).x, y: strip.maxY))
-        for index in 0..<(count - 1) {
-            let p0 = point(index - 1), p1 = point(index), p2 = point(index + 1), p3 = point(index + 2)
-            for sub in 0..<4 {
-                let t = CGFloat(sub) / 4, t2 = t * t, t3 = t2 * t
-                func spline(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat) -> CGFloat {
-                    0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
-                }
-                let x = min(strip.maxX, max(strip.minX, spline(p0.x, p1.x, p2.x, p3.x)))
-                curve.append(CGPoint(x: x, y: spline(p0.y, p1.y, p2.y, p3.y)))
-            }
-        }
-        curve.append(point(count - 1))
+        curve.append(contentsOf: Self.spline((0..<count).map(point), clampX: strip.minX...strip.maxX))
         curve.append(CGPoint(x: point(count - 1).x, y: strip.minY))
         let lime = Theme.sageRGB
         // The fill wears the waterfall's colours: each row is tinted as the newest waterfall column shows it,
@@ -1288,26 +1283,69 @@ final class SpectrumScene: CanvasScene {
         }
     }
 
-    /// Catmull-Rom through `points` (four segments each), x held within `clampX`.
+    /// Exercise the actual scene's average lifecycle without creating a window or touching an audio device.
+    static func checkAverageLifecycle() -> Bool {
+        let scene = SpectrumScene()
+        var frame = CanvasFrame(running: true)
+        frame.snapshot.streamID = 1
+        frame.snapshot.sequence = 1
+        frame.snapshot.spectrum = Array(repeating: -20, count: MeterSnapshot.bandCount)
+        scene.prepare(frame: frame)
+        for sequence in 2...61 {
+            frame.snapshot.sequence = Float(sequence)
+            scene.prepare(frame: frame)
+            scene.prepare(frame: frame) // repeated rendering must not double-count
+        }
+        guard scene.averageCount == 60, let average = scene.average,
+              average.allSatisfy({ abs($0 + 20) < 0.0001 }) else { return false }
+        frame.running = false
+        frame.snapshot.sequence += 1
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 60 else { return false }
+        frame.running = true
+        frame.sampleRate = 96_000
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 0 else { return false }
+        frame.snapshot.sequence += 1
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 1 else { return false }
+        frame.spatial.toggle()
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 0 else { return false }
+        frame.snapshot.sequence += 1
+        scene.prepare(frame: frame)
+        frame.epoch += 1
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 0 else { return false }
+        frame.snapshot.streamID = 2
+        frame.snapshot.sequence = 1
+        scene.prepare(frame: frame)
+        frame.snapshot.spectrum = Array(repeating: -120, count: MeterSnapshot.bandCount)
+        frame.snapshot.sequence += 1
+        scene.prepare(frame: frame)
+        guard scene.averageCount == 0 else { return false }
+        print("PASS: spectrum average deduplicates frames, holds on pause, gates silence, resets on source/rate/mode/Reset")
+        return true
+    }
+
+    /// Shape-preserving interpolation: smooth joins without inventing peaks between measured bands.
     static func spline(_ points: [CGPoint], clampX: ClosedRange<CGFloat>) -> [CGPoint] {
         guard points.count > 1 else { return points }
-        func at(_ i: Int) -> CGPoint { points[max(0, min(points.count - 1, i))] }
         var result: [CGPoint] = []
         result.reserveCapacity(points.count * 4)
+        func at(_ i: Int) -> CGFloat { points[max(0, min(points.count - 1, i))].x }
         for index in 0..<(points.count - 1) {
-            let p0 = at(index - 1), p1 = at(index), p2 = at(index + 1), p3 = at(index + 2)
             for sub in 0..<4 {
-                let t = CGFloat(sub) / 4, t2 = t * t, t3 = t2 * t
-                func spline(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat) -> CGFloat {
-                    0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
-                }
-                result.append(CGPoint(x: min(clampX.upperBound, max(clampX.lowerBound, spline(p0.x, p1.x, p2.x, p3.x))),
-                                      y: spline(p0.y, p1.y, p2.y, p3.y)))
+                let t = CGFloat(sub) / 4
+                let x = SpectrumInterpolation.value(at(index - 1), at(index), at(index + 1), at(index + 2), fraction: t)
+                result.append(CGPoint(x: min(clampX.upperBound, max(clampX.lowerBound, x)),
+                                      y: points[index].y + t * (points[index + 1].y - points[index].y)))
             }
         }
         result.append(points[points.count - 1])
         return result
     }
+
 }
 
 // MARK: - Spectrogram: scrolling history beside the live spectrum, on its frequency axis
@@ -1389,7 +1427,7 @@ final class SpectrogramScene: CanvasScene {
     func level(atU u: Double, row: Double) -> (level: Float, secondsAgo: Double)? {
         let age = (1 - u) * span - Double(phase)
         guard let level = history.level(age: max(0, age), row: row) else { return nil }
-        return (level, max(0, age) / SpectrogramLayout.analysisRate)
+        return (level, (max(0, age).rounded() + Double(phase)) / SpectrogramLayout.analysisRate)
     }
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {

@@ -75,6 +75,9 @@ enum Diagnostics {
     }
 
     static func runIfRequested() {
+        if CommandLine.arguments.contains("--test-spectrum-average") {
+            exit(SpectrumScene.checkAverageLifecycle() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--test-peak-reset") {
             exit(SoundstageScene.checkPeakReset() ? 0 : 1)
         }

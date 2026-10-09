@@ -243,7 +243,6 @@
 "all channels" = "全部声道";
 "SPECTRUM" = "频谱";
 "SPECTROGRAM" = "声谱图";
-"pitch" = "音高";
 "WAVEFORM" = "波形";
 "linear" = "线性";
 "min/max" = "最小/最大";
@@ -393,7 +392,7 @@
 "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "将指针悬停在声谱图或频谱上即可读取音高、频率和电平；暂停后可从容查看某一时刻。";
 "avg" = "平均";
 "Average spectrum" = "平均频谱";
-"A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle." = "实时频谱上的第二条曲线：自上次重置以来各频段的平均功率，不计静音部分。可用来对照参考曲目的音色平衡，或观察母带逐渐稳定。";
+"A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average." = "第二条曲线对接收到的频谱测量值进行功率平均，忽略静音。重置、更换音源或采样率，以及在立体声与沉浸声之间切换时，将重新开始平均。";
 "Spectrogram span" = "声谱图时长";
 "How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase." = "声谱图显示的时长。自动会按面板宽度显示 3 到 8 秒；15 秒可看到完整的乐句。";
 "Copy Spectrogram Image" = "拷贝声谱图图像";

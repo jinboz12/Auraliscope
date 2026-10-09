@@ -1089,6 +1089,43 @@ final class CoreTests {
         checkEqual(Role.loudnessWeights[Role.lfe], 0)
     }
 
+    func testSpectrogramResolutionMetadata() throws {
+        for rate in [44_100.0, 48_000, 96_000, 192_000] {
+            let span = SpectrumAnalyzer.historyLength(sampleRate: rate)
+            let analyzer = try unwrap(SpectrogramAnalyzer(sampleRate: rate, span: span))
+            let rows = SpectrogramAnalyzer.rowResolutions(sampleRate: rate, span: span)
+            checkEqual(rows.count, MeterSnapshot.spectrogramBandCount)
+            var blends = 0
+            for (index, row) in rows.enumerated() {
+                checkEqual(row.length, analyzer.length(ofRow: index))
+                checkTrue(row.window == analyzer.window(ofRow: index))
+                checkTrue(row.blend >= 0 && row.blend <= 1)
+                if let previous = row.previousLength {
+                    blends += 1
+                    checkTrue(previous >= row.length && row.previousWindow != nil)
+                }
+            }
+            checkTrue(blends > 0)
+        }
+        checkTrue(SpectrogramAnalyzer.rowResolutions(sampleRate: .nan, span: 8192).isEmpty)
+    }
+
+    func testSpectrumInterpolationPreservesMeasurements() {
+        let cases: [[CGFloat]] = [[-96, -12, -12, -96], [-96, -96, -12, -96], [-12, -96, -96, -12],
+                                  [-96, -40, -20, 0], [0, -20, -40, -96], [-20, -20, -20, -20]]
+        for values in cases {
+            let a = values[0], b = values[1], c = values[2], d = values[3]
+            for step in 0...100 {
+                let t = CGFloat(step) / 100
+                let value = SpectrumInterpolation.value(a, b, c, d, fraction: t)
+                checkTrue(value >= min(b, c) - 1e-9 && value <= max(b, c) + 1e-9)
+                checkEqual(Double(value), -Double(SpectrumInterpolation.value(-a, -b, -c, -d, fraction: t)), accuracy: 1e-9)
+            }
+            checkEqual(Double(SpectrumInterpolation.value(a, b, c, d, fraction: 0)), Double(b))
+            checkEqual(Double(SpectrumInterpolation.value(a, b, c, d, fraction: 1)), Double(c))
+        }
+    }
+
     func testFullRangeSpectrogramHistory() throws {
         let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: 48_000))
         let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
@@ -2038,6 +2075,8 @@ struct TestRunner {
             ("band powers and cross spectrum match calibrated tones at five sample rates", suite.testBandEnergyCalibrationAcrossRates),
             ("speaker layouts 3.0 to 9.1.6", suite.testSpeakerLayouts),
             ("chunk boundaries and stereo energy", suite.testChunkBoundariesAndStereoEnergy),
+            ("Lightweight resolution metadata matches analysis and describes transitions", suite.testSpectrogramResolutionMetadata),
+            ("Spectrum curve preserves measured extrema and mirrored geometry", suite.testSpectrumInterpolationPreservesMeasurements),
             ("8192 FFT, 512-row float spectrogram history, tone curve and tilt", suite.testFullRangeSpectrogramHistory),
             ("multi-resolution spectrogram: window choice, calibration across zones and blends, treble timing", suite.testMultiResolutionSpectrogram),
             ("critically damped 60 Hz display convergence", suite.testDampedDisplayConvergence),

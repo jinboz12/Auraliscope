@@ -341,10 +341,6 @@ enum SpectrogramTone {
 /// from "now" to the right: level in dBFS grows rightward from the −96 dB floor, so a band's colour in the
 /// waterfall and its length in the spectrum read along the same row.
 struct SpectrogramLayout {
-    /// Width of the ramp between two neighbouring waterfall cells larger than a pixel, as a fraction of a cell
-    /// (`waterfallFragment`).
-    static let cellEdge = 0.3
-
     /// DSP publishes one analysis column per tick (see DSPWorker).
     static let analysisRate = 30.0
     /// The waterfall shows the most recent 3 to 8 s of the stored history, whole seconds at about 100 pt per
@@ -1164,5 +1160,22 @@ struct SoundstageLayout {
         let projected = point(at)
         guard speaker.azimuth != nil else { return CGPoint(x: projected.x, y: projected.y + 14) }
         return CGPoint(x: projected.x, y: projected.y - markerRadius(at) - 12)
+    }
+}
+
+/// Uniform-grid monotone cubic Hermite interpolation for spectrum drawing. Harmonic-mean slopes
+/// vanish at extrema and preserve the interval between adjacent measured levels (including mirrored axes).
+/// This only draws the curve; measurement values and analysis bandwidth are unchanged.
+enum SpectrumInterpolation {
+    static func value(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat, fraction: CGFloat) -> CGFloat {
+        func slope(_ left: CGFloat, _ right: CGFloat) -> CGFloat {
+            guard left * right > 0 else { return 0 }
+            return 2 * left * right / (left + right)
+        }
+        let t = max(0, min(1, fraction)), t2 = t * t, t3 = t2 * t
+        let delta = c - b
+        let m0 = slope(b - a, delta), m1 = slope(delta, d - c)
+        return (2 * t3 - 3 * t2 + 1) * b + (t3 - 2 * t2 + t) * m0
+             + (-2 * t3 + 3 * t2) * c + (t3 - t2) * m1
     }
 }

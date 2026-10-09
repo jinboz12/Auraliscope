@@ -110,7 +110,7 @@ struct SpectrumPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"),
-                            detail: "\(source) · " + SpectrogramResolution.range(sampleRate: sampleRate) + " · " + L("pitch")) {
+                            detail: source) {
                     SpectrogramLegend()
                 }
                 GeometryReader { proxy in
@@ -325,7 +325,6 @@ private struct SpectrogramInspector: View {
 
     private func reading(at point: CGPoint, layout: SpectrogramLayout) -> Reading? {
         guard point.y >= layout.plot.minY, point.y <= layout.plot.maxY else { return nil }
-        let frequency = layout.frequency(y: point.y, sampleRate: sampleRate)
         if layout.plot.contains(point) {
             // The cell under the pointer, as analysed: its row's centre frequency, its level, and the instant its
             // column is centred on, which is half the analysis span (about 85 ms) before the column was made.
@@ -343,10 +342,17 @@ private struct SpectrogramInspector: View {
         if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
             let scene = SceneStore.existing(.spectrum) as? SpectrumScene
             let bands = scene?.shown ?? []
-            let band = Int(layout.row(y: point.y, rows: MeterSnapshot.bandCount).rounded())
+            let count = MeterSnapshot.bandCount
+            let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count).rounded())))
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            let low = 20 * pow(upper / 20, Double(band) / Double(count))
+            let high = 20 * pow(upper / 20, Double(band + 1) / Double(count))
+            let frequency = (low * high).squareRoot()
+            let bandwidth = high < 1000 ? String(format: "%.1f–%.1f Hz", low, high)
+                                       : String(format: "%.2f–%.2f kHz", low / 1000, high / 1000)
             let average = DisplayOptions.stored.averageSpectrum ? scene?.average : nil
             return Reading(frequency: frequency, level: bands.indices.contains(band) ? bands[band] : nil, secondsAgo: nil,
-                           average: average.flatMap { $0.indices.contains(band) ? $0[band] : nil })
+                           average: average.flatMap { $0.indices.contains(band) ? $0[band] : nil }, resolution: bandwidth)
         }
         return nil
     }
@@ -446,31 +452,40 @@ private struct SpectrogramInspector: View {
 /// rate, as this build analyses it (in Labs and in the plugins).
 enum SpectrogramResolution {
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var analyzer: SpectrogramAnalyzer?
+    nonisolated(unsafe) private static var cachedRate: Double = 0
+    nonisolated(unsafe) private static var cachedRows: [SpectrogramAnalyzer.Resolution] = []
 
-    /// One analysis for the newest rate asked about, kept for the readouts (it is only read).
-    private static func analysis(_ sampleRate: Double) -> SpectrogramAnalyzer? {
+    private static func resolutions(_ sampleRate: Double) -> [SpectrogramAnalyzer.Resolution] {
         lock.lock()
         defer { lock.unlock() }
-        if analyzer?.sampleRate != sampleRate {
-            analyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
+        if cachedRate != sampleRate {
+            cachedRows = SpectrogramAnalyzer.rowResolutions(sampleRate: sampleRate,
+                span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
+            cachedRate = sampleRate
         }
-        return analyzer
+        return cachedRows
     }
 
-    /// The FFT lengths the waterfall uses at this rate, for the card's header ("FFT 512–8192" at 48 kHz).
     static func range(sampleRate: Double) -> String {
-        let lengths = analysis(sampleRate)?.resolutions.map(\.length) ?? []
+        let rows = resolutions(sampleRate)
+        let lengths = rows.flatMap { [$0.length, $0.previousLength ?? $0.length] }
         guard let low = lengths.min(), let high = lengths.max() else { return "FFT \(SpectrumAnalyzer.fftSize)" }
         return "FFT \(low)–\(high)"
     }
 
     static func describe(row: Int, sampleRate: Double) -> String? {
-        guard let analyzer = analysis(sampleRate), row >= 0, row < analyzer.rows else { return nil }
-        let length = analyzer.length(ofRow: row)
-        let window = analyzer.window(ofRow: row) == .hann ? "Hann" : "Blackman–Harris"
-        return "FFT \(length) · \(window) · " + String(format: "%.0f ms", Double(length) / sampleRate * 1_000)
+        let rows = resolutions(sampleRate)
+        guard rows.indices.contains(row) else { return nil }
+        let resolution = rows[row]
+        func name(_ window: SpectralWindow) -> String { window == .hann ? "Hann" : "Blackman–Harris" }
+        if let previousLength = resolution.previousLength, let previousWindow = resolution.previousWindow {
+            let length = previousLength == resolution.length ? "\(resolution.length)" : "\(resolution.length)–\(previousLength)"
+            let window = previousWindow == resolution.window ? name(resolution.window) : "Hann / Blackman–Harris"
+            return "FFT \(length) · \(window)"
+        }
+        return "FFT \(resolution.length) · \(name(resolution.window)) · " + String(format: "%.0f ms", Double(resolution.length) / sampleRate * 1_000)
     }
+
 }
 
 /// Octave labels, the time axis under the waterfall, and the spectrum's level axis under it with its frequency

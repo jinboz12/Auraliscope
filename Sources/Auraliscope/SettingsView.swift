@@ -847,7 +847,7 @@ private struct PanelsPane: View {
                 Toggle(L("Average spectrum"), isOn: draft.binding(\.averageSpectrum, live: { model.displayOptions.averageSpectrum }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.small)
             }
-            SettingsNote(L("A second line on the live spectrum: each band's power averaged over everything heard since the last Reset, leaving out silence. Compare a mix's tonal balance with a reference, or watch a master settle."))
+            SettingsNote(L("A second line averages received spectrum measurements in power, leaving out silence. Reset, a source or sample-rate change, or switching between Stereo and Immersive starts a new average."))
             Divider()
             SettingsRow(title: L("Spectrogram span")) {
                 segments(L("Spectrogram span"), SpectrogramSpan.allCases.map { ($0, $0.title) }, \.spectrogramSpan,

@@ -1,5 +1,77 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+
+## Build 70 — 2026-10-08
+
+Build 69 is the checked-in baseline for this round. The FFT sizes, windows, normalization, frequency zones,
+30 Hz spectrogram cadence, protocol and amplitude semantics remain unchanged. The changes are in display
+sampling, curve interpolation, readouts and average lifecycle. No new work runs on the audio callback.
+
+### Confirmed causes and changes
+
+- The compressed waterfall sampled at most six cells along each axis. This can skip an isolated peak when a
+  pixel covers more cells. It now visits every intersecting cell and preserves the maximum tilted level.
+- Magnified cells had a minimum edge ramp of 0.3 cell. A 20-pixel-wide column therefore had a six-pixel ramp.
+  Edges now use one physical pixel of antialiasing, independent of magnification.
+- Age faded the color by up to 14%, so equal levels at different times had unequal colors. That fade is removed.
+  Range, tilt and the existing tone curve still control display color; numeric levels remain untilted dBFS.
+- Catmull–Rom could overshoot the endpoints between spectrum bands. For example, neighboring bands at -12 dB
+  with -96 dB outside them produce a -1.5 dB midpoint: an invented 10.5 dB peak. Both live and average traces now
+  use monotone cubic Hermite interpolation with harmonic-mean slopes. It is a drawing change, not added resolution.
+- Hover metadata previously allocated a full extra FFT analyzer on the UI thread and named only the shorter window
+  in a transition. A shared lightweight row plan now supplies labels, including both contributing windows.
+- Spectrum hover reports the selected band's center and bounds. Waterfall hover uses the selected column's center
+  and scroll phase, plus the existing half-span analysis delay. A narrow header no longer truncates technical text.
+- The average now restarts when sample rate or Stereo/Immersive aggregation changes, and waits for a fresh snapshot
+  after reset/configuration changes. Settings describe an average of received measurements, not every audio frame.
+
+### Validation
+
+- 47 core checks, scalar/SIMD kernel checks, and 358 localization keys passed. AddressSanitizer passed the same
+  47 core checks and kernels before the final header/readout/text-only refinements.
+- Bridge analysis and transport suites passed; VST3 validator: 537 passed, zero failed.
+- Plugin-to-receiver: 12/12; plugin-to-app: 11/11, including reconnect, pause, reset and channel formats. The later
+  UI-only refinements are checked with the built app's average-lifecycle diagnostic and offscreen rendering.
+- `Bridge/Tools/SpectralRegression.swift`: 3,600 columns at 44.1/48/96/192 kHz, including a steady tone, close tones
+  at three relative phases, impulses, a logarithmic sweep and tones at the five transition frequencies.
+  **2,080,800 float measurements are bitwise identical** between build 69 and build 70 (spectrum, spectrogram,
+  peak frequency and level). Maximum steady 1 kHz tone error in this fixture: 0.000001 dB. This is an isolated-tone
+  check, not a general accuracy claim for mixtures or unresolved tones.
+- `Bridge/Tools/CheckSpectrogramRendering.swift` compiles the actual shader helpers and compares against exhaustive
+  CPU maxima. Build 70 passes 8,509 checks: isolated peaks at every row, 1/3/7/13/33-cell footprints, wraparound,
+  borders, all tilts, and edge widths at 1–20 device pixels per cell. Build 69 fails 4,608 footprint checks and 84
+  edge-width checks, plus 80 zero-area boundary-contact checks. The latter now exclude cells that only touch
+  a pixel boundary. These intentionally difficult reductions do not represent a typical window's workload.
+- Identical 12-second tone/pair/impulse/sweep WAV and display settings rendered before/after. The exported analysis
+  plot has zero changed RGB values; the main display changes are the intended age and interpolation corrections.
+- Actual compact dark window inspected. Full-window light/mirrored and real-DAW testing remain tester tasks;
+  offscreen synthetic previews do not establish those interactions.
+
+### Performance and limits
+
+Three alternating 15-second pairs per case, same synthetic VST3 host, one Mac. All 24 runs had bitwise audio
+passthrough and zero process errors. CPU below is percent of one logical core, including host overhead.
+
+| Scenario | Build 69 median | Build 70 median | Relative change |
+|---|---:|---:|---:|
+| 8 mono, 48 kHz | 16.911% | 17.046% | +0.8% |
+| 32 stereo, 48 kHz | 33.738% | 33.770% | +0.1% |
+| 8 stereo, 96 kHz | 28.277% | 28.331% | +0.2% |
+| 8 stereo, 192 kHz | 34.515% | 34.868% | +1.0% |
+
+These differences are small; no CPU speedup is claimed. The GPU stress batch (2,560 blocks, up to 33×33 cells)
+took about 0.60 ms versus 0.05–0.06 ms with sparse sampling. Exhaustive reduction is deliberately more expensive
+under extreme compression. Ordinary footprints cover far fewer cells. This is not a whole-app frame-time benchmark.
+
+Bass resolution, approximately 85 ms center delay at 48/96/192 kHz (93 ms at 44.1 kHz), broad-band window-dependent
+levels, sweep attenuation and the live curve's existing temporal damping remain. A pixel's maximum is a display
+summary; its hover reads a selected original cell, not the maximum of all cells covered by that pixel. The average
+uses distinct received snapshots and excludes silence; it is not continuous time-weighted PSD integration, and can
+be biased if display frames are skipped. Window labels describe this build's analysis: use the bundled plugins.
+
+Installer/bundles are ad hoc signed or unsigned as documented; not notarized. Automated checks do not replace
+administrator installation, real DAW use, Intel hardware or older-macOS validation.
+
 ## Build 69 — 2026-10-08
 
 This round targets spectrogram clarity without changing what the levels mean. Every change below follows a
