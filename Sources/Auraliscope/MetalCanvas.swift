@@ -357,6 +357,7 @@ final class MeterGPU {
     let shapes: MTLRenderPipelineState
     let waterfall: MTLRenderPipelineState
     let waveform: MTLRenderPipelineState
+    let surface: MTLRenderPipelineState
 
     private init(device existing: MTLDevice?, queue existingQueue: MTLCommandQueue?) throws {
         guard let device = existing ?? MTLCreateSystemDefaultDevice(),
@@ -382,6 +383,9 @@ final class MeterGPU {
         waterfall = try device.makeRenderPipelineState(descriptor: descriptor)
         descriptor.fragmentFunction = library.makeFunction(name: "waveformFragment")
         waveform = try device.makeRenderPipelineState(descriptor: descriptor)
+        descriptor.vertexFunction = library.makeFunction(name: "surfaceVertex")
+        descriptor.fragmentFunction = library.makeFunction(name: "surfaceFragment")
+        surface = try device.makeRenderPipelineState(descriptor: descriptor)
     }
 
     func pipeline(_ kind: UnderlayKind) -> MTLRenderPipelineState {
@@ -468,10 +472,12 @@ final class MeterGPU {
     }
 
     // SpectrogramTone: linear over the range, a power curve for a dark floor, part of an S-curve for contrast.
-    float waterfallTone(float db, constant WaterfallState &state) {
-        float x = pow(saturate((db - state.floorDB) / state.rangeDB), \(SpectrogramTone.gamma));
+    float toneOf(float db, float floorDB, float rangeDB) {
+        float x = pow(saturate((db - floorDB) / rangeDB), \(SpectrogramTone.gamma));
         return mix(x, x * x * (3.0 - 2.0 * x), \(SpectrogramTone.contrast));
     }
+
+    float waterfallTone(float db, constant WaterfallState &state) { return toneOf(db, state.floorDB, state.rangeDB); }
 
     // The cells a pixel covers along one axis, as up to two ranges of cells and their weights. A cell stands for a
     // box (a column 1/30 s, a row its slice of frequency), centred on its index. Wider than the pixel, a cell is drawn
@@ -549,6 +555,72 @@ final class MeterGPU {
         // A given level has the same colour at every age; only the selected range and tilt affect it.
         float mask = saturate(0.5 - roundedBox(in.local, in.shape.xy, 7.0));
         return float4(rampMap(tone, ramp), mask);
+    }
+
+    // The 3D spectrogram (SpectrogramScene, `SpectrogramView.surface`): the same history as a height field, time across,
+    // frequency into the distance, the tone as height, projected as `SurfaceProjection` does. The grid is `columns`
+    // cells across and `strips` deep; strips are drawn farthest first, so nearer ridges cover farther ones.
+    struct SurfaceState {
+        uint head; uint capacity; float phase; float span;
+        float floorDB; float rangeDB; float tilt; float floorOctave; float octaves;
+        float left; float bottom; float width; float height; float viewportWidth; float viewportHeight;
+        uint columns; uint strips; uint mirrored;
+    };
+    struct SurfaceRaster { float4 position [[position]]; float tone; float shade; float depth; };
+
+    // The tone at grid point `i` across (0 the oldest column shown, `columns` now) and `j` deep (0 at 20 Hz, `strips`
+    // at the top): the loudest tilted level of the rows the point stands for, in its column.
+    float surfaceTone(texture2d<float, access::read> history, constant SurfaceState &s, int i, int j) {
+        float age = (1.0 - float(i) / float(s.columns)) * s.span - s.phase;
+        int column = clamp(int(round(age)), 0, int(s.capacity) - 1);
+        int reach = max(1, waterfallRows / int(s.strips) / 2);
+        int centre = int(float(j) / float(s.strips) * float(waterfallRows));
+        float loudest = -1000.0;
+        for (int row = max(0, centre - reach); row <= min(waterfallRows - 1, centre + reach - 1); row++) {
+            float level = waterfallTexel(history, s.capacity, int(s.head) - 1 - column, row);
+            float octave = s.floorOctave + (float(row) + 0.5) / float(waterfallRows) * s.octaves;
+            loudest = max(loudest, level + s.tilt * octave);
+        }
+        return toneOf(loudest, s.floorDB, s.rangeDB);
+    }
+
+    // `SurfaceProjection.point`: the front edge spans the plot's foot, the far edge recedes up and to the right.
+    float2 surfacePoint(constant SurfaceState &s, float u, float d, float tone) {
+        float scale = 1.0 - \(SurfaceProjection.narrowing) * d;
+        return float2(s.left + \(SurfaceProjection.shift) * s.width * d + u * s.width * scale,
+                      s.bottom - \(SurfaceProjection.depth) * s.height * d
+                          - tone * \(SurfaceProjection.relief) * s.height * (0.75 + 0.25 * scale));
+    }
+
+    vertex SurfaceRaster surfaceVertex(uint id [[vertex_id]], texture2d<float, access::read> history [[texture(0)]],
+                                       constant SurfaceState &s [[buffer(0)]]) {
+        // Six corners per cell: two triangles between a nearer (y = 0) and a farther (y = 1) depth point.
+        const uint2 corners[6] = { uint2(0, 0), uint2(0, 1), uint2(1, 1), uint2(0, 0), uint2(1, 1), uint2(1, 0) };
+        uint cell = id / 6u;
+        uint2 corner = corners[id % 6u];
+        int i = int(cell % s.columns + corner.x);
+        int j = int(s.strips - 1u - cell / s.columns + corner.y);
+        float tone = surfaceTone(history, s, i, j);
+        float t = float(i) / float(s.columns);
+        float d = float(j) / float(s.strips);
+        float2 p = surfacePoint(s, s.mirrored != 0u ? 1.0 - t : t, d, tone);
+        // Lit from above the viewer: a face rising away from the viewer catches the light, one falling away is shaded,
+        // so ridges read as shapes and not only as colour.
+        float farther = surfaceTone(history, s, i, min(j + 1, int(s.strips)));
+        float later = surfaceTone(history, s, min(i + 1, int(s.columns)), j);
+        SurfaceRaster out;
+        out.position = float4(p.x / s.viewportWidth * 2.0 - 1.0, 1.0 - p.y / s.viewportHeight * 2.0, 0.0, 1.0);
+        out.tone = tone;
+        out.shade = clamp(0.86 + 2.4 * (farther - tone) - 0.6 * abs(later - tone), 0.55, 1.12);
+        out.depth = d;
+        return out;
+    }
+
+    // Silence stays transparent, so the floor grid shows through where nothing sounds; the far distance hazes toward
+    // the well, for depth.
+    fragment float4 surfaceFragment(SurfaceRaster in [[stage_in]], constant float4 *ramp [[buffer(0)]]) {
+        float3 color = mix(rampMap(in.tone, ramp) * in.shade, ramp[0].rgb, 0.30 * in.depth);
+        return float4(color, smoothstep(0.0, 0.06, in.tone));
     }
 
     // Straight-alpha "over" so the scope can layer screen, fill, bloom and edge in one pass.
@@ -865,9 +937,56 @@ struct UnderlayState {
 
 enum UnderlayKind { case waterfall, waveform }
 
+/// `SurfaceState` in the shader: the waterfall's state, where the plot lies in the view, and the grid.
+struct SurfaceState {
+    var head: UInt32 = 0
+    var capacity: UInt32 = 1
+    var phase: Float = 0
+    var span: Float = 0
+    var floor: Float = -90
+    var range: Float = 78
+    var tilt: Float = 0
+    var floorOctave: Float = 0
+    var octaves: Float = 10
+    var left: Float = 0
+    var bottom: Float = 0
+    var width: Float = 0
+    var height: Float = 0
+    var viewportWidth: Float = 1
+    var viewportHeight: Float = 1
+    var columns: UInt32 = 1
+    var strips: UInt32 = 1
+    var mirrored: UInt32 = 0
+
+    var vertexCount: Int { Int(columns) * Int(strips) * 6 }
+}
+
+/// How the 3D spectrogram maps time `u` (0–1 across, "now" at 1 unless mirrored), depth `d` (0 at 20 Hz in front, 1 at
+/// the top of the range at the back) and a tone (0–1) into the plot: the front edge spans the plot's foot as the 2D
+/// image does, so the time labels under it still apply, and the far edge recedes up and to the right, narrower.
+/// The shader (`surfacePoint`) uses the same constants.
+struct SurfaceProjection {
+    static let narrowing = 0.42
+    static let shift = 0.18
+    static let depth = 0.72
+    static let relief = 0.26
+
+    let plot: CGRect
+
+    func point(u: Double, d: Double, tone: Double = 0) -> CGPoint {
+        let scale = 1 - Self.narrowing * d
+        return CGPoint(x: plot.minX + Self.shift * plot.width * d + u * plot.width * scale,
+                       y: plot.maxY - Self.depth * plot.height * d - tone * Self.relief * plot.height * (0.75 + 0.25 * scale))
+    }
+
+    /// Depth of `frequency` on the 20 Hz…`upper` log axis.
+    static func depth(frequency: Double, upper: Double) -> Double { log(frequency / 20) / log(upper / 20) }
+}
+
 extension CanvasScene {
     var usesDampedLevels: Bool { true }
     var underlayRamp: [SIMD4<Float>] { [] }
+    var surface: SurfaceState? { nil }
 }
 
 protocol CanvasScene: AnyObject {
@@ -878,6 +997,8 @@ protocol CanvasScene: AnyObject {
     var underlayState: UnderlayState { get }
     /// The waterfall's colour map (`Theme.waterfallRamp`), bound beside the state; empty for other underlays.
     var underlayRamp: [SIMD4<Float>] { get }
+    /// The 3D spectrogram, drawn after the shapes with `underlayTexture` and `underlayRamp`; nil for a flat scene.
+    var surface: SurfaceState? { get }
     func prepare(frame: CanvasFrame)
     func build(_ builder: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float)
 }
@@ -1047,6 +1168,14 @@ final class CanvasRenderer {
         if shapeCount > 0 {
             encoder.setRenderPipelineState(gpu.shapes)
             encoder.drawPrimitives(type: .triangle, vertexStart: underlayCount, vertexCount: shapeCount)
+        }
+        if var surface = scene.surface, surface.vertexCount > 0, let texture = scene.underlayTexture {
+            let ramp = scene.underlayRamp
+            encoder.setRenderPipelineState(gpu.surface)
+            encoder.setVertexTexture(texture, index: 0)
+            encoder.setVertexBytes(&surface, length: MemoryLayout<SurfaceState>.stride, index: 0)
+            if !ramp.isEmpty { encoder.setFragmentBytes(ramp, length: ramp.count * MemoryLayout<SIMD4<Float>>.stride, index: 0) }
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: surface.vertexCount)
         }
     }
 
@@ -1413,6 +1542,10 @@ final class SpectrogramScene: CanvasScene {
     /// The colour map the shader reads, rebuilt when the map, the palette or the appearance changes.
     private(set) var underlayRamp: [SIMD4<Float>] = []
     private var rampKey: (SpectrogramColors, Theme.Palette, Bool)?
+    /// The 3D view's state, set by `build` while `SpectrogramView.surface` is chosen.
+    private(set) var surface: SurfaceState?
+    /// Depth strips of the 3D view: four rows each.
+    static let surfaceStrips = SpectrogramHistory.rows / 4
 
     var usesDampedLevels: Bool { false }
     var underlayKind: UnderlayKind { .waterfall }
@@ -1486,9 +1619,14 @@ final class SpectrogramScene: CanvasScene {
         let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left,
                                        span: frame.options.spectrogramSpan.seconds)
         let plot = layout.plot
-        b.underlayQuad(plot, mirrored: layout.mirrored)
         span = Double(layout.visibleColumns)
         let ink = Theme.inkRGB
+        guard frame.options.spectrogramView == .flat else {
+            buildSurface(&b, layout: layout, size: size, sampleRate: frame.sampleRate)
+            return
+        }
+        surface = nil
+        b.underlayQuad(plot, mirrored: layout.mirrored)
         // Octave lines at every C, continuing the keyboard's C keys across the plot; middle C a little firmer.
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
@@ -1501,6 +1639,39 @@ final class SpectrogramScene: CanvasScene {
             b.rect(CGRect(x: x, y: plot.minY, width: 0.5, height: plot.height), ink.simd(0.06))
             b.rect(CGRect(x: x, y: plot.maxY - 4, width: 0.5, height: 4), ink.simd(0.22))
         }
+    }
+
+    /// The 3D view: a floor grid (its outline, a line along each decade of frequency and across at each second) under
+    /// the surface the shader draws from the same history.
+    private func buildSurface(_ b: inout ShapeBuilder, layout: SpectrogramLayout, size: CGSize, sampleRate: Double) {
+        let plot = layout.plot
+        let projection = SurfaceProjection(plot: plot)
+        let ink = Theme.inkRGB
+        let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+        func u(_ t: Double) -> Double { layout.mirrored ? 1 - t : t }
+        func floorLine(_ from: (u: Double, d: Double), _ to: (u: Double, d: Double), _ alpha: Float) {
+            b.line(projection.point(u: from.u, d: from.d), projection.point(u: to.u, d: to.d), width: 1, ink.simd(alpha))
+        }
+        floorLine((0, 0), (1, 0), 0.16)
+        floorLine((0, 1), (1, 1), 0.08)
+        floorLine((0, 0), (0, 1), 0.10)
+        floorLine((1, 0), (1, 1), 0.10)
+        for frequency in [100.0, 1_000, 10_000] where frequency < upper {
+            let d = SurfaceProjection.depth(frequency: frequency, upper: upper)
+            floorLine((0, d), (1, d), 0.10)
+        }
+        for seconds in stride(from: 1.0, to: layout.seconds, by: 1) {
+            let t = 1 - seconds / layout.seconds
+            floorLine((u(t), 0), (u(t), 1), 0.05)
+        }
+        let flat = underlayState
+        surface = SurfaceState(head: flat.head, capacity: flat.rows, phase: flat.phase, span: flat.span,
+                               floor: flat.floor, range: flat.range, tilt: flat.tilt, floorOctave: flat.floorOctave,
+                               octaves: flat.octaves, left: Float(plot.minX), bottom: Float(plot.maxY),
+                               width: Float(plot.width), height: Float(plot.height),
+                               viewportWidth: Float(max(1, size.width)), viewportHeight: Float(max(1, size.height)),
+                               columns: UInt32(max(1, layout.visibleColumns)), strips: UInt32(Self.surfaceStrips),
+                               mirrored: layout.mirrored ? 1 : 0)
     }
 }
 
@@ -2624,6 +2795,7 @@ enum PreviewAudio {
                                                  mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
         ExtAudioFileSetProperty(file, kExtAudioFileProperty_ClientDataFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size), &client)
         guard let analyzer = SpectrumAnalyzer(sampleRate: rate) else { throw Failure(description: "unsupported rate \(rate)") }
+        analyzer.spectrogramMode = DisplayOptions.stored.spectrogramAnalysis == .enhanced ? .enhanced : .classic
         let hop = Int((rate / SpectrogramLayout.analysisRate).rounded())
         var buffer = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: hop)
         var result: [MeterSnapshot] = []

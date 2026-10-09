@@ -26,6 +26,8 @@ package enum SpectrogramMode: UInt32 {
 ///   half a window either side whose energy may land there (as far as the analysis span allows). Every column is
 ///   computed from the history alone: the same delay as Classic, no state between columns. The longest zone, a
 ///   single window as long as the span, is reassigned in frequency only (see `Zone.timed`).
+/// - Rows: each bin's energy covers one bin's width around its new frequency, so a tone is a line about two rows
+///   high and a click fills its column without gaps where the bins are wider apart than the rows.
 /// - Calibration: a stationary sine reads its level in dBFS (each frame's main-lobe energy, normalised by the energy
 ///   of the window and the frames per column). Broadband sound reads the power in each row's slice of frequency:
 ///   rows are equally wide in log frequency, so pink noise reads level and the zones join without a step.
@@ -137,14 +139,27 @@ package final class ReassignedSpectrogram {
         let upper = min(20_000, sampleRate / 2)
         rowScale = Float(Double(rows) / log(upper / 20))
         energy = [Float](repeating: 0, count: rows)
-        let lengths = (0..<Self.zoneCount).map { span >> $0 }
-        // A zone serves from where its main lobe (±2 bins) meets the rule; the longest from the bottom of the axis.
-        let floors = lengths.enumerated().map { index, length in index == 0 ? 0 : 2 * Self.resolvingPower * sampleRate / Double(length) }
+        let lengths = Self.lengths(span: span)
+        let floors = lengths.map { Self.lowest(length: $0, span: span, sampleRate: sampleRate) }
         for (index, length) in lengths.enumerated() {
             let high = index + 1 < lengths.count ? floors[index + 1] : sampleRate / 2
             guard let zone = Zone(length: length, span: span, hop: hop, sampleRate: sampleRate, low: floors[index], high: high) else { return nil }
             zones.append(zone)
         }
+    }
+
+    /// The zones' window lengths, longest first.
+    package static func lengths(span: Int) -> [Int] { (0..<zoneCount).map { span >> $0 } }
+
+    /// The lowest frequency a zone of `length` serves: where its main lobe (±2 bins) meets the rule; the longest
+    /// serves from the bottom of the axis.
+    package static func lowest(length: Int, span: Int, sampleRate: Double) -> Double {
+        length == span ? 0 : 2 * resolvingPower * sampleRate / Double(length)
+    }
+
+    /// The window length that analyses `frequency` (the inspector's description of a row).
+    package static func length(frequency: Double, sampleRate: Double, span: Int) -> Int {
+        lengths(span: span).last { lowest(length: $0, span: span, sampleRate: sampleRate) <= frequency } ?? span
     }
 
     /// Window lengths, frames analysed per column and the lowest frequency each serves (diagnostics and tests).
@@ -242,9 +257,18 @@ package final class ReassignedSpectrogram {
             }
             let frequency = (Float(k) - (di * xr - dr * xi) / power * toBins) * binHz
             guard frequency >= zone.low, frequency < zone.high, frequency > 20 else { continue }
-            let row = Int(log(frequency / 20) * rowScale)
-            guard row <= lastRow else { continue }
-            energy[row] += power * zone.scale
+            // Spread over one bin's width around where it was moved to: in a zone's lower rows the bins are wider
+            // apart than the rows, and energy with no pitch of its own (a click, noise) would otherwise light only
+            // the rows its bins land in, a comb of empty rows between them. A tone stays within about two rows.
+            let low = max(0, log(max(frequency - 0.5 * binHz, 20) / 20) * rowScale)
+            let high = log((frequency + 0.5 * binHz) / 20) * rowScale
+            let share = power * zone.scale / max(high - low, 1e-6)
+            var row = Int(low)
+            while row <= lastRow, Float(row) < high {
+                let overlap = min(high, Float(row + 1)) - max(low, Float(row))
+                if overlap > 0 { energy[row] += share * overlap }
+                row += 1
+            }
         }
     }
 

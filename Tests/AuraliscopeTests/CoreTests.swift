@@ -1170,17 +1170,20 @@ final class CoreTests {
             return analyzer.snapshot().spectrogram
         }
         // A sine of amplitude ½ collapses onto its own rows at −6.02 dBFS in every zone and at any bin offset, and a
-        // semitone and a half away nothing is left within any colour range (in the bass, where that is closer than
-        // the main lobe's half-width, nothing above the Standard range's floor).
+        // semitone and a half away nothing is left within any colour range (in the bass, where that is still within
+        // a bin and a half, nothing above the Standard range's floor; at 55 Hz a semitone and a half is under a bin).
         for (rate, hz) in [(48_000.0, 55.0), (48_000, 130.8), (48_000, 440), (48_000, 1_000.7), (48_000, 2_600),
                            (48_000, 5_000.3), (48_000, 12_345), (44_100, 997), (96_000, 440), (96_000, 6_000)] {
             let values = try column(rate: rate) { Float(sin(2 * Double.pi * hz * Double($0) / rate)) * 0.5 }
-            let upper = min(20_000, rate / 2), centre = row(hz, upper: upper)
-            let total = (centre - 2...centre + 2).reduce(0.0) { $0 + power(values[$1]) }
+            let upper = min(20_000, rate / 2)
+            // Its energy covers one bin's width: in the bass, several of the narrow rows there.
+            let total = (row(hz / 1.06, upper: upper)...row(hz * 1.06, upper: upper)).reduce(0.0) { $0 + power(values[$1]) }
             checkEqual(10 * log10(total), -6.02, accuracy: 0.3)
             for offset in [-1.5, 1.5] {
                 let away = row(hz * pow(2, offset / 12), upper: upper)
-                if away < rows { checkTrue(values[away] < (hz < 200 ? -80 : -100)) }
+                let bin = rate / Double(SpectrumAnalyzer.historyLength(sampleRate: rate))
+                let gap = hz * (1 - pow(2, -1.5 / 12))
+                if away < rows && gap > bin { checkTrue(values[away] < (gap < 3 * bin ? -80 : -100)) }
             }
         }
         // A click lands in the column of its own instant: at the column's centre it lights the mid and treble rows;
