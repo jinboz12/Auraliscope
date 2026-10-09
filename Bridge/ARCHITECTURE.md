@@ -162,11 +162,12 @@ causes of blur that measurement found in it.
   as in build 68. At 48 kHz: Hann 8192 to 750 Hz, Blackman–Harris 8192 to 1.5 kHz, 4096, 2048, 1024, and 512 from
   12 kHz.
 - **History.** `SpectrumAnalyzer.historyLength` is 8192 at 44.1/48 kHz and doubles per doubling of the rate (16384
-  at 88.2/96, 32768 at 176.4/192, capped at 8×). The spectrum transforms the newest 8192 samples of the ring as
-  before; the spectrogram's span is the whole ring, so its zones are the same in Hz at every rate and every column is
-  centred ~85 ms (half the span) before the newest sample. At 48 kHz the span's Hann zone still reuses the spectrum's
-  transform; at higher rates the span's Hann and Blackman–Harris zones share one unwindowed FFT and are windowed in
-  the frequency domain (3- and 7-tap circular convolutions, exact).
+  at 88.2/96, 32768 at 176.4/192, capped at 8×), and it is also the spectrum's transform length (RESULT tag 80
+  reports it), so the spectrum, peak readout, notes and stereo bands have 5.9 Hz bins at every rate. The
+  spectrogram's span is the same ring, so its zones are the same in Hz at every rate and every column is centred
+  ~85 ms (half the span) before the newest sample. The span's Hann zone reuses the spectrum's transform; when the
+  roles differ (a Spatial role fell silent within the window), the span's Hann and Blackman–Harris zones share one
+  unwindowed FFT and are windowed in the frequency domain (3- and 7-tap circular convolutions, exact).
 - **Coverage.** `Zone.frames` picks the fewest frames per column for which the frame lattice (repeated column to
   column) weighs every instant within 1 dB: at 48 kHz 1/1/2/3/6/12 frames for the six zones.
 - **Display.** `waterfallFragment` draws each cell (column × row) flat over its box. Where a cell is larger than a
@@ -174,8 +175,9 @@ causes of blur that measurement found in it.
   where a pixel covers several cells, it shows the loudest (up to 6 × 6 reads). `SpectrogramHistory.level` and the
   inspector read the same cell; the inspector adds the column's true time (+ half the span), the row's centre
   frequency, the analysis behind the row, and the 2nd–8th harmonics of the frequency under the pointer.
-- **Cost.** One column: 77 µs at 48 kHz (build 68: 44), 166 µs at 96 kHz, 312 µs at 192 kHz (P-core
-  micro-benchmark). Plugin CPU in VALIDATION.md.
+- **Cost.** One column: 78 µs at 48 kHz (build 68: 44), 140 µs at 96 kHz (67), 257 µs at 192 kHz (81); one
+  spectrum transform (60 per second): 19 µs at 48 kHz, 41 µs at 96, 152 µs at 192 (P-core micro-benchmark).
+  Plugin CPU in VALIDATION.md.
 
 ## Build 68 spectrogram
 

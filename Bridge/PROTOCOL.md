@@ -181,7 +181,7 @@ yet measurable"; spectra in dBFS with −120 for silence.
 | 63 | u64 | newest spectrogram column the analysis has produced |
 | 64 | u64 | spectrogram columns skipped just before the first carried: they left the plugin's queue before they could be sent |
 | 70–74 | | the same for the waveform: first serial, column rate (f64, 240 per second of audio), columns (f32[n × ch × 2], (min, max) per channel), newest, skipped |
-| 80 | u32 | FFT size (8192) |
+| 80 | u32 | Spectrum FFT size (8192 at 44.1 and 48 kHz, 16384 at 88.2 and 96, 32768 at 176.4 and 192; since build 69, 8192 before) |
 | 81 | u32 | spectrum bands (64) |
 | 82 | f32 | correlation integration time, s (0.25) |
 | 83 | f32 | level window, s (1/30) |

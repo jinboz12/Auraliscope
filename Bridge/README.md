@@ -27,7 +27,9 @@ measured with tones, close pairs, clicks, sweeps and noise before and after (VAL
   1/30 s column, so nothing visible was lost in time.
 - **High sample rates.** The history rings hold ~170 ms at every rate (8192 samples at 44.1/48 kHz, 16384 at
   88.2/96, 32768 at 176.4/192), so the waterfall resolves the same Hz at 192 kHz as at 48 kHz (a 440 Hz tone was
-  ±12 semitones wide at the floor at 192 kHz). The live spectrum still transforms the newest 8192 samples.
+  ±12 semitones wide at the floor at 192 kHz). The live spectrum, the peak badge, the lit notes and the stereo
+  bands transform the same ~170 ms too (16384 points at 96 kHz, 32768 at 192), so their bins are 5.9 Hz wide at
+  every rate (were 23 Hz at 192 kHz, too coarse to tell bass notes apart).
 - **Display interpolation.** The waterfall drew each column as a linear ramp to the next, so a click one column wide
   became a two-column triangle peaking in a single pixel, and rows were interpolated too. Each analysis cell is now drawn as the box it stands for, with a
   short edge ramp (a pixel, or 0.3 of a cell when cells are large); where a pixel covers several cells, the loudest

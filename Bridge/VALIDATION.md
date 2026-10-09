@@ -48,6 +48,9 @@ Width of a −12 dBFS tone in semitones at −20 / −40 / −60 / −78 dB belo
 - Time cost: above 750 Hz windows are twice as long, Blackman–Harris concentrates them (effective duration ~1.44× the
   Hann window they replace); above ~3 kHz they remain shorter than one column. The column's centre is half the span
   before it is published: 85 ms at 48/96/192 kHz (build 68: 85, 43, 21 ms); the inspector's time includes it.
+- Live spectrum at high rates: the transform now spans the same ~170 ms at every rate (bins 5.9 Hz). The peak
+  readout's test (20 offsets across a bin, within 0.3 cents and 0.02 dB) now includes 55 Hz at 192 kHz, and single
+  bass notes (C1, E1, A1, A2) are detected at 192 kHz as at 44.1–96 kHz.
 - Rendering: the probe programme (tones and close pairs, clicks, sweep, chord) and the 18 s synthetic music
   programme, rendered with both builds at the same size, span (8 s), range (Standard) and tilt (flat): build 69 shows
   thinner partials above 1 kHz, separate hi-hat strokes, and clicks of equal brightness; the bass is unchanged.

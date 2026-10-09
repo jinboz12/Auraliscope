@@ -291,7 +291,7 @@ package final class StreamAnalyzer {
         w.u64(ResultTag.waveformLatest.rawValue, waveformLatest)
         w.u64(ResultTag.waveformDropped.rawValue, afterWaveform > 0 ? waveformFirst - afterWaveform - 1 : 0)
 
-        w.u32(ResultTag.fftSize.rawValue, UInt32(SpectrumAnalyzer.fftSize))
+        w.u32(ResultTag.fftSize.rawValue, UInt32(SpectrumAnalyzer.historyLength(sampleRate: sampleRate)))
         w.u32(ResultTag.spectrumBands.rawValue, UInt32(MeterSnapshot.bandCount))
         w.f32(ResultTag.correlationTime.rawValue, Float(MeterPipeline.correlationTime))
         w.f32(ResultTag.levelWindow.rawValue, Float(Double(MeterPipeline.windowTicks) / MeterPipeline.tickRate))

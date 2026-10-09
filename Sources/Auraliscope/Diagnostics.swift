@@ -776,7 +776,7 @@ enum Diagnostics {
         for _ in 0..<ticks { checksum += update() }
         let elapsed = cpuTime() - start
         print(String(format: "Full 9.1.6 DSP pipeline, %@ spectrum (16 roles, 4× true peak, loudness range, waveform envelope, format detector, snapshot packing): 100 simulated audio seconds, 48 kHz, %d FFT, %.0f snapshots/s, %.0f waterfall columns/s\nCPU time: %.4f s\nEquivalent one-core CPU: %.3f%%\nChecksum: %.3f",
-                     spatialSpectrum ? "Spatial (16-channel)" : "Stereo (L/R)", SpectrumAnalyzer.fftSize, MeterPipeline.tickRate,
+                     spatialSpectrum ? "Spatial (16-channel)" : "Stereo (L/R)", SpectrumAnalyzer.historyLength(sampleRate: 48_000), MeterPipeline.tickRate,
                      MeterPipeline.tickRate / Double(MeterPipeline.windowTicks), elapsed, elapsed, checksum))
     }
 }

@@ -253,21 +253,22 @@ package struct MeterSnapshot: Equatable {
 
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
 package final class SpectrumAnalyzer {
-    // 8192 points: 5.9 Hz bins at 48 kHz, so the bottom octaves get real detail. The waterfall reads the same
-    // history rings, which hold ~170 ms at every rate (`historyLength`), at several resolutions of its own
-    // (`SpectrogramAnalyzer`). Channels share complex transforms in
+    // 8192 points at 44.1 and 48 kHz: 5.9 Hz bins, so the bottom octaves get real detail. At higher rates the
+    // transform grows with the rate (`historyLength`: 16384 at 96 kHz, 32768 at 192 kHz), so the spectrum, its peaks
+    // and notes resolve the same Hz over the same ~170 ms at every rate. The waterfall reads the same history rings at
+    // several resolutions of its own (`SpectrogramAnalyzer`). Channels share complex transforms in
     // pairs (one real, one imaginary) and are separated by conjugate symmetry, which halves the FFT cost without
     // giving up any resolution; that is cheaper than dropping to 4096 points and keeps the 5.9 Hz bins.
     package static let fftSize = 8192
     package let sampleRate: Double
-    /// Samples each role's ring keeps: `fftSize` at 44.1 and 48 kHz, doubled with each doubling of the rate, so the
-    /// waterfall analyses the same ~170 ms (and resolves the same Hz) at every rate. The spectrum transforms the
-    /// newest `fftSize` of it.
+    /// Samples each role's ring keeps, and the spectrum's transform length: `fftSize` at 44.1 and 48 kHz, doubled
+    /// with each doubling of the rate, so the spectrum and the waterfall analyse the same ~170 ms (and resolve the
+    /// same Hz) at every rate.
     package let historyLength: Int
     private let setup: OpaquePointer
-    private var window = [Float](repeating: 0, count: fftSize)
+    private var window: [Float]
     /// `window` halved: the conjugate-symmetric split's ¼ rides on the window (a power of two, so exact).
-    private var fftWindow = [Float](repeating: 0, count: fftSize)
+    private var fftWindow: [Float]
     /// Newest `historyLength` samples of each recorded role: one ring per role, all sharing `cursor`.
     private var history: [Float]
     /// L, R and every other routed role: what a Spatial spectrum sums.
@@ -278,17 +279,17 @@ package final class SpectrumAnalyzer {
         didSet { if recordsSpatial != oldValue { spatialHistoryCount = 0 } }
     }
     private var spatialHistoryCount = 0
-    private var inputReal = [Float](repeating: 0, count: fftSize)
-    private var inputImaginary = [Float](repeating: 0, count: fftSize)
+    private var inputReal: [Float]
+    private var inputImaginary: [Float]
     /// Newest frames of each role's ring that are all digital silence (`historyLength`: the whole ring).
     private var silentFrames: [Int]
-    private var outputReal = [Float](repeating: 0, count: fftSize)
-    private var outputImaginary = [Float](repeating: 0, count: fftSize)
-    private var leftPower = [Float](repeating: 0, count: fftSize / 2)
-    private var rightPower = [Float](repeating: 0, count: fftSize / 2)
+    private var outputReal: [Float]
+    private var outputImaginary: [Float]
+    private var leftPower: [Float]
+    private var rightPower: [Float]
     /// Display power per bin: the sum over the analysed roles, halved so it is referenced to a stereo pair.
     /// For L and R alone that is their mean, exactly as before; stereo content reads the same in both modes.
-    private var power = [Float](repeating: 0, count: fftSize / 2)
+    private var power: [Float]
     private var bands: [BandMap] = []
     /// The waterfall's own multi-resolution analysis of the same history rings; tests and comparisons may substitute
     /// one of another window or resolving power.
@@ -325,32 +326,43 @@ package final class SpectrumAnalyzer {
     package init?(sampleRate: Double, recording roles: [Bool] = []) {
         guard sampleRate.isFinite, sampleRate > 100,
               let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: Self.historyLength(sampleRate: sampleRate)),
-              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.fftSize), .FORWARD) else { return nil }
+              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.historyLength(sampleRate: sampleRate)), .FORWARD)
+        else { return nil }
         self.setup = setup
         self.spectrogramAnalyzer = spectrogramAnalyzer
         self.sampleRate = sampleRate
-        historyLength = Self.historyLength(sampleRate: sampleRate)
-        history = [Float](repeating: 0, count: Role.count * historyLength)
-        silentFrames = [Int](repeating: historyLength, count: Role.count)
+        let n = Self.historyLength(sampleRate: sampleRate)
+        historyLength = n
+        history = [Float](repeating: 0, count: Role.count * n)
+        silentFrames = [Int](repeating: n, count: Role.count)
+        window = [Float](repeating: 0, count: n)
+        fftWindow = [Float](repeating: 0, count: n)
+        inputReal = [Float](repeating: 0, count: n)
+        inputImaginary = [Float](repeating: 0, count: n)
+        outputReal = [Float](repeating: 0, count: n)
+        outputImaginary = [Float](repeating: 0, count: n)
+        leftPower = [Float](repeating: 0, count: n / 2)
+        rightPower = [Float](repeating: 0, count: n / 2)
+        power = [Float](repeating: 0, count: n / 2)
         recordedRoles = [Role.left, Role.right] + (0..<min(roles.count, Role.count)).filter { $0 > Role.right && roles[$0] }
-        vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_DENORM))
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_DENORM))
         var half: Float = 0.5
-        vDSP_vsmul(window, 1, &half, &fftWindow, 1, vDSP_Length(Self.fftSize))
+        vDSP_vsmul(window, 1, &half, &fftWindow, 1, vDSP_Length(n))
         var windowSum: Float = 0
-        vDSP_sve(window, 1, &windowSum, vDSP_Length(Self.fftSize))
+        vDSP_sve(window, 1, &windowSum, vDSP_Length(n))
         amplitudeScale = 2 / windowSum
         var windowSquares: Float = 0
-        vDSP_svesq(window, 1, &windowSquares, vDSP_Length(Self.fftSize))
-        bandPowerScale = 2 / (Double(Self.fftSize) * Double(windowSquares))
-        binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: Self.fftSize)
+        vDSP_svesq(window, 1, &windowSquares, vDSP_Length(n))
+        bandPowerScale = 2 / (Double(n) * Double(windowSquares))
+        binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: n)
         bandBins = (0..<StereoBands.count).map { band in
             let bins = binBands.indices.filter { binBands[$0] == band }
             guard let first = bins.first, let last = bins.last else { return 0..<0 }
             return first..<(last + 1)
         }
-        bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
+        bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate, fftSize: n)
         let lowBins = bands.filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
-        lowDecibels = [Float](repeating: -120, count: min(Self.fftSize / 2, lowBins))
+        lowDecibels = [Float](repeating: -120, count: min(n / 2, lowBins))
     }
 
     /// `historyLength` at `sampleRate`: `fftSize` up to 48 kHz, then doubled per doubling of the rate (up to 8×).
@@ -363,7 +375,7 @@ package final class SpectrumAnalyzer {
     /// Roles a Spatial spectrum sums: L, R and every other routed role.
     package var spatialRoles: [Int] { recordedRoles }
     /// Every routed role has a full FFT window (always true when only L and R are routed).
-    package var spatialReady: Bool { recordedRoles.count <= 2 || (recordsSpatial && spatialHistoryCount == Self.fftSize) }
+    package var spatialReady: Bool { recordedRoles.count <= 2 || (recordsSpatial && spatialHistoryCount == historyLength) }
 
     /// Fills `lowDecibels`: 10·log10 of the display power times the amplitude scale², floored at −120 dB.
     private func refreshLowDecibels() {
@@ -398,7 +410,7 @@ package final class SpectrumAnalyzer {
         base.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) { samples in
             accumulate(count: frames.count, stride: Role.count, roles: historyRoles) { samples + $0 }
         }
-        if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + frames.count) }
+        if recordsSpatial { spatialHistoryCount = min(historyLength, spatialHistoryCount + frames.count) }
     }
 
     /// Already de-interleaved audio (see `MeterPipeline`); L, R and, while Spatial is recorded, every routed role
@@ -406,7 +418,7 @@ package final class SpectrumAnalyzer {
     package func consume(_ block: PlanarBlock) {
         guard block.count > 0 else { return }
         accumulate(count: block.count, stride: 1, roles: historyRoles) { block.channel($0) }
-        if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + block.count) }
+        if recordsSpatial { spatialHistoryCount = min(historyLength, spatialHistoryCount + block.count) }
     }
 
     /// The roles whose history is kept right now: L and R, plus every routed role while Spatial is recorded.
@@ -461,11 +473,11 @@ package final class SpectrumAnalyzer {
             silentFrames[role] = peak > 0 ? 0 : min(length, silentFrames[role] + frameCount)
         }
         levelFrames += frameCount
-        historyCount = min(Self.fftSize, historyCount + frameCount)
+        historyCount = min(length, historyCount + frameCount)
     }
 
     /// A full FFT window has been captured, so spectra are meaningful.
-    package var ready: Bool { historyCount == Self.fftSize }
+    package var ready: Bool { historyCount == historyLength }
 
     /// A break in the audio: the FFT window starts empty, so no transform mixes audio from both sides of it.
     /// Until it has refilled (`ready`), the spectrum reads as it does when a stream starts.
@@ -521,9 +533,9 @@ package final class SpectrumAnalyzer {
     /// the 2nd to 8th harmonic of a lower note already kept (within 40 cents) and not clearly louder than it is
     /// that note's overtone, not a note of its own. Each frequency is refined like `dominantPeak`.
     private func tonalPeaks() -> [(frequency: Float, level: Float)] {
-        let binWidth = sampleRate / Double(Self.fftSize)
+        let binWidth = sampleRate / Double(historyLength)
         let first = max(2, Int(27 / binWidth))
-        let last = min(Self.fftSize / 2 - 10, Int(min(4_200, sampleRate / 2) / binWidth))
+        let last = min(historyLength / 2 - 10, Int(min(4_200, sampleRate / 2) / binWidth))
         guard first < last else { return [] }
         let scale = amplitudeScale * amplitudeScale
         func decibels(_ power: Float) -> Float { 10 * log10(max(power * scale, 1e-12)) }
@@ -590,9 +602,9 @@ package final class SpectrumAnalyzer {
             ? Array(requestedRoles.prefix(2)) + requestedRoles.dropFirst(2).filter { silentFrames[$0] < length }
             : requestedRoles
         let sounding = roles.allSatisfy { silentFrames[$0] >= length } ? [] : roles
-        // Where the history is one FFT window, the newest transform is the bass zone's own: the same Hann window
-        // over the same ring, for the same roles unless one fell silent within the window.
-        let reuse = length == Self.fftSize && sounding == analysedRoles
+        // The newest transform is the bass zone's own: the same Hann window over the same ring, for the same roles
+        // unless one fell silent within the window.
+        let reuse = sounding == analysedRoles
         history.withUnsafeBufferPointer { rings in
             power.withUnsafeBufferPointer { longest in
                 rows.withUnsafeMutableBufferPointer { out in
@@ -758,9 +770,9 @@ package final class SpectrumAnalyzer {
     /// quantised to 5.9 Hz, which is more than a semitone below ~100 Hz; the offset (|δ| ≤ ½ bin) makes note names
     /// and cents meaningful there.
     private func dominantPeak() -> (Float, Float) {
-        let binWidth = sampleRate / Double(Self.fftSize)
+        let binWidth = sampleRate / Double(historyLength)
         let first = max(2, Int(20 / binWidth))
-        let last = min(Self.fftSize / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
+        let last = min(historyLength / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
         guard first < last else { return (0, -120) }
         var peakPower: Float = 0
         var index: vDSP_Length = 0
@@ -782,12 +794,12 @@ package final class SpectrumAnalyzer {
         // A silent ring adds nothing to the power, and its band powers are zero: after L and R, only roles with
         // sound are transformed, paired among themselves. A 7.1.4 stream carrying stereo costs one transform.
         let roles = requested.count > 2
-            ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < Self.fftSize }
+            ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < historyLength }
             : requested
         requestedRoles = requested
         analysedRoles = roles
-        let bins = vDSP_Length(Self.fftSize / 2)
-        if roles.allSatisfy({ silentFrames[$0] >= Self.fftSize }) {
+        let bins = vDSP_Length(historyLength / 2)
+        if roles.allSatisfy({ silentFrames[$0] >= historyLength }) {
             // Digital silence everywhere (a paused player still delivers zeros): the transforms would be zeros.
             for i in power.indices { power[i] = 0 }
             for i in roleBandPower.indices { roleBandPower[i] = 0 }
@@ -836,7 +848,7 @@ package final class SpectrumAnalyzer {
     /// Per-band |L|², |R|² and the cross spectrum Re(L·R̄) of the L/R transform just made. With z = L + iR, the
     /// conjugate-symmetric split gives Re(L[k]·conj(R[k])) = (Zr[k]·Zi[N−k] + Zr[N−k]·Zi[k]) / 2.
     private func accumulateStereoBands() {
-        let n = Self.fftSize
+        let n = historyLength
         var sums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
         outputReal.withUnsafeBufferPointer { zr in
             outputImaginary.withUnsafeBufferPointer { zi in
@@ -857,22 +869,20 @@ package final class SpectrumAnalyzer {
 
     /// Fills `leftPower` with |A|² and `rightPower` with |B|² (zero without a second role).
     private func transformPair(_ a: Int, _ b: Int?) {
-        let n = Self.fftSize
-        let length = historyLength
-        // The newest `n` samples, oldest first: from `start` to the ring's end, then from its start.
-        let start = (cursor - n + length) % length
-        let tail = min(n, length - start)
+        let n = historyLength
+        let tail = n - cursor
+        // Oldest sample first: the ring from the cursor to the end, then from the start, windowed on the way.
         inputReal.withUnsafeMutableBufferPointer { real in
             inputImaginary.withUnsafeMutableBufferPointer { imaginary in
                 history.withUnsafeBufferPointer { rings in
                     fftWindow.withUnsafeBufferPointer { w in
                         func windowed(_ ring: UnsafePointer<Float>, into out: UnsafeMutablePointer<Float>) {
-                            vDSP_vmul(ring + start, 1, w.baseAddress!, 1, out, 1, vDSP_Length(tail))
-                            if tail < n { vDSP_vmul(ring, 1, w.baseAddress! + tail, 1, out + tail, 1, vDSP_Length(n - tail)) }
+                            vDSP_vmul(ring + cursor, 1, w.baseAddress!, 1, out, 1, vDSP_Length(tail))
+                            if cursor > 0 { vDSP_vmul(ring, 1, w.baseAddress! + tail, 1, out + tail, 1, vDSP_Length(cursor)) }
                         }
-                        windowed(rings.baseAddress! + a * length, into: real.baseAddress!)
+                        windowed(rings.baseAddress! + a * n, into: real.baseAddress!)
                         if let b {
-                            windowed(rings.baseAddress! + b * length, into: imaginary.baseAddress!)
+                            windowed(rings.baseAddress! + b * n, into: imaginary.baseAddress!)
                         } else {
                             vDSP_vclr(imaginary.baseAddress!, 1, vDSP_Length(n))
                         }

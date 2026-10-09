@@ -1037,7 +1037,7 @@ final class CoreTests {
     func testBandEnergyCalibrationAcrossRates() throws {
         for rate in [8_000.0, 44_100, 48_000, 96_000, 192_000] {
             let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
-            let n = SpectrumAnalyzer.fftSize
+            let n = analyzer.historyLength
             var frames = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: n)
             var expected = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
             for band in 0..<StereoBands.count {
@@ -1325,14 +1325,15 @@ final class CoreTests {
     /// The peak readout's frequency and level (`SpectrumAnalyzer.hannPeak`) at every fraction of a bin, in the bass
     /// where a bin is wider than a semitone and higher up, at three rates.
     func testHannPeakEstimate() throws {
-        for (rate, base) in [(48_000.0, 41.2), (48_000, 55), (48_000, 440), (44_100, 98), (96_000, 3_000)] {
-            let bin = rate / Double(SpectrumAnalyzer.fftSize)
+        for (rate, base) in [(48_000.0, 41.2), (48_000, 55), (48_000, 440), (44_100, 98), (96_000, 3_000), (192_000, 55)] {
+            let length = SpectrumAnalyzer.historyLength(sampleRate: rate)
+            let bin = rate / Double(length)
             var worstCents = 0.0
             var worstLevel: Float = 0
             for step in 0..<20 {
                 let hz = base + bin * Double(step) / 20
                 let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
-                let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                let frames = (0..<length).map { index -> StereoFrame in
                     let sample = Float(sin(2 * Double.pi * hz * Double(index) / rate + 0.3)) * 0.5
                     return StereoFrame(left: sample, right: sample)
                 }
@@ -1436,10 +1437,10 @@ final class CoreTests {
 
     func testBassNotesAcrossSampleRates() throws {
         // The old eight-bin margin excluded ordinary bass notes, especially at 96 kHz.
-        for rate in [44_100.0, 48_000, 96_000] {
+        for rate in [44_100.0, 48_000, 96_000, 192_000] {
             for frequency in [32.7032, 41.2034, 55.0, 110.0] {
                 let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
-                let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+                let frames = (0..<analyzer.historyLength).map { index -> StereoFrame in
                     let value = Float(0.2 * sin(2 * Double.pi * frequency * Double(index) / rate))
                     return StereoFrame(left: value, right: value)
                 }
@@ -1449,7 +1450,7 @@ final class CoreTests {
                 checkEqual(detected.count, 1)
                 let peak = try unwrap(detected.first)
                 checkEqual(1200 * log2(Double(peak) / frequency), 0, accuracy: 35)
-                let silence = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: SpectrumAnalyzer.fftSize)
+                let silence = [StereoFrame](repeating: StereoFrame(left: 0, right: 0), count: analyzer.historyLength)
                 silence.withUnsafeBufferPointer { analyzer.consume($0) }
                 let cleared = analyzer.snapshot().notes
                 checkTrue(stride(from: 0, to: cleared.count, by: 2).allSatisfy { cleared[$0] == 0 })
