@@ -59,7 +59,7 @@ typedef struct MeterExchange MeterExchange;
 // (correlation, width, balance, level), 5 stereo bands × 128 (L, R) stereometer points, 16 roles × 5 band mean squares, 64 waveform
 // columns × 16 roles × (min, max), then the analysis' continuity: breaks since it started, and seconds of audio
 // known to be missing at them.
-#define METER_SNAPSHOT_FLOATS 4126
+#define METER_SNAPSHOT_FLOATS 4254
 MeterExchange *meter_exchange_create(void);
 void meter_exchange_destroy(MeterExchange *exchange);
 void meter_exchange_publish(MeterExchange *exchange, const float *values);

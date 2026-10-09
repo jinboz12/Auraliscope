@@ -132,6 +132,10 @@ package final class ResultAssembler {
         values[SnapshotSlots.integrated] = m.integrated
         values[SnapshotSlots.range] = m.loudnessRange
         copy(m.spectrum, to: SnapshotSlots.spectrum, count: MeterSnapshot.bandCount, fill: -120)
+        // A plugin from before the fine bands (build 70 and earlier) sends only the 64: each stands for its two halves.
+        copy(m.spectrumFine.count == MeterSnapshot.fineBandCount ? m.spectrumFine
+                 : (0..<MeterSnapshot.fineBandCount).map { $0 / 2 < m.spectrum.count ? m.spectrum[$0 / 2] : -120 },
+             to: SnapshotSlots.spectrumFine, count: MeterSnapshot.fineBandCount, fill: -120)
         values[SnapshotSlots.peakFrequency] = m.dominant.count == 2 ? m.dominant[0] : 0
         values[SnapshotSlots.peakLevel] = m.dominant.count == 2 ? m.dominant[1] : -120
         for i in 0..<(2 * SpectrumAnalyzer.maxNotes) {
@@ -203,6 +207,7 @@ package final class ResultAssembler {
         m.rms = silence
         m.truePeak = silence
         m.spectrum = [Float](repeating: -120, count: MeterSnapshot.bandCount)
+        m.spectrumFine = [Float](repeating: -120, count: MeterSnapshot.fineBandCount)
         m.dominant = [0, -120]
         m.notes = []
         m.correlation = MeterSnapshot.noCorrelation

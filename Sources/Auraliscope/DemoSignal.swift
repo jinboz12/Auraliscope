@@ -31,6 +31,7 @@ enum DemoSignal {
             return Float(max(-120, min(-3, db)))
         }
         result.spectrum = (0..<MeterSnapshot.bandCount).map { level($0, bands: MeterSnapshot.bandCount) }
+        result.spectrumFine = (0..<MeterSnapshot.fineBandCount).map { level($0, bands: MeterSnapshot.fineBandCount) }
         result.spectrogram = (0..<MeterSnapshot.spectrogramBandCount).map {
             level($0, bands: MeterSnapshot.spectrogramBandCount)
         }

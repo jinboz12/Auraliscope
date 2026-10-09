@@ -1179,13 +1179,14 @@ final class CanvasRenderer {
 /// Drawn in the Spectrum card's `SpectrogramLayout.spectrum` strip, on the waterfall's frequency axis: each point's
 /// level reaches right from the floor, so the live spectrum continues the waterfall's newest column.
 ///
-/// The curve is read from that very column (`MeterSnapshot.spectrogram`, 512 rows), the loudest of every
-/// `rowsPerPoint` rows: 128 points, about 1/13 octave, each calibrated for a sine as the rows are. So a bright row in
-/// the waterfall is a peak on the curve at the same height, and the curve resolves notes the 64 published bands merge.
+/// The curve is the 128 fine bands (`MeterSnapshot.spectrumFine`), about 1/13 octave, each standing for four
+/// waterfall rows. They come from the spectrum's single long transform rather than the waterfall's multi-resolution
+/// column, so broadband sound keeps one calibration across the axis (pink noise falls 3 dB per octave everywhere,
+/// as on any FFT analyzer) and the curve and its average can be read for tonal balance; a sine reads its level in
+/// both.
 final class SpectrumScene: CanvasScene {
-    /// Waterfall rows per curve point, and the points.
-    static let rowsPerPoint = 4
-    static let pointCount = MeterSnapshot.spectrogramBandCount / rowsPerPoint
+    /// Points of the curve: the fine bands.
+    static let pointCount = MeterSnapshot.fineBandCount
 
     private var holds = [Float](repeating: -120, count: pointCount)
     private var holdTimers = [Float](repeating: 0, count: pointCount)
@@ -1195,18 +1196,18 @@ final class SpectrumScene: CanvasScene {
     private var stream: Float = 0
     /// The levels last drawn (damped, untilted), for the inspector.
     private(set) var shown = [Float](repeating: -120, count: pointCount)
-    /// Long-term average spectrum since the last reset: each point's mean power over every column that carried
+    /// Long-term average spectrum since the last reset: each point's mean power over every snapshot that carried
     /// signal, the average engineers compare a mix's tonal balance with. Averaged in power, not dB, so loud passages
     /// weigh as they sound; silence (a stopped transport, a pause) is left out instead of dragging it down.
     private var averagePower = [Double](repeating: 0, count: pointCount)
     private(set) var averageCount = 0
-    private var averagedColumn: Float = 0
+    private var averagedSequence: Float = 0
     private var averagedStream: Float = 0
     private var averagedRate: Double = 0
     private var averagedSpatial = false
-    /// Distinct columns (two seconds) before the average is drawn; skipped display frames are not reconstructed.
+    /// Distinct received snapshots before the average is drawn; skipped display frames are not reconstructed.
     static let averageMinimum = 60
-    /// The average in dBFS per point (untilted), once it rests on `averageMinimum` columns.
+    /// The average in dBFS per point (untilted), once it rests on `averageMinimum` snapshots.
     var average: [Float]? {
         guard averageCount >= Self.averageMinimum else { return nil }
         return averagePower.map { Float(10 * log10(max($0 / Double(averageCount), 1e-12))) }
@@ -1220,14 +1221,6 @@ final class SpectrumScene: CanvasScene {
 
     init() { curve.reserveCapacity(Self.pointCount * Self.subdivisions + 3) }
 
-    /// The loudest of each point's rows of a waterfall column.
-    static func points(_ column: [Float]) -> [Float] {
-        (0..<pointCount).map { point in
-            let first = point * rowsPerPoint
-            return column[first..<min(column.count, first + rowsPerPoint)].max() ?? -120
-        }
-    }
-
     /// A reset clears the peak holds, as it does the channel meters'.
     func prepare(frame: CanvasFrame) {
         let snapshot = frame.snapshot
@@ -1240,15 +1233,14 @@ final class SpectrumScene: CanvasScene {
             averagedStream = snapshot.streamID
             averagedRate = frame.sampleRate
             averagedSpatial = frame.spatial
-            // The column at a configuration change may still belong to the old analysis. Wait for a new one.
-            averagedColumn = snapshot.spectrogramSerial
+            // The snapshot at a configuration change may still belong to the old analysis. Wait for a new one.
+            averagedSequence = snapshot.sequence
         }
-        // Each new column with signal joins the average once.
-        guard frame.running, snapshot.spectrogramSerial != averagedColumn else { return }
-        averagedColumn = snapshot.spectrogramSerial
-        let points = Self.points(snapshot.spectrogram)
-        guard let loudest = points.max(), loudest > -100 else { return }
-        for (i, db) in points.enumerated() { averagePower[i] += pow(10, Double(db) / 10) }
+        // Each new snapshot with signal joins the average once.
+        guard frame.running, snapshot.sequence != averagedSequence else { return }
+        averagedSequence = snapshot.sequence
+        guard let loudest = snapshot.spectrumFine.max(), loudest > -100 else { return }
+        for (i, db) in snapshot.spectrumFine.enumerated() { averagePower[i] += pow(10, Double(db) / 10) }
         averageCount += 1
     }
 
@@ -1272,8 +1264,8 @@ final class SpectrumScene: CanvasScene {
             b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(decade ? 0.12 : 0.06))
         }
 
-        // The newest column, followed smoothly; held while frozen, and a new stream starts from its own first column.
-        let target = Self.points(frame.snapshot.spectrogram)
+        // The newest bands, followed at the chosen response; held while frozen, and a new stream starts from its own.
+        let target = frame.snapshot.spectrumFine
         if frame.snapshot.streamID != stream {
             stream = frame.snapshot.streamID
             shown = target
@@ -1354,47 +1346,43 @@ final class SpectrumScene: CanvasScene {
         let scene = SpectrumScene()
         var frame = CanvasFrame(running: true)
         frame.snapshot.streamID = 1
-        frame.snapshot.spectrogramSerial = 1
-        frame.snapshot.spectrogram = Array(repeating: -20, count: MeterSnapshot.spectrogramBandCount)
+        frame.snapshot.sequence = 1
+        frame.snapshot.spectrumFine = Array(repeating: -20, count: MeterSnapshot.fineBandCount)
         scene.prepare(frame: frame)
-        for serial in 2...61 {
-            frame.snapshot.spectrogramSerial = Float(serial)
+        for sequence in 2...61 {
+            frame.snapshot.sequence = Float(sequence)
             scene.prepare(frame: frame)
             scene.prepare(frame: frame) // repeated rendering must not double-count
         }
         guard scene.averageCount == 60, let average = scene.average,
               average.allSatisfy({ abs($0 + 20) < 0.0001 }) else { return false }
         frame.running = false
-        frame.snapshot.spectrogramSerial += 1
+        frame.snapshot.sequence += 1
         scene.prepare(frame: frame)
         guard scene.averageCount == 60 else { return false }
         frame.running = true
         frame.sampleRate = 96_000
         scene.prepare(frame: frame)
         guard scene.averageCount == 0 else { return false }
-        frame.snapshot.spectrogramSerial += 1
+        frame.snapshot.sequence += 1
         scene.prepare(frame: frame)
         guard scene.averageCount == 1 else { return false }
         frame.spatial.toggle()
         scene.prepare(frame: frame)
         guard scene.averageCount == 0 else { return false }
-        frame.snapshot.spectrogramSerial += 1
+        frame.snapshot.sequence += 1
         scene.prepare(frame: frame)
         frame.epoch += 1
         scene.prepare(frame: frame)
         guard scene.averageCount == 0 else { return false }
         frame.snapshot.streamID = 2
-        frame.snapshot.spectrogramSerial = 1
+        frame.snapshot.sequence = 1
         scene.prepare(frame: frame)
-        frame.snapshot.spectrogram = Array(repeating: -120, count: MeterSnapshot.spectrogramBandCount)
-        frame.snapshot.spectrogramSerial += 1
+        frame.snapshot.spectrumFine = Array(repeating: -120, count: MeterSnapshot.fineBandCount)
+        frame.snapshot.sequence += 1
         scene.prepare(frame: frame)
         guard scene.averageCount == 0 else { return false }
-        // A point reads the loudest of its rows.
-        var column = Array(repeating: Float(-100), count: MeterSnapshot.spectrogramBandCount)
-        column[4 * 10 + 3] = -12
-        guard points(column)[10] == -12, points(column)[11] == -100 else { return false }
-        print("PASS: spectrum average deduplicates columns, holds on pause, gates silence, resets on source/rate/mode/Reset")
+        print("PASS: spectrum average deduplicates frames, holds on pause, gates silence, resets on source/rate/mode/Reset")
         return true
     }
 

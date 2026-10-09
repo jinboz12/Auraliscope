@@ -241,6 +241,7 @@ package final class StreamAnalyzer {
             w.f32(ResultTag.integrated.rawValue, base[SnapshotSlots.integrated])
             w.f32(ResultTag.loudnessRange.rawValue, base[SnapshotSlots.range])
             w.f32s(ResultTag.spectrum.rawValue, base + SnapshotSlots.spectrum, count: MeterSnapshot.bandCount)
+            w.f32s(ResultTag.spectrumFine.rawValue, base + SnapshotSlots.spectrumFine, count: MeterSnapshot.fineBandCount)
             w.f32s(ResultTag.dominant.rawValue, base + SnapshotSlots.peakFrequency, count: 2)
             w.f32s(ResultTag.notes.rawValue, base + SnapshotSlots.notes, count: 2 * SpectrumAnalyzer.maxNotes)
             w.f32(ResultTag.correlation.rawValue, base[SnapshotSlots.correlation])

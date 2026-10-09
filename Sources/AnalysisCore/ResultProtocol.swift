@@ -190,6 +190,7 @@ package enum ResultTag: UInt16 {
     case bandPoints = 48           // f32[1280]: per stereo band, 128 (L, R) stereometer points
     case bandPower = 49            // f32[channels × 5]: each channel's mean square per stereo band
     case detectedFormat = 50       // u32: 0 stereo, 1 spatial, 2 mono
+    case spectrumFine = 51         // f32[128]: dBFS per fine band (each `spectrum` band halved), from the same transform
     // Ordered visual updates: the spectrogram and the waveform
     case spectrogramFirst = 60     // u64: serial of the first column carried (serials start at 1 per generation)
     case spectrogramRows = 61      // u32: values per column (512)
@@ -247,6 +248,7 @@ package struct ResultMessage {
     package var heldPeak: [Float] = [], heldTruePeak: [Float] = []
     package var momentary: Float = -100, shortTerm: Float = -100, integrated: Float = -100, loudnessRange: Float = -1
     package var spectrum: [Float] = []
+    package var spectrumFine: [Float] = []
     package var dominant: [Float] = []
     package var notes: [Float] = []
     package var correlation: Float = MeterSnapshot.noCorrelation
@@ -324,6 +326,7 @@ package struct ResultMessage {
             case .integrated: take(field.f32) { m.integrated = $0 }
             case .loudnessRange: take(field.f32) { m.loudnessRange = $0 }
             case .spectrum: take(field.f32s(limit: MeterSnapshot.bandCount)) { m.spectrum = $0 }
+            case .spectrumFine: take(field.f32s(limit: MeterSnapshot.fineBandCount)) { m.spectrumFine = $0 }
             case .dominant: take(field.f32s(limit: 2)) { m.dominant = $0 }
             case .notes: take(field.f32s(limit: 2 * SpectrumAnalyzer.maxNotes)) { m.notes = $0 }
             case .correlation: take(field.f32) { m.correlation = $0 }

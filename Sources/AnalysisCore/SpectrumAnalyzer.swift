@@ -190,6 +190,10 @@ package final class StereoBandSplitter {
 
 package struct MeterSnapshot: Equatable {
     package static let bandCount = 64
+    /// The live spectrum's finer bands: each of the 64 split in two (about 1/13 octave), from the same transform, so
+    /// a curve drawn from them keeps the 64 bands' single-resolution calibration with twice the detail and lines up
+    /// with every fourth waterfall row.
+    package static let fineBandCount = 128
     /// Log-spaced rows for the waterfall: at least one row per device pixel on a typical Retina panel, so the
     /// shader never stretches a row across several pixels and harmonics stay crisp.
     package static let spectrogramBandCount = 512
@@ -197,6 +201,7 @@ package struct MeterSnapshot: Equatable {
     package static let noCorrelation: Float = -2
     package init() {}
     package var spectrum: [Float] = Array(repeating: -120, count: bandCount)
+    package var spectrumFine: [Float] = Array(repeating: -120, count: fineBandCount)
     package var spectrogram: [Float] = Array(repeating: -120, count: spectrogramBandCount)
     package var sequence: Float = 0
     /// Advances once per waterfall column (30 per second), independent of the snapshot rate.
@@ -291,6 +296,9 @@ package final class SpectrumAnalyzer {
     /// For L and R alone that is their mean, exactly as before; stereo content reads the same in both modes.
     private var power: [Float]
     private var bands: [BandMap] = []
+    private var fineBands: [BandMap] = []
+    /// The newest transform's `MeterSnapshot.fineBandCount` bands (dBFS), filled with the 64 by `refreshSpectrum`.
+    package private(set) var fineSpectrum = [Float](repeating: -120, count: MeterSnapshot.fineBandCount)
     /// The waterfall's own multi-resolution analysis of the same history rings; tests and comparisons may substitute
     /// one of another window or resolving power.
     package var spectrogramAnalyzer: SpectrogramAnalyzer
@@ -301,9 +309,9 @@ package final class SpectrumAnalyzer {
     /// dB of the low bins that interpolated bands read (one vectorised log per tick instead of three per band).
     private var lowDecibels: [Float] = []
     /// Scratch for one pass of band powers, converted to dB together.
-    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.bandCount)
+    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.fineBandCount)
     /// The loudest bin of each wide band in the newest pass, refined in dB afterwards.
-    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.bandCount)
+    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.fineBandCount)
     private var amplitudeScale: Float = 0
     /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
     private var binBands: [Int8] = []
@@ -361,7 +369,8 @@ package final class SpectrumAnalyzer {
             return first..<(last + 1)
         }
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate, fftSize: n)
-        let lowBins = bands.filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
+        fineBands = Self.bandMaps(count: MeterSnapshot.fineBandCount, sampleRate: sampleRate, fftSize: n)
+        let lowBins = (bands + fineBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
         lowDecibels = [Float](repeating: -120, count: min(n / 2, lowBins))
     }
 
@@ -509,12 +518,13 @@ package final class SpectrumAnalyzer {
     }
 
     /// Transforms the newest FFT window of `roles` (L and R by default; `spatialRoles` for every routed role)
-    /// and fills the 64 display bands; returns the dominant peak (Hz, dBFS). The power spectrum stays available
-    /// to `spectrogram(into:)` until the next transform.
+    /// and fills the 64 display bands (and `fineSpectrum`); returns the dominant peak (Hz, dBFS). The power spectrum
+    /// stays available to `spectrogram(into:)` until the next transform.
     package func refreshSpectrum(into spectrum: inout [Float], roles: [Int] = [Role.left, Role.right]) -> (frequency: Float, level: Float) {
         transform(roles)
         refreshLowDecibels()
         levels(bands, into: &spectrum)
+        levels(fineBands, into: &fineSpectrum)
         notes = tonalPeaks()
         return dominantPeak()
     }
@@ -628,6 +638,7 @@ package final class SpectrumAnalyzer {
             result.correlation = Self.correlation(left: sumLeft, right: sumRight, product: sumProduct)
             if ready {
                 (result.peakFrequency, result.peakLevel) = refreshSpectrum(into: &result.spectrum)
+                result.spectrumFine = fineSpectrum
                 result.notes.withUnsafeMutableBufferPointer { packedNotes(into: $0.baseAddress!) }
                 spectrogram(into: &result.spectrogram)
             }

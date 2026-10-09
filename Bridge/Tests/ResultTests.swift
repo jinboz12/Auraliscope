@@ -115,9 +115,10 @@ enum ResultChecks {
                   && m.loudnessRange == v[SnapshotSlots.range],
               "levels and loudness equal the analyser's values exactly (integrated \(m.integrated) LUFS)")
         check(m.spectrum == Array(v[SnapshotSlots.spectrum..<(SnapshotSlots.spectrum + 64)])
+                  && m.spectrumFine == Array(v[SnapshotSlots.spectrumFine..<(SnapshotSlots.spectrumFine + MeterSnapshot.fineBandCount)])
                   && m.bandPoints == Array(v[SnapshotSlots.bandPoints..<(SnapshotSlots.bandPoints + StereoBands.scopeFloats)])
                   && m.correlation == v[SnapshotSlots.correlation] && m.notes.count == 12,
-              "spectrum, stereometer points, correlation and notes carried in full")
+              "spectrum, fine spectrum, stereometer points, correlation and notes carried in full")
         check(m.spectrogramFirst == m.spectrogramLatest - UInt64(StreamAnalyzer.spectrogramCapacity) + 1 && m.spectrogramColumns == 24
                   && m.waveformFirst == m.waveformLatest - UInt64(StreamAnalyzer.waveformCapacity) + 1 && m.waveformColumns == 256,
               "a new receiver starts from the oldest columns held (spectrogram \(m.spectrogramFirst) of \(m.spectrogramLatest), waveform \(m.waveformFirst) of \(m.waveformLatest)), at most 24 and 256 per result")
@@ -227,6 +228,21 @@ enum ResultChecks {
         a.publish()
         check(a.values[SnapshotSlots.stream] != stream && a.values[SnapshotSlots.spectrogramSerial] == 1,
               "a new generation starts a new stream for the displays")
+        // Fine spectrum bands: taken as sent, or, from a plugin that sends only the 64 bands, each band's two halves.
+        var fine = message()
+        fine.spectrum = (0..<MeterSnapshot.bandCount).map { -Float($0) }
+        let older = ResultAssembler()
+        older.receive(fine, source: 1)
+        older.publish()
+        check((0..<MeterSnapshot.fineBandCount).allSatisfy { older.values[SnapshotSlots.spectrumFine + $0] == -Float($0 / 2) },
+              "a result without fine bands shows each of the 64 bands across its two halves")
+        fine.generation = 3
+        fine.spectrumFine = (0..<MeterSnapshot.fineBandCount).map { -Float($0) / 4 }
+        let newer = ResultAssembler()
+        newer.receive(fine, source: 1)
+        newer.publish()
+        check((0..<MeterSnapshot.fineBandCount).allSatisfy { newer.values[SnapshotSlots.spectrumFine + $0] == -Float($0) / 4 },
+              "fine bands are shown as sent")
         // Mono: channel 1 is L; R stays silent.
         let mono = ResultAssembler()
         mono.receive(message(channels: 1, waveform: [1]), source: 1)

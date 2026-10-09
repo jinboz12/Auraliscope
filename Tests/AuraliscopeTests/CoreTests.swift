@@ -1126,6 +1126,32 @@ final class CoreTests {
         }
     }
 
+    /// The live spectrum's 128 fine bands: a sine reads its level in the band that holds it at every rate, as the
+    /// 64 bands do, and each pair of fine bands agrees with the band it halves.
+    func testFineSpectrumBands() throws {
+        for rate in [44_100.0, 48_000, 96_000] {
+            for frequency in [55.0, 440, 1_000.7, 5_000, 12_345] {
+                let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+                let frames = (0..<analyzer.historyLength).map { index -> StereoFrame in
+                    let sample = Float(sin(2 * Double.pi * frequency * Double(index) / rate)) * 0.5
+                    return StereoFrame(left: sample, right: sample)
+                }
+                frames.withUnsafeBufferPointer { analyzer.consume($0) }
+                let snapshot = analyzer.snapshot()
+                checkEqual(snapshot.spectrumFine.count, MeterSnapshot.fineBandCount)
+                let upper = min(20_000, rate / 2)
+                let fraction = log(frequency / 20) / log(upper / 20)
+                let fine = Int(fraction * Double(MeterSnapshot.fineBandCount))
+                let coarse = Int(fraction * Double(MeterSnapshot.bandCount))
+                checkEqual(Double(snapshot.spectrumFine[fine]), -6.02, accuracy: 0.1)
+                checkEqual(Double(max(snapshot.spectrumFine[2 * coarse], snapshot.spectrumFine[2 * coarse + 1])),
+                           Double(snapshot.spectrum[coarse]), accuracy: 0.1)
+                // Away from the tone the fine bands fall well below it.
+                checkTrue(snapshot.spectrumFine[max(0, fine - 12)] < -40 || frequency < 100)
+            }
+        }
+    }
+
     func testFullRangeSpectrogramHistory() throws {
         let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: 48_000))
         let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
@@ -2078,6 +2104,7 @@ struct TestRunner {
             ("Lightweight resolution metadata matches analysis and describes transitions", suite.testSpectrogramResolutionMetadata),
             ("Spectrum curve preserves measured extrema and mirrored geometry", suite.testSpectrumInterpolationPreservesMeasurements),
             ("8192 FFT, 512-row float spectrogram history, tone curve and tilt", suite.testFullRangeSpectrogramHistory),
+            ("128 fine spectrum bands: sine calibration at three rates and agreement with the 64", suite.testFineSpectrumBands),
             ("multi-resolution spectrogram: window choice, calibration across zones and blends, treble timing", suite.testMultiResolutionSpectrogram),
             ("critically damped 60 Hz display convergence", suite.testDampedDisplayConvergence),
             ("IEC meter scale and shared panel layouts", suite.testMeterScaleAndLayouts),

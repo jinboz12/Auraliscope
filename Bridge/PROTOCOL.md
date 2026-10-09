@@ -175,6 +175,7 @@ yet measurable"; spectra in dBFS with −120 for silence.
 | 48 | f32[1280] | stereometer: per stereo band, 128 (L, R) points |
 | 49 | f32[ch × 5] | each channel's mean square per stereo band |
 | 50 | u32 | detected format (0 stereo, 2 mono) |
+| 51 | f32[128] | fine spectrum: each display band of tag 40 halved, from the same transform (build 71 and later; a display that does not receive it shows each of the 64 bands across its two halves) |
 | 60 | u64 | serial of the first spectrogram column carried (serials start at 1 per generation) |
 | 61 | u32 | values per spectrogram column (512) |
 | 62 | f32[n × 512] | n spectrogram columns, oldest first, dBFS (30 per second of audio) |

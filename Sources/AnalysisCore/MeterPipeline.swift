@@ -32,7 +32,8 @@ package enum SnapshotSlots {
     package static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
     package static let breaks = waveform + WaveformEnvelope.publishedFloats
     package static let missing = breaks + 1
-    package static let total = missing + 1
+    package static let spectrumFine = missing + 1
+    package static let total = spectrumFine + MeterSnapshot.fineBandCount
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -328,6 +329,8 @@ package final class MeterPipeline {
         splitter.writePoints(into: v + SnapshotSlots.bandPoints, silent: stale)
         for i in 0..<StereoBands.roleFloats { v[SnapshotSlots.roleBandPower + i] = roleBands[i] }
         for i in 0..<MeterSnapshot.bandCount { v[SnapshotSlots.spectrum + i] = bands[i] }
+        let fine = stale || !spectrum.ready ? nil : spectrum.fineSpectrum
+        for i in 0..<MeterSnapshot.fineBandCount { v[SnapshotSlots.spectrumFine + i] = fine?[i] ?? -120 }
         v[SnapshotSlots.peakFrequency] = dominant.frequency
         v[SnapshotSlots.peakLevel] = dominant.level
         if stale || !spectrum.ready {
