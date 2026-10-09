@@ -43,20 +43,14 @@ final class SpectrogramHistory {
         levels.withUnsafeBufferPointer { body(UnsafeBufferPointer(rebasing: $0[(slot * Self.rows)..<((slot + 1) * Self.rows)])) }
     }
 
-    /// The level `age` columns before the newest (0 the newest, fractions between columns) at fractional `row`,
-    /// interpolated in both directions as the waterfall draws it; nil where nothing has been written.
+    /// The level of the cell drawn at `age` columns before the newest (0 the newest) and `row`: the column and row
+    /// whose boxes contain them (each centred on its index), exactly as analysed and as the waterfall draws it; nil
+    /// where nothing has been written.
     func level(age: Double, row: Double) -> Float? {
-        guard count > 0, age.isFinite, row.isFinite, age >= 0, age <= Double(count - 1) else { return nil }
-        let r = max(0, min(Double(Self.rows - 1), row))
-        let r0 = Int(r.rounded(.down)), r1 = min(Self.rows - 1, r0 + 1)
-        let a0 = Int(age.rounded(.down)), a1 = min(count - 1, a0 + 1)
-        let tr = Float(r - Double(r0)), ta = Float(age - Double(a0))
-        func at(_ age: Int, _ row: Int) -> Float {
-            levels[((head - 1 - age + 2 * Self.capacity) % Self.capacity) * Self.rows + row]
-        }
-        let newer = at(a0, r0) + (at(a0, r1) - at(a0, r0)) * tr
-        let older = at(a1, r0) + (at(a1, r1) - at(a1, r0)) * tr
-        return newer + (older - newer) * ta
+        guard count > 0, age.isFinite, row.isFinite, age >= 0, age < Double(count) - 0.5 else { return nil }
+        let column = Int(age.rounded())
+        let r = max(0, min(Self.rows - 1, Int(row.rounded())))
+        return levels[((head - 1 - column + 2 * Self.capacity) % Self.capacity) * Self.rows + r]
     }
 
     func reset() {

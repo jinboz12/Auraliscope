@@ -469,23 +469,60 @@ final class MeterGPU {
         return history.read(uint2(uint(wrapped), uint(clamp(row, 0, waterfallRows - 1)))).r;
     }
 
-    // Level `age` columns before the newest at fractional `row`, interpolated between columns and rows
-    // (SpectrogramHistory.level reads it the same way for the inspector).
-    float waterfallLevel(texture2d<float, access::read> history, constant WaterfallState &state, float age, float row) {
-        float a = clamp(age, 0.0, float(state.capacity) - 2.0);
-        float r = clamp(row, 0.0, float(waterfallRows - 1));
-        int a0 = int(floor(a)), r0 = int(floor(r));
-        float ta = a - float(a0), tr = r - float(r0);
-        int newer = int(state.head) - 1 - a0;
-        float n0 = waterfallTexel(history, state.capacity, newer, r0), n1 = waterfallTexel(history, state.capacity, newer, r0 + 1);
-        float o0 = waterfallTexel(history, state.capacity, newer - 1, r0), o1 = waterfallTexel(history, state.capacity, newer - 1, r0 + 1);
-        return mix(mix(n0, n1, tr), mix(o0, o1, tr), ta);
-    }
-
     // SpectrogramTone: linear over the range, a power curve for a dark floor, part of an S-curve for contrast.
     float waterfallTone(float db, constant WaterfallState &state) {
         float x = pow(saturate((db - state.floorDB) / state.rangeDB), \(SpectrogramTone.gamma));
         return mix(x, x * x * (3.0 - 2.0 * x), \(SpectrogramTone.contrast));
+    }
+
+    // The cells a pixel covers along one axis, as up to two ranges of cells and their weights. A cell is the box it
+    // stands for (a column 1/30 s, a row its slice of frequency), centred on its index. Wider than the pixel, it is
+    // drawn flat and meets its neighbour in a short ramp: one pixel, or `waterfallEdge` of a cell where cells are
+    // large, so a sweep reads as a line rather than a staircase. (Linear interpolation ramped across the whole cell
+    // and spread a click over two columns.) Narrower, every cell the pixel covers counts and the loudest is shown,
+    // so a click one column wide or a partial one row high is never averaged away.
+    constant float waterfallEdge = \(SpectrogramLayout.cellEdge);
+    struct WaterfallAxis { int first[2]; int last[2]; float weight[2]; int ranges; };
+
+    WaterfallAxis waterfallAxis(float p, float footprint) {
+        WaterfallAxis axis;
+        if (footprint <= 1.0) {
+            float k = floor(p);
+            float upper = saturate((p - k - 0.5) / max(footprint, waterfallEdge) + 0.5);
+            axis.first[0] = axis.last[0] = int(k);
+            axis.first[1] = axis.last[1] = int(k) + 1;
+            axis.weight[0] = 1.0 - upper;
+            axis.weight[1] = upper;
+            axis.ranges = 2;
+        } else {
+            axis.first[0] = int(floor(p - 0.5 * footprint + 0.5));
+            axis.last[0] = int(floor(p + 0.5 * footprint + 0.5));
+            axis.weight[0] = 1.0;
+            axis.first[1] = axis.last[1] = 0;
+            axis.weight[1] = 0.0;
+            axis.ranges = 1;
+        }
+        return axis;
+    }
+
+    // The loudest tilted level in a block of cells, `age` columns before the newest and `row` up from 20 Hz, read at
+    // up to six evenly spread cells along each axis.
+    float waterfallBlock(texture2d<float, access::read> history, constant WaterfallState &state,
+                         int firstAge, int lastAge, int firstRow, int lastRow) {
+        int ages = lastAge - firstAge, rows = lastRow - firstRow;
+        int ageTaps = min(6, ages + 1), rowTaps = min(6, rows + 1);
+        float loudest = -1000.0;
+        for (int i = 0; i < ageTaps; i++) {
+            int age = clamp(firstAge + (ageTaps > 1 ? (i * ages + (ageTaps - 1) / 2) / (ageTaps - 1) : 0), 0, int(state.capacity) - 1);
+            for (int j = 0; j < rowTaps; j++) {
+                int row = clamp(firstRow + (rowTaps > 1 ? (j * rows + (rowTaps - 1) / 2) / (rowTaps - 1) : 0), 0, waterfallRows - 1);
+                float level = waterfallTexel(history, state.capacity, int(state.head) - 1 - age, row);
+                // The display slope, pivoting at 1 kHz: octaves from the pivot at this row's centre.
+                float octave = state.floorOctave + (float(row) + 0.5) / float(waterfallRows) * state.octaves;
+                loudest = max(loudest, level + state.tilt * octave);
+            }
+        }
+        return loudest;
     }
 
     // local: pixels from the quad centre; shape.xy: half size; shape.zw: uv (u = 1 at "now").
@@ -495,20 +532,18 @@ final class MeterGPU {
         float2 uv = in.shape.zw;
         float row = (1.0 - uv.y) * float(waterfallRows) - 0.5;
         float age = (1.0 - uv.x) * state.span - state.phase;
-        // Where a pixel covers several rows, it shows the loudest of them, so a partial one row wide never falls
-        // between two pixels and fades. Up to six taps across the pixel's rows.
-        float footprint = abs(dfdy(row));
-        float level = waterfallLevel(history, state, age, row);
-        if (footprint > 1.0) {
-            int taps = min(6, int(ceil(footprint)));
-            for (int tap = 0; tap < taps; tap++) {
-                float offset = ((float(tap) + 0.5) / float(taps) - 0.5) * footprint;
-                level = max(level, waterfallLevel(history, state, age, row + offset));
+        WaterfallAxis columns = waterfallAxis(age, fwidth(age));
+        WaterfallAxis rows = waterfallAxis(row, fwidth(row));
+        // Blended as tones, so an edge pixel is part way between the two colours on screen.
+        float tone = 0.0;
+        for (int i = 0; i < columns.ranges; i++) {
+            for (int j = 0; j < rows.ranges; j++) {
+                float weight = columns.weight[i] * rows.weight[j];
+                if (weight <= 0.0) { continue; }
+                float level = waterfallBlock(history, state, columns.first[i], columns.last[i], rows.first[j], rows.last[j]);
+                tone += weight * waterfallTone(level, state);
             }
         }
-        // The display slope, pivoting at 1 kHz: octaves from the pivot at this row's centre.
-        float octave = state.floorOctave + (row + 0.5) / float(waterfallRows) * state.octaves;
-        float tone = waterfallTone(level + state.tilt * octave, state);
         // Older columns recede a little toward the empty well, so "now" reads first; the history stays legible.
         float recede = 1.0 - 0.14 * saturate(age / max(state.span, 1.0));
         float mask = saturate(0.5 - roundedBox(in.local, in.shape.xy, 7.0));

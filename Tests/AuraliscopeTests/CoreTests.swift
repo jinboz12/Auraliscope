@@ -1104,7 +1104,8 @@ final class CoreTests {
         checkEqual(snapshot.spectrogram.count, 512)
         checkTrue(snapshot.spectrogram[detailedBand] > -9)
         checkTrue(snapshot.spectrogram[detailedBand] > snapshot.spectrogram[0] + 15)
-        // The display history keeps dBFS as analysed: no 8-bit step, interpolated as the waterfall draws it.
+        // The display history keeps dBFS as analysed: no 8-bit step, and each cell is read as the waterfall draws
+        // it, flat over its box with no interpolation between analysis values.
         let history = SpectrogramHistory()
         let rows = SpectrogramHistory.rows
         checkTrue(history.level(age: 0, row: 0) == nil)
@@ -1116,9 +1117,12 @@ final class CoreTests {
         checkEqual(history.head, 3)
         checkEqual(history.count, SpectrogramHistory.capacity)
         checkEqual(try unwrap(history.level(age: 0, row: 10)), -20, accuracy: 0.0001)
-        checkEqual(try unwrap(history.level(age: 0, row: 10.5)), -60, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0, row: 10.49)), -20, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0, row: 10.51)), -100, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0, row: 9.6)), -20, accuracy: 0.0001)
         history.append([Float](repeating: -40, count: rows))
-        checkEqual(try unwrap(history.level(age: 0.5, row: 0)), -70, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0.49, row: 0)), -40, accuracy: 0.0001)
+        checkEqual(try unwrap(history.level(age: 0.51, row: 0)), -100, accuracy: 0.0001)
         checkEqual(try unwrap(history.level(age: 1, row: 10)), -20, accuracy: 0.0001)
         history.append(snapshot.spectrogram)
         checkTrue(try unwrap(history.level(age: 0, row: Double(detailedBand))) > -9)
@@ -1156,28 +1160,46 @@ final class CoreTests {
         let rows = MeterSnapshot.spectrogramBandCount
         func row(_ hz: Double, upper: Double = 20_000) -> Int { Int(log(hz / 20) / log(upper / 20) * Double(rows)) }
         let analysis = try unwrap(SpectrogramAnalyzer(sampleRate: 48_000))
-        checkEqual(analysis.resolutions.map(\.length), [8192, 4096, 2048, 1024, 512])
-        // Short windows repeat across the 1/30 s column at 50 % overlap, so no transient falls between them.
-        checkEqual(analysis.resolutions.map(\.frames), [1, 1, 2, 4, 7])
+        // The span's Hann transform (the spectrum's own) for the bass, then Blackman–Harris from the span down.
+        checkEqual(analysis.resolutions.map(\.length), [8192, 8192, 4096, 2048, 1024, 512])
+        checkTrue(analysis.resolutions.map(\.window) == [.hann] + Array(repeating: SpectralWindow.blackmanHarris, count: 5))
+        // Short windows repeat across the 1/30 s column until every instant weighs within 1 dB, between columns too.
+        checkEqual(analysis.resolutions.map(\.frames), [1, 1, 2, 3, 6, 12])
         checkEqual(analysis.length(ofRow: row(100)), 8192)
+        checkTrue(analysis.window(ofRow: row(100)) == .hann)
+        checkTrue(analysis.window(ofRow: row(700)) == .hann)
+        checkTrue(analysis.window(ofRow: row(1_000)) == .blackmanHarris)
+        checkEqual(analysis.length(ofRow: row(1_000)), 8192)
+        checkEqual(analysis.length(ofRow: row(4_500)), 2048)
         checkEqual(analysis.length(ofRow: row(15_000)), 512)
-        // Every row keeps at least 64 × its bin width, so its main lobe stays within about ±½ semitone.
+        // Every row keeps its window's main-lobe half-width within 1/32 of its frequency (about ±½ semitone), except
+        // the bass, which no window of the span resolves that finely.
         for index in 0..<rows {
             let centre = 20 * pow(1_000, (Double(index) + 0.5) / Double(rows))
-            let length = analysis.length(ofRow: index)
-            checkTrue(length == 8192 || centre / (48_000 / Double(length)) >= SpectrogramAnalyzer.resolvingPower * 0.999)
+            let window = analysis.window(ofRow: index), length = analysis.length(ofRow: index)
+            let lobe = window.mainLobe * 48_000 / Double(length)
+            checkTrue(length == 8192 && centre < 375 || centre / lobe >= SpectrogramAnalyzer.resolvingPower * 0.999)
         }
         // Rates change the zones, not the rule: 96 kHz needs twice the window for the same resolution.
         let fast = try unwrap(SpectrogramAnalyzer(sampleRate: 96_000))
-        checkEqual(fast.length(ofRow: row(1_000)), 8192)
-        checkEqual(fast.length(ofRow: row(1_000)), analysis.length(ofRow: row(500)))
+        checkEqual(fast.length(ofRow: row(5_000)), 4096)
+        checkEqual(fast.length(ofRow: row(5_000)), analysis.length(ofRow: row(5_000)) * 2)
+
+        // The history holds the same ~170 ms at every rate, so the waterfall resolves the same Hz at 192 kHz as at 48.
+        checkEqual([44_100.0, 48_000, 88_200, 96_000, 176_400, 192_000].map { SpectrumAnalyzer.historyLength(sampleRate: $0) },
+                   [8192, 8192, 16_384, 16_384, 32_768, 32_768])
+        let high = try unwrap(SpectrogramAnalyzer(sampleRate: 192_000, span: 32_768))
+        for hz in [100.0, 700, 1_000, 3_000, 9_000] {
+            checkEqual(Double(high.length(ofRow: row(hz))) / 192_000, Double(analysis.length(ofRow: row(hz))) / 48_000)
+        }
 
         // A sine of amplitude ½ in L and R reads −6.02 dBFS in its row, in every zone and inside every blend.
         for (rate, hz) in [(48_000.0, 50.0), (48_000, 440), (48_000, 800), (48_000, 1_100), (48_000, 1_700), (48_000, 2_600),
                            (48_000, 3_500), (48_000, 4_500), (48_000, 7_000), (48_000, 12_345), (48_000, 18_000),
-                           (44_100, 997), (44_100, 9_000), (96_000, 6_000), (96_000, 15_000)] {
+                           (44_100, 997), (44_100, 9_000), (96_000, 440), (96_000, 6_000), (96_000, 15_000), (192_000, 900),
+                           (192_000, 5_000)] {
             let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
-            let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
+            let frames = (0..<analyzer.historyLength).map { index -> StereoFrame in
                 let sample = Float(sin(2 * Double.pi * hz * Double(index) / rate)) * 0.5
                 return StereoFrame(left: sample, right: sample)
             }
@@ -1187,12 +1209,13 @@ final class CoreTests {
             let centre = row(hz, upper: upper)
             let peak = (centre - 2...min(rows - 1, centre + 2)).map { column[$0] }.max()!
             checkEqual(peak, -6.02, accuracy: 0.05)
-            // Where the resolving rule holds (above the bass, which even 8192 points cannot resolve that finely),
-            // five semitones away the row is dark: no smear from the window or a blend.
-            guard hz / (rate / Double(SpectrumAnalyzer.fftSize)) >= SpectrogramAnalyzer.resolvingPower else { continue }
-            let away = row(hz * pow(2, 5.0 / 12), upper: upper)
-            if away < rows { checkTrue(column[away] < -60) }
-            checkTrue(column[row(hz * pow(2, -5.0 / 12), upper: upper)] < -60)
+            // Where the resolving rule holds (above the bass, which even 8192 points cannot resolve that finely), the
+            // whole main lobe lies within ±½ semitone: a semitone and a half away the row is more than 85 dB down,
+            // below every colour range (Hann's sidelobes left it only ~45 dB down), with no smear from a blend.
+            guard hz >= 4 * SpectrogramAnalyzer.resolvingPower * rate / Double(analyzer.historyLength) * 1.5 else { continue }
+            let above = row(hz * pow(2, 1.5 / 12), upper: upper)
+            if above < rows { checkTrue(column[above] < -6 - 85) }
+            checkTrue(column[row(hz * pow(2, -1.5 / 12), upper: upper)] < -6 - 85)
         }
 
         // Time: a 4 ms burst at 8 kHz in the middle of the analysed audio lights the treble rows; the same burst
@@ -1327,6 +1350,29 @@ final class CoreTests {
         let half = SpectrumAnalyzer.hannPeak(-30, 0, 0)
         checkEqual(half.offset, 0.5, accuracy: 0.0001)
         checkEqual(half.level, 20 * log10(Float.pi * 0.5 * 0.75), accuracy: 0.0001)
+        // The same estimator derived from a window's kernel: for Hann it is Grandke's, and for the spectrogram's
+        // Blackman–Harris window it recovers a tone anywhere between two bins of a real 1024-point transform.
+        checkEqual(PeakEstimator.hann.peak(-30, 0, 0).offset, 0.5, accuracy: 0.0005)
+        checkEqual(PeakEstimator.blackmanHarris.gapLimit, 3.35, accuracy: 0.01)
+        let length = 1024
+        let window = SpectralWindow.blackmanHarris.samples(length).map(Double.init)
+        let gain = window.reduce(0, +) / 2
+        for step in -10...10 {
+            let position = 100 + Double(step) / 20
+            let samples = (0..<length).map { window[$0] * 0.5 * sin(2 * Double.pi * position * Double($0) / Double(length) + 0.7) }
+            func decibels(_ bin: Int) -> Float {
+                var re = 0.0, im = 0.0
+                for (n, x) in samples.enumerated() {
+                    re += x * cos(2 * Double.pi * Double(bin * n) / Double(length))
+                    im -= x * sin(2 * Double.pi * Double(bin * n) / Double(length))
+                }
+                return Float(20 * log10((re * re + im * im).squareRoot() / gain))
+            }
+            let k = Int(position.rounded())
+            let peak = PeakEstimator.blackmanHarris.peak(decibels(k - 1), decibels(k), decibels(k + 1))
+            checkEqual(Double(k) + Double(peak.offset), position, accuracy: 0.003)
+            checkEqual(peak.level, -6.0206, accuracy: 0.01)
+        }
     }
 
     func testPitchAndDominantPeak() throws {

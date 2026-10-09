@@ -311,7 +311,7 @@ private struct SpectrogramInspector: View {
     private struct Reading {
         let frequency: Double
         let level: Float?
-        /// Seconds before the newest column, over the waterfall; nil over the live spectrum.
+        /// How long ago the cell's audio was, over the waterfall; nil over the live spectrum.
         let secondsAgo: Double?
         /// The long-term average of the band, over the live spectrum while it is shown.
         var average: Float? = nil
@@ -321,10 +321,17 @@ private struct SpectrogramInspector: View {
         guard point.y >= layout.plot.minY, point.y <= layout.plot.maxY else { return nil }
         let frequency = layout.frequency(y: point.y, sampleRate: sampleRate)
         if layout.plot.contains(point) {
+            // The cell under the pointer, as analysed: its row's centre frequency, its level, and the instant its
+            // column is centred on, which is half the analysis span (about 85 ms) before the column was made.
             let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene
-            let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: layout.row(y: point.y, rows: SpectrogramHistory.rows))
-            return Reading(frequency: frequency, level: cell?.level,
-                           secondsAgo: cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds)
+            let rows = SpectrogramHistory.rows
+            let row = max(0, min(rows - 1, Int(layout.row(y: point.y, rows: rows).rounded())))
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
+            let delay = Double(SpectrumAnalyzer.historyLength(sampleRate: sampleRate)) / 2 / sampleRate
+            let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: Double(row))
+            return Reading(frequency: centre, level: cell?.level,
+                           secondsAgo: (cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds) + delay)
         }
         if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
             let scene = SceneStore.existing(.spectrum) as? SpectrumScene

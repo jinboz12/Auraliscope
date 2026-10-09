@@ -341,6 +341,10 @@ enum SpectrogramTone {
 /// from "now" to the right: level in dBFS grows rightward from the −96 dB floor, so a band's colour in the
 /// waterfall and its length in the spectrum read along the same row.
 struct SpectrogramLayout {
+    /// Width of the ramp between two neighbouring waterfall cells larger than a pixel, as a fraction of a cell
+    /// (`waterfallFragment`).
+    static let cellEdge = 0.3
+
     /// DSP publishes one analysis column per tick (see DSPWorker).
     static let analysisRate = 30.0
     /// The waterfall shows the most recent 3 to 8 s of the stored history, whole seconds at about 100 pt per

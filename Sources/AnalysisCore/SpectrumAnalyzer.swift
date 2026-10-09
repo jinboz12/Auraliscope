@@ -259,12 +259,16 @@ package final class SpectrumAnalyzer {
     // giving up any resolution; that is cheaper than dropping to 4096 points and keeps the 5.9 Hz bins.
     package static let fftSize = 8192
     package let sampleRate: Double
+    /// Samples each role's ring keeps: `fftSize` at 44.1 and 48 kHz, doubled with each doubling of the rate, so the
+    /// waterfall analyses the same ~170 ms (and resolves the same Hz) at every rate. The spectrum transforms the
+    /// newest `fftSize` of it.
+    package let historyLength: Int
     private let setup: OpaquePointer
     private var window = [Float](repeating: 0, count: fftSize)
     /// `window` halved: the conjugate-symmetric split's ¼ rides on the window (a power of two, so exact).
     private var fftWindow = [Float](repeating: 0, count: fftSize)
-    /// Newest `fftSize` samples of each recorded role: one ring per role, all sharing `cursor`.
-    private var history = [Float](repeating: 0, count: Role.count * fftSize)
+    /// Newest `historyLength` samples of each recorded role: one ring per role, all sharing `cursor`.
+    private var history: [Float]
     /// L, R and every other routed role: what a Spatial spectrum sums.
     private let recordedRoles: [Int]
     /// The other roles are recorded only while Spatial analysis is wanted (it costs a strided copy per role).
@@ -275,8 +279,8 @@ package final class SpectrumAnalyzer {
     private var spatialHistoryCount = 0
     private var inputReal = [Float](repeating: 0, count: fftSize)
     private var inputImaginary = [Float](repeating: 0, count: fftSize)
-    /// Newest frames of each role's ring that are all digital silence (`fftSize`: the whole ring).
-    private var silentFrames = [Int](repeating: fftSize, count: Role.count)
+    /// Newest frames of each role's ring that are all digital silence (`historyLength`: the whole ring).
+    private var silentFrames: [Int]
     private var outputReal = [Float](repeating: 0, count: fftSize)
     private var outputImaginary = [Float](repeating: 0, count: fftSize)
     private var leftPower = [Float](repeating: 0, count: fftSize / 2)
@@ -285,9 +289,12 @@ package final class SpectrumAnalyzer {
     /// For L and R alone that is their mean, exactly as before; stereo content reads the same in both modes.
     private var power = [Float](repeating: 0, count: fftSize / 2)
     private var bands: [BandMap] = []
-    /// The waterfall's own multi-resolution analysis of the same history rings.
-    private let spectrogramAnalyzer: SpectrogramAnalyzer
-    /// Roles of the newest transform, which the waterfall column follows (L and R, or every sounding Spatial role).
+    /// The waterfall's own multi-resolution analysis of the same history rings; tests and comparisons may substitute
+    /// one of another window or resolving power.
+    package var spectrogramAnalyzer: SpectrogramAnalyzer
+    /// Roles the newest transform was asked for, which the waterfall column follows (L and R, or every Spatial role).
+    private var requestedRoles = [Role.left, Role.right]
+    /// Roles the newest transform analysed: L and R, and the requested roles that were sounding.
     private var analysedRoles = [Role.left, Role.right]
     /// dB of the low bins that interpolated bands read (one vectorised log per tick instead of three per band).
     private var lowDecibels: [Float] = []
@@ -316,11 +323,14 @@ package final class SpectrumAnalyzer {
     /// `recording` marks the routed roles whose history is kept for Spatial analysis (L and R always are).
     package init?(sampleRate: Double, recording roles: [Bool] = []) {
         guard sampleRate.isFinite, sampleRate > 100,
-              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate),
+              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: Self.historyLength(sampleRate: sampleRate)),
               let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.fftSize), .FORWARD) else { return nil }
         self.setup = setup
         self.spectrogramAnalyzer = spectrogramAnalyzer
         self.sampleRate = sampleRate
+        historyLength = Self.historyLength(sampleRate: sampleRate)
+        history = [Float](repeating: 0, count: Role.count * historyLength)
+        silentFrames = [Int](repeating: historyLength, count: Role.count)
         recordedRoles = [Role.left, Role.right] + (0..<min(roles.count, Role.count)).filter { $0 > Role.right && roles[$0] }
         vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_DENORM))
         var half: Float = 0.5
@@ -340,6 +350,13 @@ package final class SpectrumAnalyzer {
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
         let lowBins = bands.filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
         lowDecibels = [Float](repeating: -120, count: min(Self.fftSize / 2, lowBins))
+    }
+
+    /// `historyLength` at `sampleRate`: `fftSize` up to 48 kHz, then doubled per doubling of the rate (up to 8×).
+    package static func historyLength(sampleRate: Double) -> Int {
+        var length = fftSize
+        while Double(length) * 48_000 / Double(fftSize) < sampleRate * 0.99 && length < 8 * fftSize { length *= 2 }
+        return length
     }
 
     /// Roles a Spatial spectrum sums: L, R and every other routed role.
@@ -413,20 +430,21 @@ package final class SpectrumAnalyzer {
         sumLeft += Double(leftSquared)
         sumRight += Double(rightSquared)
         sumProduct += Double(product)
-        // Keep the newest FFT window: at most two contiguous copies per role into its ring.
+        // Keep the newest `historyLength` samples: at most two contiguous copies per role into its ring.
+        let length = historyLength
         var remaining = frameCount
         var skip = 0
-        if remaining > Self.fftSize {
-            skip = remaining - Self.fftSize
-            remaining = Self.fftSize
+        if remaining > length {
+            skip = remaining - length
+            remaining = length
         }
         history.withUnsafeMutableBufferPointer { rings in
             while remaining > 0 {
-                let run = min(remaining, Self.fftSize - cursor)
+                let run = min(remaining, length - cursor)
                 for role in roles {
-                    audio_gather_strided(channel(role) + skip * stride, UInt32(stride), rings.baseAddress! + role * Self.fftSize + cursor, UInt32(run))
+                    audio_gather_strided(channel(role) + skip * stride, UInt32(stride), rings.baseAddress! + role * length + cursor, UInt32(run))
                 }
-                cursor = (cursor + run) % Self.fftSize
+                cursor = (cursor + run) % length
                 skip += run
                 remaining -= run
             }
@@ -439,7 +457,7 @@ package final class SpectrumAnalyzer {
             case roles[1]: peak = rightPeak
             default: vDSP_maxmgv(channel(role), stride, &peak, count)
             }
-            silentFrames[role] = peak > 0 ? 0 : min(Self.fftSize, silentFrames[role] + frameCount)
+            silentFrames[role] = peak > 0 ? 0 : min(length, silentFrames[role] + frameCount)
         }
         levelFrames += frameCount
         historyCount = min(Self.fftSize, historyCount + frameCount)
@@ -452,7 +470,7 @@ package final class SpectrumAnalyzer {
     /// Until it has refilled (`ready`), the spectrum reads as it does when a stream starts.
     package func interrupt() {
         history.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
-        for role in silentFrames.indices { silentFrames[role] = Self.fftSize }
+        for role in silentFrames.indices { silentFrames[role] = historyLength }
         cursor = 0
         historyCount = 0
         spatialHistoryCount = 0
@@ -563,23 +581,29 @@ package final class SpectrumAnalyzer {
         }
     }
 
-    /// A waterfall column (`SpectrogramAnalyzer`) of the roles the newest transform analysed, from the same window
-    /// of history. Silent rings add nothing and are skipped, as in `transform`.
+    /// A waterfall column (`SpectrogramAnalyzer`) of the roles the newest transform was asked for, over the whole
+    /// history. Rings silent throughout add nothing and are skipped, as in `transform`.
     package func spectrogram(into rows: inout [Float]) {
-        let roles = analysedRoles.allSatisfy { silentFrames[$0] >= Self.fftSize } ? [] : analysedRoles
-        // The newest transform is the longest zone's own: the same Hann window over the same ring and roles.
+        let length = historyLength
+        let roles = requestedRoles.count > 2
+            ? Array(requestedRoles.prefix(2)) + requestedRoles.dropFirst(2).filter { silentFrames[$0] < length }
+            : requestedRoles
+        let sounding = roles.allSatisfy { silentFrames[$0] >= length } ? [] : roles
+        // Where the history is one FFT window, the newest transform is the bass zone's own: the same Hann window
+        // over the same ring, for the same roles unless one fell silent within the window.
+        let reuse = length == Self.fftSize && sounding == analysedRoles
         history.withUnsafeBufferPointer { rings in
             power.withUnsafeBufferPointer { longest in
                 rows.withUnsafeMutableBufferPointer { out in
-                    spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: roles,
-                                               longest: longest.baseAddress!, into: out.baseAddress!)
+                    spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: sounding,
+                                               longest: reuse ? longest.baseAddress! : nil, into: out.baseAddress!)
                 }
             }
         }
     }
 
     /// The waterfall's analysis (resolutions in use, for diagnostics).
-    package var spectrogramResolutions: [(length: Int, frames: Int)] { spectrogramAnalyzer.resolutions }
+    package var spectrogramResolutions: [(length: Int, frames: Int, window: SpectralWindow)] { spectrogramAnalyzer.resolutions }
 
     package func snapshot() -> MeterSnapshot {
         var result = MeterSnapshot()
@@ -692,33 +716,9 @@ package final class SpectrumAnalyzer {
     /// α = (1 + δ)/(2 − δ), so δ = (2α − 1)/(α + 1) exactly (Grandke's estimator), and the lobe's shape at δ,
     /// sinc(δ)/(1 − δ²), gives the level lost to scalloping. For one tone it is exact (to the window's leakage from
     /// elsewhere): a fitted log parabola was off by up to 2.9 cents and 0.3 dB at 55 Hz. Neighbours louder than
-    /// `b` (not a peak) give no offset.
+    /// `b` (not a peak) give no offset. (`PeakEstimator` derives the same from any cosine-sum window's kernel.)
     package static func hannPeak(_ a: Float, _ b: Float, _ c: Float) -> (offset: Float, level: Float) {
-        // Both results depend only on the louder neighbour's distance below `b`, and only within 6.02 dB (further
-        // down, α < ½ and the tone sits on the bin): read them from `hannTable`, interpolated, with no
-        // transcendental function per call.
-        let right = c >= a
-        let gap = max(0, b - (right ? c : a))
-        guard gap < hannGapLimit else { return (0, b) }
-        let position = (1 - gap / hannGapLimit) * Float(hannSteps)
-        let index = min(hannSteps - 1, Int(position))
-        let t = position - Float(index)
-        let lower = hannTable[index], upper = hannTable[index + 1]
-        let delta = lower.offset + (upper.offset - lower.offset) * t
-        let gain = lower.gain + (upper.gain - lower.gain) * t
-        return (right ? delta : -delta, b + gain)
-    }
-
-    /// The gap at which the Hann estimator's offset reaches zero: 20·log10(½).
-    private static let hannGapLimit: Float = 20 * log10(2)
-    private static let hannSteps = 1024
-    /// Offset (bins) and level correction (dB) for gaps from `hannGapLimit` (entry 0) to 0 (the last), exact.
-    private static let hannTable: [(offset: Float, gain: Float)] = (0...hannSteps).map { step in
-        let gap = (1 - Double(step) / Double(hannSteps)) * Double(hannGapLimit)
-        let ratio = pow(10, -gap / 20)
-        let delta = max(0, min(0.5, (2 * ratio - 1) / (ratio + 1)))
-        let lobe = delta < 1e-9 ? 1 : sin(Double.pi * delta) / (Double.pi * delta * (1 - delta * delta))
-        return (Float(delta), Float(-20 * log10(lobe)))
+        PeakEstimator.hann.peak(a, b, c)
     }
 
     /// The loudest level within `position ± halfWidth` (fractional bins) of a spectrum in dB, read from the parabola
@@ -727,7 +727,8 @@ package final class SpectrumAnalyzer {
     /// maximum beside `position` when there is one, so it is the peak's own model (the one `dominantPeak` uses);
     /// sampled at the band's centre around the nearest bin, a tone between rows read up to ~1.4 dB low. Elsewhere
     /// (a flank or the floor) it is centred on the nearest bin. Never above the vertex or below −120 dB.
-    package static func interpolatedLevel(_ d: UnsafeBufferPointer<Float>, at position: Float, halfWidth: Float = 0) -> Float {
+    package static func interpolatedLevel(_ d: UnsafeBufferPointer<Float>, at position: Float, halfWidth: Float = 0,
+                                          estimator: PeakEstimator = .hann) -> Float {
         guard d.count >= 3 else { return d.first ?? -120 }
         var centre = min(d.count - 2, max(1, Int(position.rounded())))
         if centre - 1 >= 1, d[centre - 1] > d[centre], d[centre - 1] >= d[centre - 2] {
@@ -742,7 +743,7 @@ package final class SpectrumAnalyzer {
         if b >= a, b >= c, b > -120 {
             // A peak: where the tone itself lies within the band, the band reads the tone's level (`hannPeak`);
             // otherwise the band's edge nearer to it, on the flank.
-            let peak = hannPeak(a, b, c)
+            let peak = estimator.peak(a, b, c)
             if abs(peak.offset - x) <= halfWidth { return max(-120, peak.level) }
             ceiling = peak.level
             x = peak.offset < x ? x - halfWidth : x + halfWidth
@@ -782,6 +783,7 @@ package final class SpectrumAnalyzer {
         let roles = requested.count > 2
             ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < Self.fftSize }
             : requested
+        requestedRoles = requested
         analysedRoles = roles
         let bins = vDSP_Length(Self.fftSize / 2)
         if roles.allSatisfy({ silentFrames[$0] >= Self.fftSize }) {
@@ -855,19 +857,21 @@ package final class SpectrumAnalyzer {
     /// Fills `leftPower` with |A|² and `rightPower` with |B|² (zero without a second role).
     private func transformPair(_ a: Int, _ b: Int?) {
         let n = Self.fftSize
-        let tail = n - cursor
-        // Oldest sample first: the ring from the cursor to the end, then from the start, windowed on the way.
+        let length = historyLength
+        // The newest `n` samples, oldest first: from `start` to the ring's end, then from its start.
+        let start = (cursor - n + length) % length
+        let tail = min(n, length - start)
         inputReal.withUnsafeMutableBufferPointer { real in
             inputImaginary.withUnsafeMutableBufferPointer { imaginary in
                 history.withUnsafeBufferPointer { rings in
                     fftWindow.withUnsafeBufferPointer { w in
                         func windowed(_ ring: UnsafePointer<Float>, into out: UnsafeMutablePointer<Float>) {
-                            vDSP_vmul(ring + cursor, 1, w.baseAddress!, 1, out, 1, vDSP_Length(tail))
-                            if cursor > 0 { vDSP_vmul(ring, 1, w.baseAddress! + tail, 1, out + tail, 1, vDSP_Length(cursor)) }
+                            vDSP_vmul(ring + start, 1, w.baseAddress!, 1, out, 1, vDSP_Length(tail))
+                            if tail < n { vDSP_vmul(ring, 1, w.baseAddress! + tail, 1, out + tail, 1, vDSP_Length(n - tail)) }
                         }
-                        windowed(rings.baseAddress! + a * n, into: real.baseAddress!)
+                        windowed(rings.baseAddress! + a * length, into: real.baseAddress!)
                         if let b {
-                            windowed(rings.baseAddress! + b * n, into: imaginary.baseAddress!)
+                            windowed(rings.baseAddress! + b * length, into: imaginary.baseAddress!)
                         } else {
                             vDSP_vclr(imaginary.baseAddress!, 1, vDSP_Length(n))
                         }
