@@ -3,12 +3,13 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// The spectrogram as a still image, for the Spectrum well's context menu (Copy, Save): the columns on screen, from
-/// the float history at full resolution (one pixel row per analysis row, two pixel columns per analysis column), in
-/// the current palette, color range and tilt, with a caption and frequency and time axes. Newest at the right
-/// whatever the panel's orientation, as a spectrogram is conventionally read on paper.
+/// the float history at full resolution (one pixel row per analysis row, each analysis column at least two pixels
+/// wide and the plot at least `minimumPlotWidth`), in the current colour map, colour range and tilt, with a caption,
+/// a colour scale and frequency and time axes. Newest at the right whatever the panel's orientation, as a
+/// spectrogram is conventionally read on paper.
 enum SpectrogramImage {
-    static let columnWidth = 2
-    static let left = 46, bottom = 22, top = 26, right = 12
+    static let minimumPlotWidth = 900
+    static let left = 46, bottom = 22, top = 44, right = 12
 
     /// `columns` analysis columns ending at the newest, or nil when nothing has been recorded.
     static func make(history: SpectrogramHistory, columns requested: Int, sampleRate: Double, options: DisplayOptions,
@@ -16,6 +17,7 @@ enum SpectrogramImage {
         let columns = min(requested, history.count)
         guard columns > 1 else { return nil }
         let rows = SpectrogramHistory.rows
+        let columnWidth = max(2, (minimumPlotWidth + columns - 1) / columns)
         let plotWidth = columns * columnWidth
         let width = left + plotWidth + right, height = top + rows + bottom
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -86,7 +88,21 @@ enum SpectrogramImage {
             text(second == 0 ? L("now") : "−\(second) s", at: CGPoint(x: x, y: CGFloat(bottom) / 2 - 2), color: faint,
                  align: second == 0 ? .right : .center)
         }
-        text(caption, at: CGPoint(x: CGFloat(left), y: CGFloat(height - top / 2)), color: strong, align: .left)
+        text(caption, at: CGPoint(x: CGFloat(left), y: CGFloat(height - 13)), color: strong, align: .left)
+        // The colour scale under the caption: the range's floor and ceiling either side of the map, as in the header.
+        let range = options.spectrogramRange
+        let scaleY = CGFloat(height - 32), barWidth: CGFloat = 160
+        text(MeterScale.signedInteger(range.floor), at: CGPoint(x: CGFloat(left), y: scaleY), color: faint, align: .left)
+        let barX = CGFloat(left) + 30
+        for x in 0..<Int(barWidth) {
+            let level = range.floor + (range.ceiling - range.floor) * Float(x) / Float(barWidth - 1)
+            let color = ramp[Int(SpectrogramTone.position(level, range: range) * Float(steps))]
+            context.setFillColor(color.cgColor())
+            context.fill(CGRect(x: barX + CGFloat(x), y: scaleY - 3, width: 1, height: 6))
+        }
+        var scale = MeterScale.signedInteger(range.ceiling) + " dBFS"
+        if options.tilt != .flat { scale += " · +" + options.tilt.title }
+        text(scale, at: CGPoint(x: barX + barWidth + 6, y: scaleY), color: faint, align: .left)
         return context.makeImage()
     }
 
