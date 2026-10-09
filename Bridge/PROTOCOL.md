@@ -125,6 +125,11 @@ Types 3 (FORMAT) and 4 (AUDIO) belonged to version 2, which streamed audio. Vers
 | Tag | Kind | Field |
 |---|---|---|
 | 1 | u32 | subscription number, non-zero, new for every SUBSCRIBE (also when re-subscribing to the same instance) |
+| 2 | u32 | waterfall analysis wanted: 0 Classic (default, also when absent), 1 Enhanced (build 72 and later; older plugins ignore it) |
+
+A SUBSCRIBE repeating the current subscription number only changes its options: the plugin keeps sending the same
+subscription's columns where it was, and the columns analysed from then on follow the new option. UNSUBSCRIBE returns
+the plugin to Classic.
 
 ### COMMAND and ACK fields
 
@@ -181,6 +186,7 @@ yet measurable"; spectra in dBFS with −120 for silence.
 | 62 | f32[n × 512] | n spectrogram columns, oldest first, dBFS (30 per second of audio) |
 | 63 | u64 | newest spectrogram column the analysis has produced |
 | 64 | u64 | spectrogram columns skipped just before the first carried: they left the plugin's queue before they could be sent |
+| 65 | u32 | analysis of the newest columns: 0 Classic, 1 Enhanced (build 72 and later; absent: Classic) |
 | 70–74 | | the same for the waveform: first serial, column rate (f64, 240 per second of audio), columns (f32[n × ch × 2], (min, max) per channel), newest, skipped |
 | 80 | u32 | Spectrum FFT size (8192 at 44.1 and 48 kHz, 16384 at 88.2 and 96, 32768 at 176.4 and 192; since build 69, 8192 before) |
 | 81 | u32 | spectrum bands (64) |

@@ -149,6 +149,28 @@ filters, FFT and true-peak interpolation restart at a break. Each result carries
 known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
 continuous measurement.
 
+## Build 72 Enhanced and 3D spectrogram, panel settings
+
+- `Sources/AnalysisCore/ReassignedSpectrogram.swift`: the Enhanced analysis, on the same 512 rows and 30 Hz columns as
+  `SpectrogramAnalyzer`. Five Hann zones (the span down to span/16), each serving the rows where its main lobe stays
+  within 1/16 of the frequency. Per frame, one complex DFT carries x·h and x·t·h of a role, another carries x·dh/dt of
+  two roles; each bin's energy moves to t + Re(X_th X*/|X|²) and ω − Im(X_dh X*/|X|²), and is kept when it lands in the
+  column's 1/30 s and the zone's slice of frequency, spread over one bin's width. Frames lie less than half a window
+  apart (the squared Hann windows then sum to a constant) and reach half a window beyond the column, so a column is
+  computed from the history alone, with Classic's delay. The longest zone has room for one frame only and moves energy
+  in frequency only. Calibration: a stationary sine in dBFS; broadband power per row.
+- Mode plumbing: `SpectrumAnalyzer.spectrogramMode` picks the analyser; `StreamAnalyzer` exposes it, the plugin core
+  sets it from SUBSCRIBE field 2 (`abr_analyzer_set_spectrogram_mode`), RESULT tag 65 and `SnapshotSlots.spectrogramMode`
+  carry what the columns are. In LABS, `MeterModel.canvasFrame` hands the choice to the local DSP worker and to the
+  receiver (`abr_server_set_spectrogram`, which retunes the current subscription instead of renewing it).
+- 3D: `SpectrogramScene` draws a floor grid and returns a `SurfaceState`; `surfaceVertex` builds a height field from the
+  same history texture (vertex-ID driven, 128 depth strips × the visible columns, strips farthest first so nearer ridges
+  cover farther ones), `surfaceFragment` colours it with the waterfall ramp, shading and distance haze, and leaves silence
+  transparent. `SurfaceProjection` holds the projection shared by Swift (grid, labels) and Metal.
+- Live spectrum: `SpectrumSmoothing` (Gaussian in octaves, in power) on curve, holds and average; holds as one line.
+- Panel settings: `PanelSettingsButton` in each header opens a popover of `@AppStorage` controls; `MeterModel` follows
+  the stored values as before. `SettingsDraft` keeps only app-wide settings.
+
 ## Build 71 spectrogram and spectrum display
 
 The analysis is unchanged from build 69/70 except for one addition: the fine spectrum bands.

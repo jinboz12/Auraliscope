@@ -1,5 +1,33 @@
 # Auraliscope LABS 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
+## 1.3dev build 72: Enhanced and 3D spectrogram, a calmer spectrum, settings on each panel
+
+Install **Auraliscope LABS 1.3dev build 72.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
+This is a local tester build, not a notarized public release. App: Apple silicon, macOS 13+; plugins: arm64/x86_64.
+
+- **Settings on each panel.** Every panel has a small settings button (☰ sliders) at the right of its header; its
+  popover holds that panel's choices, which apply at once and are kept. Settings no longer has a Panels page. Hover a
+  choice's name for its explanation.
+- **Enhanced spectrogram** (spectrogram settings ▸ Analysis: Classic | Enhanced). Enhanced is a *reassigned*
+  spectrogram: two extra transforms of the same samples (window × time and the window's derivative) tell each bin where
+  its energy really belongs, and it is moved there. Tones become thin lines, onsets land in their own 1/30 s column,
+  and noise breaks into fine grain, as in Visu's Enhanced mode. A sine still reads its level in dBFS; broadband sound
+  reads its power per row (so pink noise is level). Classic is unchanged and remains the default. The plugin does the
+  analysis: the app asks it for Enhanced (a new SUBSCRIBE option), so **use the build 72 plugins**; an older plugin
+  keeps sending Classic and the popover says so. Cost: about 0.2 ms per column at 48 kHz (0.7 % of one core), only
+  for the plugin LABS is showing.
+- **3D view** (spectrogram settings ▸ View: 2D | 3D): the same history as a landscape, time across, frequency into
+  the distance (20 Hz in front), level as height, coloured with the chosen map and shaded so ridges read as shapes.
+  The front edge keeps the 2D time axis; 100 Hz, 1 kHz and 10 kHz are marked along the side. The keyboard and hover
+  readings belong to the flat view and are hidden in 3D.
+- **A calmer live spectrum.** The curve, its peak holds and its average are smoothed across frequency (Smoothing:
+  Off, 1/12, **1/6** (new default), 1/3 octave, averaged in power); peak holds are one faint line instead of
+  scattered ticks; the average is a solid line instead of dashes; the fill is one quiet tint instead of colour stripes.
+  Hovering still reads the unsmoothed bands.
+
+To compare with build 71: Analysis Classic, View 2D, Smoothing Off. Try Enhanced on a sustained tone, a chord,
+percussion, a sweep, speech and noise; try 3D at different panel sizes and spans, mirrored, Light and Dark.
+
 ## 1.3dev build 71: a clearer, more readable spectrogram and spectrum
 
 Install **Auraliscope LABS 1.3dev build 71.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
@@ -37,7 +65,7 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 71 (build numbers continue after Auraliscope 1.2.2, build 62: 63–70 were earlier LABS test packages; builds 1 to 3 were
+Build 72 (build numbers continue after Auraliscope 1.2.2, build 62: 63–70 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See

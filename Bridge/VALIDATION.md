@@ -1,6 +1,41 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
 
+## Build 72 — 2026-10-08
+
+### Changes
+- Enhanced (reassigned) spectrogram, chosen per display and computed by the plugin (SUBSCRIBE field 2, RESULT tag 65).
+- 3D spectrogram view (Metal height field over the same history).
+- Live spectrum: 1/6-octave smoothing by default, holds as one faint line, solid average, single-tint fill.
+- Every panel's display settings in a popover on the panel; the Settings window's Panels page is gone.
+
+### Validation
+- Core checks: 49 passed (new: reassigned spectrogram zones; a sine collapses onto its rows at −6.02 dBFS ± 0.3 dB at
+  44.1/48/96 kHz and any bin offset, with nothing above −100 dBFS a semitone and a half away where that exceeds 3 bins;
+  a click lands in its own column and 30 dB less of it two columns later; white noise joins the zones within 1 dB over
+  32 columns). Also under AddressSanitizer. Kernel checks and 379 localization keys passed.
+- Classic: `SpectralRegression` built from build 71 and build 72 sources: all 2,080,800 float measurements bitwise
+  identical.
+- Bridge analysis tests passed, including the RESULT round trip of tag 65 and a stream switched to Enhanced; transport
+  tests passed.
+- End to end with the real plugins: `e2e-probe.sh` 14/14, including two new cases that switch a running VST3 (48 kHz)
+  and AU (96 kHz) to Enhanced: the plugin switches within the same subscription, no column gaps or repeats, levels up
+  to −11.4 dBFS. `e2e-app.sh` (plugin → LABS) passed; VST3 validator 537 passed, 0 failed.
+- GPU: `CheckSpectrogramRendering` 9,519 comparisons passed (2D path unchanged). 3D and the new spectrum drawing were
+  checked by eye in offscreen renders of a test bounce and a synthetic programme, and in the window snapshot.
+
+### Cost
+Per spectrogram column, one stereo stream (micro-benchmark, Apple silicon): Classic 0.10 ms at 48 kHz, 0.15 ms at
+96 kHz; Enhanced 0.22 ms and 0.45 ms (0.7 % and 1.4 % of a core at 30 columns/s). Only the subscribed plugin runs
+Enhanced; an unsubscribed one returns to Classic. The 3D view draws 128 × (visible columns) cells on the GPU.
+
+### Limits
+- Enhanced trades level-per-row for sharpness: broadband sound reads power per row (log-width), not per bin, so noise
+  floors read differently from Classic; noise looks grainy by design. The longest zone (bass) moves energy in frequency
+  only. Fast sweeps show as short steps (one per column).
+- 3D has no hover readings or keyboard; the spectrum strip beside it keeps its own frequency axis.
+- Not tested: real DAW sessions, Intel Macs, older macOS, other displays' sizes beyond the snapshot.
+
 ## Build 71 — 2026-10-08
 
 Build 70 is the baseline. The spectrogram's analysis (FFT sizes, windows, zones, cadence, calibration) and the 64
