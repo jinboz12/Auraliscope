@@ -267,7 +267,7 @@ private struct FullScreenToolbarBackground: ViewModifier {
     // switch, and its `onDisappear` would stop capture.
     func body(content: Content) -> some View {
         let dressed = content
-            .toolbarBackground(Theme.windowTop, for: .windowToolbar)
+            .toolbarBackground(Theme.backdropTop, for: .windowToolbar)
             .toolbarBackground(state.active ? .visible : .automatic, for: .windowToolbar)
         // A visible bar would also print the window title beside the brand; the brand already names the app.
         if #available(macOS 15, *) {
@@ -484,18 +484,32 @@ struct UtilityWindowProbe: NSViewRepresentable {
     }
 }
 
-/// Slate (or pale grey) dashboard backdrop with a quiet pool of light at the upper edge, and a soft haze of the
-/// palette's own colour rising from the lower corners, so the cards float in a little atmosphere.
+/// The window's backdrop, where the palette lives now that the summary has no card of its own.
+/// On dark: near-black, with the palette's light pooling behind the summary at the top and a faint echo lower down.
+/// On light: the palette's own wash at the top, turning through a pale band into the window grey, with a haze of the
+/// palette at the left and white light rising from the bottom, so the frosted cards have colour to sit over.
 private struct WindowBackdrop: View {
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Theme.windowTop, Theme.windowBottom], startPoint: .top, endPoint: .bottom)
-            RadialGradient(colors: [Theme.bannerAccent.opacity(Theme.dark ? 0.16 : 0.22), .clear],
-                           center: .bottomLeading, startRadius: 0, endRadius: 900)
-            RadialGradient(colors: [Theme.bannerAccent.opacity(Theme.dark ? 0.10 : 0.14), .clear],
-                           center: .bottomTrailing, startRadius: 0, endRadius: 700)
-            RadialGradient(colors: [Theme.dark ? Theme.ink.opacity(0.045) : Color.white.opacity(0.7), .clear],
-                           center: .top, startRadius: 0, endRadius: 720)
+            if Theme.dark {
+                LinearGradient(colors: [Theme.windowTop, Theme.windowBottom], startPoint: .top, endPoint: .bottom)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.50), Theme.bannerAccent.opacity(0.14), .clear],
+                               center: UnitPoint(x: 0.2, y: 0), startRadius: 0, endRadius: 820)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.24), .clear],
+                               center: UnitPoint(x: 0.82, y: 0.02), startRadius: 0, endRadius: 620)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.10), .clear],
+                               center: UnitPoint(x: 0, y: 0.72), startRadius: 0, endRadius: 640)
+            } else {
+                LinearGradient(stops: [.init(color: Theme.backdropTop, location: 0),
+                                       .init(color: Theme.backdropMiddle, location: 0.30),
+                                       .init(color: Theme.windowTop, location: 0.58),
+                                       .init(color: Theme.windowBottom, location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.55), .clear],
+                               center: UnitPoint(x: 0, y: 0.58), startRadius: 0, endRadius: 620)
+                RadialGradient(colors: [Color.white.opacity(0.65), .clear],
+                               center: UnitPoint(x: 0.55, y: 1.05), startRadius: 0, endRadius: 760)
+            }
         }
         .ignoresSafeArea()
     }
@@ -624,81 +638,66 @@ private struct DashboardHero: View {
     var body: some View {
         let target = model.loudnessTarget
         let ceiling = model.truePeakCeiling
-        ZStack(alignment: .leading) {
-            // The shadow sits on this static shape, not on the live content, so readings never re-render it.
-            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                .fill(LinearGradient(colors: [Theme.bannerAccent.opacity(0.90),
-                                              Theme.bannerAccent.opacity(0.68),
-                                              Theme.windowBottom],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .shadow(color: Theme.dark ? .clear : Theme.cardShadow, radius: 9, y: 3)
-            HeroArtwork()
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-            LinearGradient(colors: Theme.dark ? [.black.opacity(0.04), .black.opacity(0.34)]
-                                              : [Color.white.opacity(0.10), Theme.ink.opacity(0.04)],
-                           startPoint: .top, endPoint: .bottom)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-            GeometryReader { geometry in
-                // The VU panel joined the row in Beta 3, so the compact arrangement starts at a wider summary.
-                let compact = geometry.size.width < 1240
-                let padding: CGFloat = compact ? 14 : 18
-                let gap = HeroLayout.gap(compact: compact)
-                let row = geometry.size.width - 2 * padding
-                let columns = HeroLayout.columns(width: row, compact: compact, loudness: CGFloat(loudnessWidth), vu: CGFloat(vuWidth))
-                let scale = HeroLayout.contentScale(height: geometry.size.height, compact: compact, loudnessWidth: columns.loudness)
-                let gauge = HeroLayout.showsGauge(height: geometry.size.height)
-                HStack(alignment: .top, spacing: 0) {
-                    // A grid over the short-term reading and the loudness column: the title row spans both, the
-                    // gauge sits over the tiles, and the short-term reading is centred beside the tiles.
-                    VStack(alignment: .leading, spacing: 6 * scale) {
-                        HStack(spacing: 10) {
-                            ViewThatFits(in: .horizontal) {
-                                HStack(spacing: 10) { heroTitle; statusChip(format: true) }
-                                HStack(spacing: 10) { heroTitle; statusChip(format: false) }
-                                heroTitle
-                            }
-                            Spacer(minLength: 8)
-                            LoudnessStandardMenus(model: model)
+        // No card: the summary is set straight on the window's backdrop, where the palette's colour lives, between
+        // the cards of the 15 s history and the VU meter, which reach its full height.
+        GeometryReader { geometry in
+            // The VU panel joined the row in Beta 3, so the compact arrangement starts at a wider summary.
+            let compact = geometry.size.width < 1240
+            let gap = HeroLayout.gap(compact: compact)
+            let row = geometry.size.width - HeroLayout.inset
+            let columns = HeroLayout.columns(width: row, compact: compact, loudness: CGFloat(loudnessWidth), vu: CGFloat(vuWidth))
+            let scale = HeroLayout.contentScale(height: geometry.size.height, compact: compact, loudnessWidth: columns.loudness)
+            let gauge = HeroLayout.showsGauge(height: geometry.size.height)
+            HStack(alignment: .top, spacing: 0) {
+                // A grid over the short-term reading and the loudness column: the title row spans both, the
+                // gauge sits over the readings, and the short-term reading is centred beside them.
+                VStack(alignment: .leading, spacing: 6 * scale) {
+                    HStack(spacing: 10) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 10) { heroTitle; statusChip(format: true) }
+                            HStack(spacing: 10) { heroTitle; statusChip(format: false) }
+                            heroTitle
                         }
-                        .frame(height: 24)
-                        if gauge {
-                            HeroGauge(readouts: readouts, target: Float(target), scale: scale)
-                                .padding(.leading, HeroLayout.leadWidth(compact: compact) + gap)
-                        }
-                        HStack(alignment: .top, spacing: 0) {
-                            HeroShortTerm(readouts: readouts, target: Float(target), compact: compact, scale: scale)
-                            .frame(width: HeroLayout.leadWidth(compact: compact), alignment: .leading)
-                            .frame(maxHeight: .infinity)
-                            .padding(.trailing, gap)
-
-                            // Dragging the summary taller stretches this column: the tile rows share the extra
-                            // height and their readings grow with it.
-                            HeroTiles(readouts: readouts, ceiling: Float(ceiling), scale: scale, resetTruePeak: model.resetTruePeak)
-                            .frame(width: columns.loudness)
-                        }
-                        .frame(maxHeight: .infinity)
+                        Spacer(minLength: 8)
+                        LoudnessStandardMenus(model: model)
                     }
-                    .frame(width: HeroLayout.leadWidth(compact: compact) + gap + columns.loudness)
+                    .frame(height: 24)
+                    if gauge {
+                        HeroGauge(readouts: readouts, target: Float(target), scale: scale)
+                            .padding(.leading, HeroLayout.leadWidth(compact: compact) + gap)
+                    }
+                    HStack(alignment: .top, spacing: 0) {
+                        HeroShortTerm(readouts: readouts, target: Float(target), compact: compact, scale: scale)
+                        .frame(width: HeroLayout.leadWidth(compact: compact), alignment: .leading)
+                        .frame(maxHeight: .infinity)
+                        .padding(.trailing, gap)
 
-                    // The dividers in the gaps either side of the history resize it against its neighbours.
-                    PanelDivider(axis: .horizontal, leading: columns.loudness,
-                                 onResize: { setLoudness($0, row: row, compact: compact) },
-                                 onReset: { loudnessWidth = 0 })
-                        .frame(width: gap)
-                    HeroHistory(readouts: readouts, target: Float(target))
-                        .frame(width: columns.history)
-                    PanelDivider(axis: .horizontal, leading: columns.history,
-                                 onResize: { setVU(history: $0, loudness: columns.loudness, row: row, compact: compact) },
-                                 onReset: { vuWidth = 0 })
-                        .frame(width: gap)
-                    VUMeterPanel(model: model, readouts: readouts)
-                        .frame(width: columns.vu)
+                        // Dragging the summary taller stretches this column: the reading rows share the extra
+                        // height and their readings grow with it.
+                        HeroTiles(readouts: readouts, ceiling: Float(ceiling), scale: scale, resetTruePeak: model.resetTruePeak)
+                        .frame(width: columns.loudness)
+                    }
+                    .frame(maxHeight: .infinity)
                 }
-                .padding(.horizontal, padding)
+                .frame(width: HeroLayout.leadWidth(compact: compact) + gap + columns.loudness)
+                .padding(.leading, HeroLayout.inset)
                 .padding(.vertical, HeroLayout.verticalPadding(height: geometry.size.height, compact: compact))
+
+                // The dividers in the gaps either side of the history resize it against its neighbours.
+                PanelDivider(axis: .horizontal, leading: columns.loudness,
+                             onResize: { setLoudness($0, row: row, compact: compact) },
+                             onReset: { loudnessWidth = 0 })
+                    .frame(width: HeroLayout.cardGap)
+                HeroHistory(model: model, readouts: readouts, target: Float(target))
+                    .frame(width: columns.history)
+                PanelDivider(axis: .horizontal, leading: columns.history,
+                             onResize: { setVU(history: $0, loudness: columns.loudness, row: row, compact: compact) },
+                             onReset: { vuWidth = 0 })
+                    .frame(width: HeroLayout.cardGap)
+                VUMeterPanel(model: model, readouts: readouts)
+                    .frame(width: columns.vu)
             }
         }
-        .overlay { RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
     }
 
     private var heroTitle: some View {
@@ -711,7 +710,7 @@ private struct DashboardHero: View {
     /// LIVE or PAUSED, with the monitoring format when there is room for it.
     private func statusChip(format: Bool) -> some View {
         HStack(spacing: 6) {
-            Circle().fill(model.running ? Theme.ink : Theme.ink.opacity(0.45))
+            Circle().fill(model.running ? Theme.sage : Theme.ink.opacity(0.45))
                 .frame(width: 6, height: 6)
             Text(model.running ? L("LIVE") : (model.frozen ? L("PAUSED") : L("STANDBY")))
                 .font(.system(size: 10, weight: .bold)).tracking(1)
@@ -785,8 +784,8 @@ private struct HeroShortTerm: View {
     }
 }
 
-/// The statistics tiles. Dragging the summary taller stretches this column: the tile rows share the extra
-/// height and their readings grow with it.
+/// The statistics. Dragging the summary taller stretches this column: the rows share the extra height and their
+/// readings grow with it.
 private struct HeroTiles: View {
     @ObservedObject var readouts: Readouts
     @ObservedObject private var l10n = Localizer.shared
@@ -799,8 +798,10 @@ private struct HeroTiles: View {
     var body: some View {
         let values = readouts.values
         let main = LoudnessReading(rawValue: reading) ?? .shortTerm
-        VStack(spacing: 7) {
-            HStack(spacing: 7) {
+        // Two rows on three columns, set like a hardware panel's parameters: the second row's readings sit under
+        // the first row's, and its third place stays open.
+        VStack(spacing: 8) {
+            HStack(spacing: 16) {
                 // The two LUFS readings the main one leaves, in their usual order.
                 ForEach(LoudnessReading.allCases.filter { $0 != main }, id: \.self) { other in
                     StatTile(title: other.tileTitle, value: MeterScale.tenths(other.value(values)), unit: "LUFS", scale: scale)
@@ -808,7 +809,7 @@ private struct HeroTiles: View {
                 StatTile(title: L("RANGE"), value: values.range < 0 ? "—" : MeterScale.tenths(values.range, floor: -1),
                          unit: "LU", template: "8.8", scale: scale)
             }
-            HStack(spacing: 7) {
+            HStack(spacing: 16) {
                 let truePeak = values.truePeakDecibels
                 // Above 0 dBTP the reading is an over: signed, in ember, flagged OVER.
                 let over = truePeak > 0.05
@@ -821,6 +822,7 @@ private struct HeroTiles: View {
                 let peak = MeterScale.decibels(values.maxPeak)
                 StatTile(title: L("PEAK"), value: MeterScale.tenths(peak, floor: -119), unit: "dBFS",
                          color: peak >= 0 ? Theme.ember : Theme.ink, template: "−8.8", scale: scale)
+                Color.clear.frame(maxWidth: .infinity)
             }
         }
     }
@@ -856,11 +858,13 @@ private struct TruePeakReset: ViewModifier {
 }
 
 private struct HeroHistory: View {
+    let model: MeterModel
     @ObservedObject var readouts: Readouts
     let target: Float
 
     var body: some View {
-        LoudnessHistory(short: readouts.values.shortHistory, momentary: readouts.values.momentaryHistory, target: target)
+        LoudnessHistory(short: readouts.values.shortHistory, momentary: readouts.values.momentaryHistory, target: target,
+                        model: model)
     }
 }
 
@@ -916,7 +920,7 @@ private struct LoudnessStandardMenus: View {
 }
 
 /// A pill on the summary showing a preset (loudness target, true-peak ceiling) that opens a menu of choices.
-/// Interactive Liquid Glass on macOS 26; a quiet capsule on the summary before it.
+/// Interactive Liquid Glass on macOS 26; a quiet capsule before it.
 struct SummaryMenu<Content: View>: View {
     let title: String
     let value: String
@@ -924,30 +928,21 @@ struct SummaryMenu<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        // macOS 26: the system glass button style draws the pill and its pointer response; before it, a quiet
-        // capsule of our own.
-        if #available(macOS 26, *) {
-            Menu { content.pickerStyle(.inline) } label: { label }
-                .menuStyle(.button)
-                .buttonStyle(.glass)
-                .controlSize(.small)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(help)
-        } else {
-            Menu { content.pickerStyle(.inline) } label: {
-                label
-                    .padding(.horizontal, 9)
-                    .frame(height: 22)
-                    .glassSurface(Capsule(), fallback: Theme.dark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
-                    .contentShape(Capsule())
-            }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help(help)
+        // A capsule of our own in every version (the system glass button draws a rounded rectangle at this size):
+        // interactive Liquid Glass on macOS 26, a quiet material capsule before it.
+        Menu { content.pickerStyle(.inline) } label: {
+            label
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .glassSurface(Capsule(), interactive: true,
+                              fallback: Theme.dark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
+                .contentShape(Capsule())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
     }
 
     /// One Text, not a stack: the glass menu button keeps only the first view of a stacked label.
@@ -963,36 +958,6 @@ struct SummaryMenu<Content: View>: View {
         + Text(Image(systemName: "chevron.up.chevron.down"))
             .font(.system(size: 7, weight: .bold))
             .foregroundColor(Theme.ink.opacity(0.72))
-    }
-}
-
-private struct HeroArtwork: View {
-    var body: some View {
-        Canvas { context, size in
-            let horizon = size.height * 0.70
-            for index in 0..<18 {
-                let y = horizon + CGFloat(index) * 7
-                let alpha = max(0.01, 0.15 - Double(index) * 0.006)
-                context.stroke(Path { path in
-                    path.move(to: CGPoint(x: 0, y: y))
-                    path.addLine(to: CGPoint(x: size.width, y: y))
-                }, with: .color((Theme.dark ? Color.black : Theme.ink).opacity(Theme.dark ? alpha : alpha * 0.35)), lineWidth: 1)
-            }
-            for row in 0..<5 {
-                var line = Path()
-                let baseline = size.height * (0.34 + CGFloat(row) * 0.09)
-                for step in 0...180 {
-                    let x = CGFloat(step) / 180 * size.width
-                    let phase = x / max(1, size.width) * .pi * 8
-                    let swell = exp(-pow((x / max(1, size.width) - 0.66) * 4, 2))
-                    let y = baseline + sin(phase + CGFloat(row) * 0.6) * swell * (10 + CGFloat(row) * 4)
-                    if step == 0 { line.move(to: CGPoint(x: x, y: y)) }
-                    else { line.addLine(to: CGPoint(x: x, y: y)) }
-                }
-                context.stroke(line, with: .color(Theme.dark ? Color.white.opacity(0.09) : Theme.ink.opacity(0.06)), lineWidth: 1)
-            }
-        }
-        .allowsHitTesting(false)
     }
 }
 

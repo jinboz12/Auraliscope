@@ -144,8 +144,8 @@ enum ThemeFade {
 
 /// Auraliscope dashboard palette, in a dark and a light appearance.
 ///
-/// - **Surfaces**: dark slate window, charcoal cards and obsidian display wells; or a pale grey window, white
-///   cards and paper wells.
+/// - **Surfaces**: a near-black window with flat charcoal cards; or the palette's own gradient with frosted white
+///   cards. Each live display is drawn straight onto its card.
 /// - **Ink** is the high-contrast voice for type, peak readouts and lit edges: the palette's cream on dark,
 ///   slate ink on light.
 /// - The selected **accent** marks actions, selections, signal levels and the live summary.
@@ -295,10 +295,12 @@ enum Theme {
                         ember: RGB(r: 0.894, g: 0.408, b: 0.357), slate: RGB(r: 0.576, g: 0.651, b: 0.675))
             if dark {
                 ink = cream
-                windowTop = RGB(r: 0.132, g: 0.141, b: 0.156)
-                windowBottom = RGB(r: 0.092, g: 0.098, b: 0.110)
-                card = RGB(r: 0.170, g: 0.179, b: 0.196)
-                display = RGB(r: 0.066, g: 0.070, b: 0.079)
+                // Near-black studio dark: flat charcoal cards a step above the window, and the displays drawn
+                // straight onto them, so `display` is the card itself.
+                windowTop = RGB(r: 0.058, g: 0.062, b: 0.070)
+                windowBottom = RGB(r: 0.040, g: 0.043, b: 0.049)
+                card = RGB(r: 0.106, g: 0.112, b: 0.124)
+                display = card
                 accent = swatch
                 sand = hues.sand
                 heather = hues.heather
@@ -314,8 +316,10 @@ enum Theme {
                 ink = RGB(r: 0.102, g: 0.110, b: 0.125)
                 windowTop = RGB(r: 0.953, g: 0.954, b: 0.950)
                 windowBottom = RGB(r: 0.918, g: 0.920, b: 0.914)
-                card = RGB(r: 0.996, g: 0.996, b: 0.993)
-                display = RGB(r: 0.972, g: 0.971, b: 0.964)
+                // Frosted white cards over the palette's gradient; the displays sit on them, so `display` is the
+                // card as it reads there.
+                card = RGB(r: 0.996, g: 0.996, b: 0.996)
+                display = RGB(r: 0.984, g: 0.985, b: 0.987)
                 func deepen(_ rgb: RGB) -> RGB { rgb.legible(on: RGB(r: 1, g: 1, b: 1), ratio: 4.5) }
                 accent = deepen(swatch)
                 sand = deepen(hues.sand)
@@ -407,6 +411,9 @@ enum Theme {
     }
 
     static var ink: Color { style.ink.color }
+    /// Type on a solid ink fill (the chosen segment's pill): near-black on dark, where ink is the palette's cream, and
+    /// white on light.
+    static var onInk: Color { style.dark ? style.windowBottom.color : .white }
     static var secondary: Color { ink.opacity(style.secondaryOpacity) }
     static var tertiary: Color { ink.opacity(style.tertiaryOpacity) }
     /// Micro-borders and tracks: ink at low opacity, so edges stay warm on dark and neutral on light.
@@ -421,9 +428,13 @@ enum Theme {
     static var bannerAccent: Color { style.banner.color }
     /// Small labels set on a banner (LIVE, version) sit on this.
     static var chipFill: Color { style.dark ? Color.black.opacity(0.22) : ink.opacity(0.07) }
-    /// Stat tiles on the summary: a faint lift on dark, frosted white on light.
-    static var tileFill: Color { style.dark ? ink.opacity(0.04) : Color.white.opacity(0.55) }
-    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.18 : 0.06) }
+    /// Flat cards on dark cast nothing; frosted cards on light float on a wide, faint shadow.
+    static var cardShadow: Color { style.dark ? .clear : Color.black.opacity(0.07) }
+    /// The window backdrop at its top edge (and the toolbar's in full screen): near-black on dark, the palette's
+    /// wash on light.
+    static var backdropTop: Color { style.dark ? style.windowTop.color : style.banner.color }
+    /// The backdrop's light band: the palette's wash turning into the pale window.
+    static var backdropMiddle: Color { style.banner.mixed(with: style.windowTop, amount: 0.62).color }
     /// Type on a solid status fill (accent, ochre, slate): near-black on dark, where the hues are light, and
     /// cream on light, where they are deepened.
     static var onStatus: Color { style.dark ? style.display.color : style.cream.color }
@@ -596,11 +607,9 @@ enum Theme {
         (0..<waterfallRampCount).map { exactRamp(position: Float($0) / Float(waterfallRampCount - 1), colors: colors).simd() }
     }
 
-    // Soft dashboard card, recessed plot and inset tile radii: generous and continuous, so the panels read as calm
-    // objects rather than boxes.
+    // Card and inner radii: generous and continuous, so the panels read as calm objects rather than boxes.
     static let cardRadius: CGFloat = 24
     static let wellRadius: CGFloat = 16
-    static let tileRadius: CGFloat = 14
 }
 
 extension AppearanceMode {

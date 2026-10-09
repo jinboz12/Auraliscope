@@ -756,14 +756,19 @@ enum HeroLayout {
     static let maxVU: CGFloat = 640
 
     static func leadWidth(compact: Bool) -> CGFloat { compact ? 190 : 250 }
+    /// Between the short-term reading and the loudness column.
     static func gap(compact: Bool) -> CGFloat { compact ? 14 : 22 }
+    /// The summary sits on the backdrop with no card; its title lines up with the titles of the cards below it.
+    static let inset: CGFloat = 20
+    /// Between the loudness column and the history card, and between the history and VU cards: the panels' gutter.
+    static let cardGap: CGFloat = PanelLayout.divider
     static func defaultVU(compact: Bool) -> CGFloat { compact ? 170 : 236 }
     /// The loudness column keeps room for its tiles' full titles; unset, it grows to `max` before the history does.
-    static func loudnessRange(compact: Bool) -> (min: CGFloat, max: CGFloat) { compact ? (380, 440) : (430, 560) }
+    static func loudnessRange(compact: Bool) -> (min: CGFloat, max: CGFloat) { compact ? (380, 410) : (430, 560) }
 
-    /// Width left for the loudness column, history and VU inside a row `width` wide (padding excluded).
+    /// Width left for the loudness column, history and VU inside a row `width` wide (the inset excluded).
     static func available(width: CGFloat, compact: Bool) -> CGFloat {
-        max(0, width - leadWidth(compact: compact) - 3 * gap(compact: compact))
+        max(0, width - leadWidth(compact: compact) - gap(compact: compact) - 2 * cardGap)
     }
 
     static func columns(width: CGFloat, compact: Bool, loudness requestedLoudness: CGFloat, vu requestedVU: CGFloat) -> Columns {

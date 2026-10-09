@@ -30,6 +30,8 @@ enum Diagnostics {
     /// With `--snapshot`: enters full screen first, then captures the whole screen area of this app's windows
     /// (the full-screen toolbar is a window of its own), to review the full-screen arrangement.
     static let snapshotFullScreen = CommandLine.arguments.contains("--snapshot-full-screen")
+    /// With `--snapshot`: opens the Spectrum panel's settings popover and captures the window's screen area with it.
+    static let snapshotPanelSettings = CommandLine.arguments.contains("--snapshot-panel-settings")
     static var snapshotSize: CGSize? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--snapshot-size"), index + 1 < arguments.count else { return nil }
@@ -226,7 +228,7 @@ enum Diagnostics {
             let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-window.png")
             // The welcome sheet has its own window; capture the screen area of the meter window to include it.
             let image: CGImage?
-            if showWelcome || snapshotFullScreen, let screen = NSScreen.screens.first {
+            if showWelcome || snapshotFullScreen || snapshotPanelSettings, let screen = NSScreen.screens.first {
                 let frame = window.frame
                 let rect = CGRect(x: frame.minX, y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
                 image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])

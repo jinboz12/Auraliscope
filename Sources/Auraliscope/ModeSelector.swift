@@ -28,11 +28,9 @@ extension ChannelFormat {
     static let selectorOrder: [ChannelFormat] = [.mono, .stereo, .spatial]
 }
 
-/// Top-bar monitoring mode: the system segmented control (Liquid Glass on macOS 26, with its own sliding
-/// selection) holding Mono | Stereo | Immersive, plus the AUTO switch. A system segment shows either a title or
-/// an image, so the modes are named rather than drawn. Choosing a segment
-/// pins that mode; AUTO hands control back to the detector. The system control sizes its segments to their
-/// labels in every language, so nothing is cropped. The control sits on a lightly accent-tinted glass capsule.
+/// Top-bar monitoring mode: Mono | Stereo | Immersive on a glass capsule, the mode in use a solid ink pill that
+/// slides between them (`GlassSegments`), plus the AUTO switch. Choosing a segment pins that mode; AUTO hands
+/// control back to the detector. Each segment is sized to its label in every language, so nothing is cropped.
 struct ModeSelector: View {
     static let height: CGFloat = 28
 
@@ -44,23 +42,10 @@ struct ModeSelector: View {
     var body: some View {
         let formats = model.selectorFormats
         HStack(spacing: 8) {
-            Picker(L("Monitoring mode"), selection: Binding(get: { model.format }, set: { model.pin($0) })) {
-                ForEach(formats, id: \.self) { format in
-                    Text(format.shortTitle)
-                        .accessibilityLabel(format.localizedName)
-                    .tag(format)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.large)
-            .tint(Theme.sage)
-            .fixedSize()
-            // A light accent tint on its own glass, a step under AUTO's while it is on, so the mode stands out
-            // in the toolbar as the older selector's tinted thumb did.
-            .padding(2)
-            .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.12 : 0.08))
-            .help(help(for: model.format))
+            GlassSegments(label: L("Monitoring mode"),
+                          options: formats.map { ($0, $0.shortTitle, $0.localizedName) },
+                          selection: model.format, select: { model.pin($0) }, large: true)
+                .help(help(for: model.format))
             AutoToggle(auto: model.formatMode == .auto, detected: model.automaticFormat) {
                 model.toggleAuto()
             }

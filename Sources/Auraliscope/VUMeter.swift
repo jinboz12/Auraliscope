@@ -3,7 +3,7 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// The analogue-style VU meter at the right end of the loudness summary: an ink scale on a display well,
+/// The analogue-style VU meter at the right end of the loudness summary: an ink scale on a card of its own,
 /// ember zone above 0 VU, and a needle driven at the display rate from the latest snapshot.
 ///
 /// The dial (arcs, ticks, labels) is a SwiftUI Canvas that only redraws when its size changes. The needle is
@@ -28,18 +28,15 @@ struct VUMeterPanel: View {
                 StableNumber(text: level > -100 ? MeterScale.tenths(vu, floor: -99) + " VU" : "— VU", template: "−88.8 VU",
                              font: .system(size: 10, weight: .semibold),
                              color: vu >= 0 && level > -100 ? Theme.ember : (level > -100 ? Theme.ink : Theme.tertiary))
-                    .padding(.trailing, 10).padding(.bottom, 7)
+                    .padding(.trailing, 20).padding(.bottom, 14)
             }
-            .overlay(alignment: .topLeading) {
-                Eyebrow("VU · " + L("ALL CHANNELS"), color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
-            }
+            .overlay(alignment: .top) { CardTitle(title: "VU · " + L("ALL CHANNELS"), model: model) }
             .overlay(alignment: .bottomLeading) {
                 Text(verbatim: "0 VU = \(MeterScale.signedInteger(reference)) dBFS")
                     .font(.axis).foregroundStyle(Theme.tertiary)
-                    .padding(.leading, 9).padding(.bottom, 7)
+                    .padding(.leading, 20).padding(.bottom, 14)
             }
-            .background { WellSurface() }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+            .background { CardSurface() }
             .help(L("VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS).",
                     MeterScale.signedInteger(reference)))
             .accessibilityElement(children: .ignore)
@@ -53,10 +50,10 @@ struct VUGeometry {
     let radius: CGFloat
 
     init(size: CGSize) {
-        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 12, dy: 0)
-        // Leave the top 26 pt to the title: labels sit 15 pt outside the arc.
-        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 66))
-        pivot = CGPoint(x: rect.midX, y: size.height - 20)
+        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 20, dy: 0)
+        // Leave the top 40 pt to the title row: labels sit 15 pt outside the arc.
+        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 84))
+        pivot = CGPoint(x: rect.midX, y: size.height - 28)
     }
 
     /// Needle angle from vertical, clockwise positive; `fraction` 0 is the rest stop, 1 is +3 VU.

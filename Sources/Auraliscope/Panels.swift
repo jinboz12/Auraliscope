@@ -3,7 +3,8 @@ import SwiftUI
 
 // MARK: - Surfaces
 
-/// A charcoal (or white) card groups each panel; a recessed well holds its live display.
+/// A card groups each panel, and its live display is drawn straight onto it: no inset well, so the traces float
+/// on the card as on a hardware panel.
 struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
 
@@ -15,28 +16,70 @@ struct GlassCard<Content: View>: View {
     }
 }
 
+/// On dark, a flat charcoal card a step above the near-black window, with the quietest edge and no shadow. On light,
+/// frosted glass: white, clearer toward the top where the backdrop's colour shows through, with a bright rim and a
+/// wide, faint shadow.
 struct CardSurface: View {
     var radius: CGFloat = Theme.cardRadius
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        // A flat card with light falling softly from the top (a faint sheen on dark, frosted white on light) and the
-        // quietest edge, lifted by a wide, low shadow.
-        shape.fill(Theme.cardTint)
-            .overlay {
-                shape.fill(LinearGradient(colors: [Color.white.opacity(Theme.dark ? 0.035 : 0.45), .clear],
-                                          startPoint: .top, endPoint: .center))
-            }
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.07 : 0.06), lineWidth: 0.5) }
-            .shadow(color: Theme.cardShadow, radius: Theme.dark ? 18 : 16, y: Theme.dark ? 8 : 6)
+        if Theme.dark {
+            shape.fill(Theme.cardTint)
+                .overlay { shape.strokeBorder(Theme.hairline.opacity(0.05), lineWidth: 0.5) }
+        } else {
+            shape.fill(LinearGradient(colors: [Color.white.opacity(0.74), Color.white.opacity(0.93)],
+                                      startPoint: .top, endPoint: .bottom))
+                .overlay { shape.strokeBorder(Theme.hairline.opacity(0.05), lineWidth: 0.5) }
+                .overlay { shape.inset(by: 0.5).strokeBorder(Color.white.opacity(0.9), lineWidth: 1) }
+                .shadow(color: Theme.cardShadow, radius: 22, y: 10)
+        }
     }
 }
 
-/// An obsidian (or paper) display set into the card, edged by a single hairline.
-struct WellSurface: View {
+/// The title row of the summary's small cards (the 15 s history, the VU meter): the title and the status light at
+/// the card's usual inset. A narrow card gives up the light and some of the inset before the title is cut.
+struct CardTitle: View {
+    let title: String
+    let model: MeterModel?
+
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous)
-        shape.fill(Theme.wellFill)
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.08 : 0.07), lineWidth: 0.5) }
+        ViewThatFits(in: .horizontal) {
+            row(light: true).padding(.horizontal, 20)
+            row(light: true).padding(.horizontal, 14)
+            row(light: false).padding(.horizontal, 12)
+            Eyebrow(title).padding(.horizontal, 10)
+        }
+        .frame(height: 24)
+        .padding(.top, 16)
+    }
+
+    private func row(light: Bool) -> some View {
+        HStack(spacing: 8) {
+            Eyebrow(title).fixedSize()
+            Spacer(minLength: 4)
+            if light, let model { PanelLight(model: model) }
+        }
+    }
+}
+
+/// The card's status light, top right as on a hardware panel: lit in the accent while the meter runs, an empty
+/// ring while it is paused or on standby.
+struct PanelLight: View {
+    @ObservedObject var model: MeterModel
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        let lit = model.running
+        Circle()
+            .fill(lit ? Theme.sage : Color.clear)
+            .overlay { Circle().strokeBorder(lit ? Theme.sage : Theme.tertiary.opacity(0.7), lineWidth: 1) }
+            .frame(width: 6, height: 6)
+            .background {
+                Circle().fill(Theme.glow(Theme.sage, lit ? 0.45 : 0)).frame(width: 12, height: 12).blur(radius: 3)
+            }
+            .frame(width: 12, height: 12)
+            .help(lit ? L("LIVE") : (model.frozen ? L("PAUSED") : L("STANDBY")))
+            .accessibilityHidden(true)
     }
 }
 
@@ -69,7 +112,7 @@ private struct PanelHeader<Trailing: View>: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Eyebrow(title).layoutPriority(1)
+            Eyebrow(title).fixedSize().layoutPriority(1)
             // Left out whole, rather than cut to "…", where the header is too tight for it.
             ViewThatFits(in: .horizontal) {
                 Text(verbatim: detail)
@@ -126,6 +169,7 @@ struct SpectrumPanel: View {
                                      + (view == SpectrogramView.surface.rawValue ? ["3D"] : [])).joined(separator: " · ")) {
                     SpectrogramLegend()
                     PanelSettingsButton(panel: .spectrum, model: model)
+                    PanelLight(model: model)
                 }
                 GeometryReader { proxy in
                     let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
@@ -157,7 +201,6 @@ struct SpectrumPanel: View {
                             .offset(x: layout.plot.minX, y: layout.plot.minY)
                     }
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
             }
         }
@@ -710,7 +753,7 @@ private struct PianoKeyboard: View {
                                      cornerSize: CGSize(width: 1, height: 1))
             }
             // Black keys are the darkest thing on the keyboard in either appearance.
-            context.fill(black, with: .color(Theme.dark ? Theme.display.opacity(0.9 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
+            context.fill(black, with: .color(Theme.dark ? Color.black.opacity(0.6 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -774,32 +817,51 @@ struct DeltaBadge: View {
     }
 }
 
+/// The main reading on a transport-style slider: a hairline track ticked every 3 LU (longer every 12), the reading as
+/// a filled run ending in a knob, in the delta's colour, and the target as an upright ink mark.
 struct LoudnessGauge: View {
     let value: Float
     let target: Float
-    /// Grows the bar and target mark with a taller summary (`HeroLayout.contentScale`).
+    /// Grows the track, knob and target mark with a taller summary (`HeroLayout.contentScale`).
     var scale: CGFloat = 1
 
     var body: some View {
-        VStack(spacing: 5) {
+        VStack(spacing: 3) {
             GeometryReader { proxy in
                 let width = proxy.size.width
-                let fraction = MeterScale.loudnessFraction(value)
                 let delta = value - target
                 let fill = abs(delta) <= 1 ? Theme.sage : (delta > 0 ? Theme.ochre : Theme.slate)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.hairline.opacity(0.08))
-                        .overlay { Capsule().strokeBorder(Theme.hairline.opacity(0.06), lineWidth: 0.5) }
-                    Capsule().fill(fill).frame(width: max(6, width * fraction))
-                        .opacity(value > MeterScale.loudnessFloor ? 1 : 0)
+                let lit = value > MeterScale.loudnessFloor
+                let x = width * MeterScale.loudnessFraction(value)
+                let mid = proxy.size.height / 2
+                let knob = 9 + 3 * (scale - 1)
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, size in
+                        context.fill(Path(roundedRect: CGRect(x: 0, y: mid - 1, width: size.width, height: 2), cornerRadius: 1),
+                                     with: .color(Theme.hairline.opacity(0.14)))
+                        for step in 0...12 {
+                            let lu = MeterScale.loudnessFloor + Float(step) * 3
+                            let major = step % 4 == 0
+                            let tx = min(size.width - 0.5, max(0, size.width * MeterScale.loudnessFraction(lu) - 0.5))
+                            context.fill(Path(CGRect(x: tx, y: mid + 5, width: 1, height: major ? 5 : 3)),
+                                         with: .color(Theme.hairline.opacity(major ? 0.32 : 0.18)))
+                        }
+                    }
+                    Capsule().fill(fill)
+                        .frame(width: max(3, x), height: 3)
+                        .offset(y: mid - 1.5)
+                        .opacity(lit ? 1 : 0)
+                    Circle().fill(fill)
+                        .overlay { Circle().strokeBorder(Theme.dark ? Color.black.opacity(0.35) : Color.white.opacity(0.9), lineWidth: 1.5) }
+                        .frame(width: knob, height: knob)
+                        .offset(x: min(width - knob, max(0, x - knob / 2)), y: mid - knob / 2)
+                        .opacity(lit ? 1 : 0)
                     Capsule().fill(Theme.ink)
-                        .frame(width: 2, height: 14 + 8 * (scale - 1))
-                        .offset(x: width * MeterScale.loudnessFraction(target) - 1)
+                        .frame(width: 2, height: 16 + 8 * (scale - 1))
+                        .offset(x: width * MeterScale.loudnessFraction(target) - 1, y: mid - 8 - 4 * (scale - 1))
                 }
-                .frame(height: 6 + 6 * (scale - 1))
-                .frame(maxHeight: .infinity)
             }
-            .frame(height: 14 + 8 * (scale - 1))
+            .frame(height: 16 + 8 * (scale - 1))
             HStack {
                 ForEach([-36, -24, -12, 0], id: \.self) { tick in
                     if tick != -36 { Spacer(minLength: 0) }
@@ -810,22 +872,22 @@ struct LoudnessGauge: View {
     }
 }
 
-/// One statistic on the loudness summary: the title with the reading flush left under it, centred as a group in
-/// whatever height the tile is given, and the unit after the reading. The template reserves the usual width of
-/// the reading, so the unit holds still while the digits change.
+/// One statistic on the loudness summary, set like a hardware panel's parameter: the title over the reading, with no
+/// tile behind, centred as a group in whatever height it is given, and the unit after the reading. The template
+/// reserves the usual width of the reading, so the unit holds still while the digits change.
 struct StatTile: View {
     let title: String
     let value: String
     let unit: String
     var color: Color = Theme.ink
     var template = "−88.8"
-    /// Grows the reading with a taller summary; the tile itself stretches to the height it is offered.
+    /// Grows the reading with a taller summary; the column itself stretches to the height it is offered.
     var scale: CGFloat = 1
-    /// A warning chip beside the title (OVER); it also tints the tile in ember.
+    /// A warning chip beside the title (OVER).
     var alert: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4 * scale) {
+        VStack(alignment: .leading, spacing: 5 * scale) {
             HStack(spacing: 6) {
                 Eyebrow(title, color: Theme.tertiary)
                 if let alert {
@@ -838,7 +900,7 @@ struct StatTile: View {
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                StableNumber(text: value, template: template, font: .system(size: 17 * scale, weight: .medium),
+                StableNumber(text: value, template: template, font: .system(size: 19 * scale, weight: .medium),
                              color: color, alignment: .leading)
                 if !unit.isEmpty {
                     Text(verbatim: unit).font(.system(size: 9 * (1 + (scale - 1) * 0.5), weight: .medium)).foregroundStyle(Theme.tertiary)
@@ -846,35 +908,25 @@ struct StatTile: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
-                .fill(Theme.tileFill)
-            if alert != nil {
-                RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
-                    .fill(Theme.ember.opacity(0.14))
-                RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
-                    .strokeBorder(Theme.ember.opacity(0.55), lineWidth: 1)
-            }
-        }
     }
 }
 
-/// Last 15 s of short-term (sage) over momentary (faint), with the ±1 LU target band and 5 s time marks.
+/// Last 15 s of short-term (accent) over momentary (faint), with the ±1 LU target band and 5 s time marks, on a card
+/// of its own beside the summary.
 struct LoudnessHistory: View {
     let short: [Float]
     let momentary: [Float]
     let target: Float
+    var model: MeterModel?
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         Canvas { context, size in
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 22)
+            let rect = CGRect(x: 18, y: 42, width: max(1, size.width - 36), height: max(1, size.height - 42 - 30))
             func y(_ lufs: Float) -> CGFloat { rect.maxY - MeterScale.loudnessFraction(lufs) * rect.height }
             let band = CGRect(x: rect.minX, y: y(target + 1), width: rect.width, height: max(1, y(target - 1) - y(target + 1)))
-            context.fill(Path(band), with: .color(Theme.sage.opacity(Theme.dark ? 0.10 : 0.12)))
+            context.fill(Path(band), with: .color(Theme.sage.opacity(Theme.dark ? 0.12 : 0.12)))
             for lufs: Float in [-12, -24] {
                 context.fill(Path(CGRect(x: rect.minX, y: y(lufs), width: rect.width, height: 0.5)), with: .color(Theme.hairline.opacity(0.08)))
             }
@@ -898,14 +950,11 @@ struct LoudnessHistory: View {
             context.stroke(path(momentary), with: .color(Theme.ink.opacity(Theme.dark ? 0.28 : 0.30)), lineWidth: 1)
             context.stroke(path(short), with: .color(Theme.sage), style: StrokeStyle(lineWidth: 1.8, lineJoin: .round))
         }
-        .overlay(alignment: .topLeading) {
-            Eyebrow(L("LAST 15 S"), color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
-        }
+        .overlay(alignment: .top) { CardTitle(title: L("LAST 15 S"), model: model) }
         .overlay(alignment: .bottomTrailing) {
-            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary).padding(.bottom, 5).padding(.trailing, 8)
+            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary).padding(.bottom, 14).padding(.trailing, 20)
         }
-        .background { WellSurface() }
-        .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+        .background { CardSurface() }
     }
 }
 
@@ -951,7 +1000,7 @@ struct WaveformPanel: View {
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                WaveHeader(layout: layout, format: format)
+                WaveHeader(model: model, layout: layout, format: format)
                 GeometryReader { proxy in
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .waveform, model: model)
@@ -960,7 +1009,6 @@ struct WaveformPanel: View {
                     }
                     .animation(.formatShift, value: format)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
             }
         }
@@ -982,7 +1030,7 @@ struct SoundstagePanel: View {
         let resolution = StereoBands.Resolution(rawValue: bands) ?? .five
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                StageHeader(format: format, layout: layout) {
+                StageHeader(model: model, format: format, layout: layout) {
                     // Mono has neither the stereometer nor the band map.
                     if format != .mono {
                         BandSwitch(selection: resolution, select: {
@@ -1004,7 +1052,6 @@ struct SoundstagePanel: View {
                     .animation(.formatShift, value: format)
                     .animation(.formatShift, value: resolution)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
             }
         }
@@ -1064,8 +1111,13 @@ struct ChannelLevelsPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("CHANNEL LEVELS"), detail: "dBFS") {
-                    MeterLegend()
+                    // The key gives way before the title does.
+                    ViewThatFits(in: .horizontal) {
+                        MeterLegend()
+                        Color.clear.frame(width: 0, height: 0)
+                    }
                     PanelSettingsButton(panel: .levels, model: model)
+                    PanelLight(model: model)
                 }
                 GeometryReader { proxy in
                     let mix = FormatMix(format)
@@ -1094,7 +1146,6 @@ struct ChannelLevelsPanel: View {
                     .animation(.formatShift, value: format)
                     .animation(.formatShift, value: resolution)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
             }
         }
@@ -1256,34 +1307,50 @@ enum StageStyle: String, CaseIterable {
     }
 }
 
-/// A segmented switch for the panels, built and behaving exactly like the toolbar's Stereo | Immersive switch:
-/// the system segmented control (Liquid Glass on macOS 26, with its own sliding selection) on a glass capsule
-/// lightly tinted with the accent, the selection in the app's accent. Each segment carries its full name for
-/// VoiceOver.
+/// A row of choices on a glass capsule, the chosen one a solid ink pill that slides between them: the toolbar's
+/// Stereo | Immersive switch (`large`) and every choice in the panels' settings. Each segment is a plain button
+/// sized to its label, so nothing is cropped in any language, and carries its full name for VoiceOver.
 struct GlassSegments<Value: Hashable>: View {
     let label: String
     /// Value, the title shown, and the full name for accessibility.
     let options: [(Value, String, String)]
     let selection: Value
     let select: (Value) -> Void
+    var large = false
+    @Namespace private var thumb
 
     var body: some View {
-        Picker(label, selection: Binding(get: { selection }, set: { choice in
-            withAnimation(.formatShift) { select(choice) }
-        })) {
+        HStack(spacing: 2) {
             ForEach(options, id: \.0) { value, title, name in
-                Text(verbatim: title).accessibilityLabel(name).tag(value)
+                let chosen = value == selection
+                Button {
+                    guard !chosen else { return }
+                    withAnimation(.formatShift) { select(value) }
+                } label: {
+                    Text(verbatim: title)
+                        .font(.system(size: large ? 13 : 11, weight: chosen ? .semibold : .medium))
+                        .foregroundStyle(chosen ? Theme.onInk : Theme.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, large ? 14 : 9)
+                        .frame(height: large ? 24 : 20)
+                        .background {
+                            if chosen {
+                                Capsule().fill(Theme.ink).matchedGeometryEffect(id: "thumb", in: thumb)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(name)
+                .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
-        // Inside a panel the selected segment is filled with the tint; left to the system it would take the
-        // macOS accent (blue by default) instead of the app's.
-        .tint(Theme.sage)
+        .padding(large ? 2 : 2)
         .fixedSize()
-        .padding(2)
-        .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.12 : 0.08))
+        .glassSurface(Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
     }
 }
 
@@ -1309,6 +1376,7 @@ private struct MeterLegend: View {
 }
 
 private struct WaveHeader: View {
+    let model: MeterModel
     let layout: SpeakerLayout
     let format: ChannelFormat
     @ObservedObject private var l10n = Localizer.shared
@@ -1327,11 +1395,13 @@ private struct WaveHeader: View {
             }
             LegendDot(color: Theme.ember, text: L("Clip"))
             PanelSettingsButton(panel: .waveform)
+            PanelLight(model: model)
         }
     }
 }
 
 private struct StageHeader<Trailing: View>: View {
+    let model: MeterModel
     let format: ChannelFormat
     let layout: SpeakerLayout
     @ViewBuilder var trailing: Trailing
@@ -1339,17 +1409,21 @@ private struct StageHeader<Trailing: View>: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // The title and format never truncate; the band switch drops to its short labels first.
+            // The title never truncates; in a narrow column the format chip gives way (the toolbar names it too).
             Eyebrow(L("SOUNDSTAGE")).fixedSize()
-            Text(verbatim: format == .spatial ? layout.name : format.title)
-                .font(.system(size: 10, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(Theme.sage)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(Theme.sage.opacity(0.13)))
-                .fixedSize()
+            ViewThatFits(in: .horizontal) {
+                Text(verbatim: format == .spatial ? layout.name : format.title)
+                    .font(.system(size: 10, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(Theme.sage)
+                    .padding(.horizontal, 6).padding(.vertical, 1)
+                    .background(Capsule().fill(Theme.sage.opacity(0.13)))
+                    .fixedSize()
+                Color.clear.frame(width: 0, height: 0)
+            }
             Spacer(minLength: 4)
             trailing.layoutPriority(1)
             PanelSettingsButton(panel: .soundstage)
+            PanelLight(model: model)
         }
         .padding(.horizontal, 4)
     }

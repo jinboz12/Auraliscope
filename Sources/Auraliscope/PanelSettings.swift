@@ -27,6 +27,10 @@ struct PanelSettingsButton: View {
         .background(Circle().fill(Theme.ink.opacity(open ? 0.12 : 0.06)))
         .help(L("Panel settings"))
         .accessibilityLabel(L("Panel settings"))
+        .onAppear {
+            guard Diagnostics.snapshotPanelSettings, panel == .spectrum else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { open = true }
+        }
         .popover(isPresented: $open, arrowEdge: .bottom) {
             PanelSettingsForm(panel: panel, model: model)
                 .padding(14)
