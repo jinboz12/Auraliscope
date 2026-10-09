@@ -13,23 +13,24 @@ func section(_ begin: String, _ end: String) -> String {
 }
 let structures = section("    struct WaterfallState", "    // SpectrogramTone")
     .replacingOccurrences(of: "\\(SpectrogramHistory.rows)", with: "512")
+    // The colour map is not read here; one stop keeps the Swift mirror below short.
+    .replacingOccurrences(of: "\\(WaterfallRamp.count)", with: "1")
 let axes = section("    struct WaterfallAxis", "    // The loudest tilted level")
 let reduction = section("    float waterfallBlock", "    // local: pixels")
 let shader = """
 #include <metal_stdlib>
 using namespace metal;
 \(structures)
-constant float waterfallEdge = 0.3; // only used by the optional build-69 baseline
 \(axes)
 \(reduction)
 kernel void ranges(constant float2 *input [[buffer(0)]], device int2 *output [[buffer(1)]],
                    uint i [[thread_position_in_grid]]) {
-    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y);
+    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y, 0.7);
     output[i] = int2(axis.first[0], axis.last[0]);
 }
-kernel void edges(constant float2 *input [[buffer(0)]], device float *output [[buffer(1)]],
+kernel void edges(constant float4 *input [[buffer(0)]], device float *output [[buffer(1)]],
                   uint i [[thread_position_in_grid]]) {
-    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y);
+    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y, input[i].z);
     output[i] = axis.weight[1];
 }
 kernel void check(texture2d<float, access::read> history [[texture(0)]],
@@ -60,6 +61,7 @@ struct State {
     var phase: Float = 0, span: Float = 450
     var floor: Float = -90, range: Float = 78, tilt: Float = 0
     var floorOctave: Float = -5.643856, octaves: Float = 9.965784
+    var ramp = SIMD4<Float>.zero
 }
 var blocks: [SIMD4<Int32>] = []
 for row in 0..<512 {
@@ -99,11 +101,14 @@ for tilt: Float in [0, 3, 4.5] {
     print("tilt \(tilt): \(blocks.count) GPU footprint comparisons; GPU \(String(format: "%.3f", (command.gpuEndTime - command.gpuStartTime) * 1000)) ms")
 }
 let edgePipeline = try device.makeComputePipelineState(function: library.makeFunction(name: "edges")!)
-var edgeInputs: [SIMD2<Float>] = []
-for footprint: Float in [0.05, 0.1, 0.25, 0.5, 1] {
-    for step in 0...100 { edgeInputs.append(SIMD2(Float(step) / 100, footprint)) }
+var edgeInputs: [SIMD4<Float>] = []
+// Magnified cells: a hard one-device-pixel edge (softness 0) and the display's eased columns and rows.
+for softness: Float in [0, 0.5, 0.7] {
+    for footprint: Float in [0.05, 0.1, 0.25, 0.5, 1] {
+        for step in 0...100 { edgeInputs.append(SIMD4(Float(step) / 100, footprint, softness, 0)) }
+    }
 }
-let edgeBuffer = device.makeBuffer(bytes: edgeInputs, length: edgeInputs.count * MemoryLayout<SIMD2<Float>>.stride, options: .storageModeShared)!
+let edgeBuffer = device.makeBuffer(bytes: edgeInputs, length: edgeInputs.count * MemoryLayout<SIMD4<Float>>.stride, options: .storageModeShared)!
 let edgeOutput = device.makeBuffer(length: edgeInputs.count * 4, options: .storageModeShared)!
 let edgeCommand = queue.makeCommandBuffer()!, edgeEncoder = edgeCommand.makeComputeCommandEncoder()!
 edgeEncoder.setComputePipelineState(edgePipeline)
@@ -113,10 +118,15 @@ edgeEncoder.endEncoding(); edgeCommand.commit(); edgeCommand.waitUntilCompleted(
 if let error = edgeCommand.error { throw error }
 let edgeValues = edgeOutput.contents().assumingMemoryBound(to: Float.self)
 for (i, input) in edgeInputs.enumerated() {
-    let expected = max(0, min(1, (input.x - floor(input.x) - 0.5) / input.y + 0.5))
+    // smoothstep across max(footprint, softness) of a cell, centred on the boundary between two cells.
+    let ease = 0.5 * max(input.y, input.z)
+    let t = max(0, min(1, (input.x - floor(input.x) - (0.5 - ease)) / (2 * ease)))
+    let expected = t * t * (3 - 2 * t)
     if abs(edgeValues[i] - expected) > 0.0001 { errors += 1 }
+    // A cell keeps its full value over the middle of its box, outside the eased band.
+    if input.z <= 0.7, abs(input.x - floor(input.x) - 0.5) >= ease + 0.001, edgeValues[i] != 0, edgeValues[i] != 1 { errors += 1 }
 }
-print("505 GPU edge comparisons at 1–20 device pixels per cell")
+print("\(edgeInputs.count) GPU edge comparisons at 1–20 device pixels per cell, hard and eased")
 let rangePipeline = try device.makeComputePipelineState(function: library.makeFunction(name: "ranges")!)
 var rangeInputs: [SIMD2<Float>] = []
 for footprint: Float in [2, 4, 8, 16] {
@@ -138,4 +148,4 @@ for (i, input) in rangeInputs.enumerated() {
 }
 print("324 GPU minification bounds comparisons; zero-area boundary contacts excluded")
 guard errors == 0 else { print("FAIL: \(errors) footprint mismatches"); exit(1) }
-print("PASS: 8509 GPU/CPU comparisons, isolated peaks, ring wrap, borders, tilt and one-pixel antialiasing")
+print("PASS: \(blocks.count * 3 + edgeInputs.count + rangeInputs.count) GPU/CPU comparisons, isolated peaks, ring wrap, borders, tilt, edges and easing")

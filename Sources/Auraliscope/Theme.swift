@@ -521,22 +521,67 @@ enum Theme {
         }
     }
 
+    /// The theme's own waterfall ramp (`SpectrogramColors.theme`).
     static var rampStops: [RGB] { style.rampStops }
+
+    /// The stops of a spectrogram colour map in the current appearance, 0 the empty well, 1 the loudest. Every map
+    /// moves away from the well's own lightness (dark to bright on dark, paper to ink on light), so the grid, cursor
+    /// and labels drawn over the waterfall stay legible.
+    static func rampStops(_ colors: SpectrogramColors) -> [RGB] {
+        switch colors {
+        case .theme:
+            return rampStops
+        case .heat:
+            // A perceptually ordered black–indigo–crimson–amber map in the manner of inferno: lightness rises
+            // steadily, and the hue turns as it does, so neighbouring levels differ in two ways at once.
+            let stops = [RGB(r: 0.000, g: 0.000, b: 0.016), RGB(r: 0.106, g: 0.047, b: 0.255),
+                         RGB(r: 0.290, g: 0.047, b: 0.420), RGB(r: 0.494, g: 0.118, b: 0.427),
+                         RGB(r: 0.710, g: 0.208, b: 0.353), RGB(r: 0.886, g: 0.353, b: 0.212),
+                         RGB(r: 0.976, g: 0.565, b: 0.075), RGB(r: 0.984, g: 0.765, b: 0.200),
+                         RGB(r: 0.988, g: 0.988, b: 0.700)]
+            guard !dark else { return stops }
+            // On paper: from white through pale amber to deep indigo, the same hues in reverse.
+            return [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.992, g: 0.925, b: 0.640),
+                    RGB(r: 0.984, g: 0.722, b: 0.290), RGB(r: 0.906, g: 0.447, b: 0.200),
+                    RGB(r: 0.741, g: 0.239, b: 0.329), RGB(r: 0.494, g: 0.118, b: 0.427),
+                    RGB(r: 0.290, g: 0.047, b: 0.420), RGB(r: 0.125, g: 0.035, b: 0.250),
+                    RGB(r: 0.020, g: 0.010, b: 0.060)]
+        case .gray:
+            let black = RGB(r: 0.030, g: 0.030, b: 0.032), white = RGB(r: 0.965, g: 0.965, b: 0.955)
+            return dark ? [black, white] : [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.060, g: 0.062, b: 0.070)]
+        }
+    }
+
+    /// The theme's ramp is eased between its few stops; the other maps are dense enough to run straight between them.
+    static func rampEased(_ colors: SpectrogramColors) -> Bool { colors == .theme }
 
     /// The waterfall's colour for a level, through the same tone curve and range (`SpectrogramTone`), so the live
     /// spectrum and the legend wear the colours the waterfall shows.
-    static func ramp(decibels db: Float, range: SpectrogramRange) -> RGB {
-        ramp(position: SpectrogramTone.position(db, range: range))
+    static func ramp(decibels db: Float, range: SpectrogramRange, colors: SpectrogramColors) -> RGB {
+        ramp(position: SpectrogramTone.position(db, range: range), colors: colors)
     }
 
-    /// The colour at `x` (0…1) along `rampStops`, eased between stops as the shader's `rampMap` is.
-    static func ramp(position x: Float) -> RGB {
+    /// The colour at `x` (0…1) along `colors`' stops (`rampStops(_:)`).
+    static func ramp(position x: Float, colors: SpectrogramColors) -> RGB {
         let x = max(0, min(1, x))
-        let stops = rampStops
+        let stops = rampStops(colors)
         let scaled = x * Float(stops.count - 1)
         let index = min(Int(scaled), stops.count - 2)
         let t = scaled - Float(index)
-        return stops[index].mixed(with: stops[index + 1], amount: t * t * (3 - 2 * t))
+        return stops[index].mixed(with: stops[index + 1], amount: rampEased(colors) ? t * t * (3 - 2 * t) : t)
+    }
+
+    /// The map sampled at `WaterfallRamp.count` evenly spaced positions for the waterfall shader, which runs
+    /// straight between them (within a fraction of a percent of `ramp(position:colors:)`).
+    static func waterfallRamp(_ colors: SpectrogramColors) -> WaterfallRamp {
+        var result = WaterfallRamp()
+        withUnsafeMutableBytes(of: &result.stops) { bytes in
+            let stops = bytes.bindMemory(to: SIMD4<Float>.self)
+            for index in 0..<WaterfallRamp.count {
+                stops[index] = ramp(position: Float(index) / Float(WaterfallRamp.count - 1), colors: colors).simd()
+            }
+        }
+        return result
     }
 
     // Soft dashboard card and recessed plot radii.

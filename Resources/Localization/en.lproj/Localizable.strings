@@ -388,6 +388,11 @@
 "live" = "live";
 "Color scale from %@ to %@ dBFS" = "Color scale from %@ to %@ dBFS";
 "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters.";
+"Colors" = "Colors";
+"Theme" = "Theme";
+"Heat" = "Heat";
+"Gray" = "Gray";
+"The spectrogram's color map. Theme follows the app's palette. Heat turns from indigo through crimson to amber as the level rises, so nearby levels are easier to tell apart. Gray is plain grayscale." = "The spectrogram's color map. Theme follows the app's palette. Heat turns from indigo through crimson to amber as the level rises, so nearby levels are easier to tell apart. Gray is plain grayscale.";
 "A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true." = "A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true.";
 "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure.";
 "avg" = "avg";

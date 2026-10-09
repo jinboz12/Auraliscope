@@ -388,6 +388,11 @@
 "live" = "실시간";
 "Color scale from %@ to %@ dBFS" = "색상 스케일 %@ ~ %@ dBFS";
 "The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters." = "스펙트로그램 색상이 나타내는 레벨 범위입니다. 표준: −90 ~ −12 dBFS. 저레벨: −114 ~ −24 dBFS, 잔향 꼬리, 노이즈 플로어, 험 확인용. 고레벨: −72 ~ 0 dBFS, 큰 음량의 마스터용.";
+"Colors" = "색상";
+"Theme" = "테마";
+"Heat" = "히트";
+"Gray" = "회색조";
+"The spectrogram's color map. Theme follows the app's palette. Heat turns from indigo through crimson to amber as the level rises, so nearby levels are easier to tell apart. Gray is plain grayscale." = "스펙트로그램의 색상 맵입니다. 테마는 앱의 팔레트를 따릅니다. 히트는 레벨이 높아질수록 남색에서 진홍색을 거쳐 호박색으로 바뀌어, 비슷한 레벨을 더 쉽게 구별할 수 있습니다. 회색조는 단순한 흑백입니다.";
 "A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true." = "1 kHz를 기준으로 스펙트럼과 스펙트로그램에 표시 기울기를 적용합니다. 음악은 옥타브당 약 3~4.5 dB씩 낮아지므로, 기울기를 주면 균형 잡힌 믹스가 평평하게 보이고 고역도 저역만큼 잘 보입니다. 측정값은 그대로입니다.";
 "Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure." = "스펙트로그램이나 스펙트럼 위에 포인터를 올리면 음높이, 주파수, 레벨을 읽을 수 있습니다. 일시 정지하면 한 순간을 천천히 살펴볼 수 있습니다.";
 "avg" = "평균";

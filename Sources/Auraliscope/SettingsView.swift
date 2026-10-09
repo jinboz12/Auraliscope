@@ -68,6 +68,7 @@ final class SettingsDraft: ObservableObject {
     @Published var spectrumSide: SpectrumSide?
     @Published var peakHolds: Bool?
     @Published var spectrogramRange: SpectrogramRange?
+    @Published var spectrogramColors: SpectrogramColors?
     @Published var tilt: SpectrumTilt?
     @Published var averageSpectrum: Bool?
     @Published var spectrogramSpan: SpectrogramSpan?
@@ -151,6 +152,10 @@ final class SettingsDraft: ObservableObject {
             store(value.rawValue, SpectrogramRange.key)
             model.displayOptions.spectrogramRange = value
         }, applied: { value, model in model.displayOptions.spectrogramRange == value && SpectrogramRange.stored == value }),
+        field(\.spectrogramColors, { L("Colors") }, live: { $0.displayOptions.spectrogramColors }, write: { value, model in
+            store(value.rawValue, SpectrogramColors.key)
+            model.displayOptions.spectrogramColors = value
+        }, applied: { value, model in model.displayOptions.spectrogramColors == value && SpectrogramColors.stored == value }),
         field(\.averageSpectrum, { L("Average spectrum") }, live: { $0.displayOptions.averageSpectrum }, write: { value, model in
             store(value, DisplayOptions.averageSpectrumKey)
             model.displayOptions.averageSpectrum = value
@@ -860,6 +865,12 @@ private struct PanelsPane: View {
                          live: { model.displayOptions.spectrogramRange })
             }
             SettingsNote(L("The levels the spectrogram's colors span. Standard: −90 to −12 dBFS. Deep: −114 to −24 dBFS, for reverb tails, noise floors and hum. Hot: −72 to 0 dBFS, for loud masters."))
+            Divider()
+            SettingsRow(title: L("Colors")) {
+                segments(L("Colors"), SpectrogramColors.allCases.map { ($0, $0.title) }, \.spectrogramColors,
+                         live: { model.displayOptions.spectrogramColors })
+            }
+            SettingsNote(L("The spectrogram's color map. Theme follows the app's palette. Heat turns from indigo through crimson to amber as the level rises, so nearby levels are easier to tell apart. Gray is plain grayscale."))
             Divider()
             SettingsRow(title: L("Tilt")) {
                 segments(L("Tilt"), SpectrumTilt.allCases.map { ($0, $0.title) }, \.tilt,

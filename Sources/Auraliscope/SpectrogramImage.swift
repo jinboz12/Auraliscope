@@ -31,7 +31,7 @@ enum SpectrogramImage {
         var pixels = [UInt8](repeating: 255, count: plotWidth * rows * 4)
         // A small lookup of the ramp keeps this to one table read per pixel.
         let steps = 1024
-        let ramp = (0...steps).map { Theme.ramp(position: Float($0) / Float(steps)) }
+        let ramp = (0...steps).map { Theme.ramp(position: Float($0) / Float(steps), colors: options.spectrogramColors) }
         for column in 0..<columns {
             let age = Double(columns - 1 - column)
             for row in 0..<rows {

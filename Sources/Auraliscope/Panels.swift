@@ -198,6 +198,7 @@ private struct BadgeSurface: View {
 /// itself (`SpectrogramTone`), linear in dB, with a notch every 24 dB; and the display slope when one is set.
 private struct SpectrogramLegend: View {
     @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
+    @AppStorage(SpectrogramColors.key) private var colorsKey = SpectrogramColors.theme.rawValue
     @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
     @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
     @ObservedObject private var theme = ThemeSettings.shared
@@ -224,9 +225,10 @@ private struct SpectrogramLegend: View {
             Canvas { context, size in
                 let steps = 24
                 let span = range.ceiling - range.floor
+                let colors = SpectrogramColors(rawValue: colorsKey) ?? .theme
                 let stops = (0...steps).map { step -> Gradient.Stop in
                     let fraction = Float(step) / Float(steps)
-                    let color = Theme.ramp(decibels: range.floor + span * fraction, range: range).color
+                    let color = Theme.ramp(decibels: range.floor + span * fraction, range: range, colors: colors).color
                     return Gradient.Stop(color: color, location: CGFloat(fraction))
                 }
                 let bar = Path(roundedRect: CGRect(x: 0, y: 0, width: size.width, height: 5), cornerRadius: 2.5)
@@ -342,7 +344,7 @@ private struct SpectrogramInspector: View {
         if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
             let scene = SceneStore.existing(.spectrum) as? SpectrumScene
             let bands = scene?.shown ?? []
-            let count = MeterSnapshot.bandCount
+            let count = SpectrumScene.pointCount
             let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count).rounded())))
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
             let low = 20 * pow(upper / 20, Double(band) / Double(count))
@@ -1144,6 +1146,7 @@ struct DisplayOptions: Equatable {
     var bandMarkers = true
     /// The levels the spectrogram's colors span, and the display slope of the spectrum and spectrogram.
     var spectrogramRange = SpectrogramRange.standard
+    var spectrogramColors = SpectrogramColors.theme
     var tilt = SpectrumTilt.flat
     /// The live spectrum's long-term average since the last reset.
     var averageSpectrum = true
@@ -1163,7 +1166,7 @@ struct DisplayOptions: Equatable {
                               peakHolds: defaults.object(forKey: peakHoldsKey) == nil ? true : defaults.bool(forKey: peakHoldsKey),
                               waveSeconds: waveChoices.contains(seconds) ? seconds : 4,
                               bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
-                              spectrogramRange: .stored, tilt: .stored,
+                              spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored,
                               averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
                               spectrogramSpan: .stored)
     }

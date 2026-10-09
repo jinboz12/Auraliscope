@@ -271,6 +271,25 @@ enum SpectrogramRange: String, CaseIterable {
     }
 }
 
+/// The spectrogram's colour map, chosen in Settings › Panels. Theme runs from the well through the accent to cream;
+/// Heat is a perceptually ordered black–indigo–crimson–amber map, whose hue turns as the level rises, so neighbouring
+/// levels are easier to tell apart; Gray is plain greyscale, the most neutral picture. On a light appearance each runs
+/// from the paper-white well toward ink instead (`Theme.rampStops(_:)`).
+enum SpectrogramColors: String, CaseIterable {
+    case theme, heat, gray
+
+    static let key = "spectrogram.colors"
+    static var stored: SpectrogramColors { SpectrogramColors(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .theme }
+
+    var title: String {
+        switch self {
+        case .theme: return L("Theme")
+        case .heat: return L("Heat")
+        case .gray: return L("Gray")
+        }
+    }
+}
+
 /// How many seconds the spectrogram shows: Auto fits 3 to 8 s to the panel's width (about 100 pt a second); a fixed
 /// span shows that much at any width, up to 15 s to see a whole phrase (the history keeps 17 s).
 enum SpectrogramSpan: String, CaseIterable {
@@ -326,6 +345,10 @@ enum SpectrumTilt: String, CaseIterable {
 enum SpectrogramTone {
     static let gamma: Float = 1.6
     static let contrast: Float = 0.6
+    /// How far, in cells, an enlarged waterfall cell eases into its neighbour (`waterfallAxis`): columns are 1/30 s
+    /// and usually several pixels wide, so they ease over most of a cell; rows are a pixel or two and stay crisp.
+    static let columnSoftness: Float = 0.7
+    static let rowSoftness: Float = 0.5
 
     static func position(_ db: Float, range: SpectrogramRange) -> Float {
         let linear = max(0, min(1, (db - range.floor) / (range.ceiling - range.floor)))
