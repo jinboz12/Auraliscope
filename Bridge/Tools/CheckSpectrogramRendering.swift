@@ -13,8 +13,6 @@ func section(_ begin: String, _ end: String) -> String {
 }
 let structures = section("    struct WaterfallState", "    // SpectrogramTone")
     .replacingOccurrences(of: "\\(SpectrogramHistory.rows)", with: "512")
-    // The colour map is not read here; one stop keeps the Swift mirror below short.
-    .replacingOccurrences(of: "\\(WaterfallRamp.count)", with: "1")
 let axes = section("    struct WaterfallAxis", "    // The loudest tilted level")
 let reduction = section("    float waterfallBlock", "    // local: pixels")
 let shader = """
@@ -61,7 +59,6 @@ struct State {
     var phase: Float = 0, span: Float = 450
     var floor: Float = -90, range: Float = 78, tilt: Float = 0
     var floorOctave: Float = -5.643856, octaves: Float = 9.965784
-    var ramp = SIMD4<Float>.zero
 }
 var blocks: [SIMD4<Int32>] = []
 for row in 0..<512 {

@@ -149,6 +149,29 @@ filters, FFT and true-peak interpolation restart at a break. Each result carries
 known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
 continuous measurement.
 
+## Build 71 spectrogram and spectrum display
+
+The analysis is unchanged from build 69/70 except for one addition: the fine spectrum bands.
+
+- **Fine spectrum.** `SpectrumAnalyzer` maps the same power spectrum it reads for the 64 display bands onto 128
+  (`MeterSnapshot.fineBandCount`, each of the 64 halved, about 1/13 octave) with the same band reading (loudest bin
+  with Hann peak correction, or the interpolated peak for bands narrower than 1.5 bins); plugin CPU in VALIDATION.md.
+  They travel as snapshot slots (`SnapshotSlots.spectrumFine`, appended after `missing`) and as RESULT tag 51; the
+  assembler shows a result without them (a build 70 plugin) as each of its 64 bands across its two halves.
+  The live curve, peak holds, average and spectrum hover read them. They are deliberately not read from the
+  waterfall's multi-resolution column: its short treble windows read broadband sound about 3 dB higher per halving
+  of the window, which would bend a pink-noise average flat above ~1.5 kHz and mislead tonal-balance reading.
+- **Curve ballistics.** `SpectrumScene` follows the fine bands with its own critically damped filter at
+  `SpectrumResponse.rate` (22, 10 or 4 per second; build 70 used 22 through `DampedDisplayState`). Paused, it holds.
+- **Colour maps.** `SpectrogramColors` (Heat, Theme, Gray) → `Theme.rampStops(_:)`; the waterfall shader reads 33
+  evenly spaced colours (every 1/32: each stop of Heat exactly) from a fragment buffer beside its state
+  (`CanvasScene.underlayRamp`), so a change recolours without rebuilding the pipelines; Swift callers (spectrum fill,
+  header scale, exported image) read a 1024-entry table per map, cleared when the theme changes.
+- **Cell reconstruction.** `waterfallAxis` eases between neighbouring cells with a smoothstep across
+  `SpectrogramTone.columnSoftness`/`rowSoftness` of a cell (both 1: centre to centre), never narrower than one device
+  pixel; a cell's centre keeps its exact level. Minified pixels still take the loudest of every covered cell.
+  `Bridge/Tools/CheckSpectrogramRendering.swift` checks both against CPU references.
+
 ## Build 69 spectrogram clarity
 
 Build 68's design stands (multi-resolution, time-aligned, calibrated rows, float history); build 69 removes the

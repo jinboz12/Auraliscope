@@ -442,11 +442,12 @@ final class MeterGPU {
         return float4(in.color.rgb, alpha);
     }
 
-    // The waterfall's colour map (`WaterfallRamp`): `count` colours from the empty well to the loudest, run straight
-    // between. Every map moves away from the well's own lightness, so loudness reads the same in every appearance.
+    // The waterfall's colour map (`Theme.waterfallRamp`): `waterfallRampCount` colours from the empty well to the
+    // loudest, run straight between. Every map moves away from the well's own lightness, so loudness reads the same in
+    // every appearance.
     float3 rampMap(float x, constant float4 *stops) {
-        float scaled = saturate(x) * float(\(WaterfallRamp.count - 1));
-        uint index = min(uint(scaled), \(WaterfallRamp.count - 2)u);
+        float scaled = saturate(x) * float(\(Theme.waterfallRampCount - 1));
+        uint index = min(uint(scaled), \(Theme.waterfallRampCount - 2)u);
         return mix(stops[index].rgb, stops[index + 1].rgb, scaled - float(index));
     }
 
@@ -457,7 +458,6 @@ final class MeterGPU {
     struct WaterfallState {
         uint head; uint capacity; float phase; float span;
         float floorDB; float rangeDB; float tilt; float floorOctave; float octaves;
-        float4 ramp[\(WaterfallRamp.count)];
     };
 
     constant int waterfallRows = \(SpectrogramHistory.rows);
@@ -529,7 +529,8 @@ final class MeterGPU {
     // local: pixels from the quad centre; shape.xy: half size; shape.zw: uv (u = 1 at "now").
     fragment float4 waterfallFragment(Raster in [[stage_in]],
                                       texture2d<float, access::read> history [[texture(0)]],
-                                      constant WaterfallState &state [[buffer(0)]]) {
+                                      constant WaterfallState &state [[buffer(0)]],
+                                      constant float4 *ramp [[buffer(1)]]) {
         float2 uv = in.shape.zw;
         float row = (1.0 - uv.y) * float(waterfallRows) - 0.5;
         float age = (1.0 - uv.x) * state.span - state.phase;
@@ -547,7 +548,7 @@ final class MeterGPU {
         }
         // A given level has the same colour at every age; only the selected range and tilt affect it.
         float mask = saturate(0.5 - roundedBox(in.local, in.shape.xy, 7.0));
-        return float4(rampMap(tone, state.ramp), mask);
+        return float4(rampMap(tone, ramp), mask);
     }
 
     // Straight-alpha "over" so the scope can layer screen, fill, bloom and edge in one pass.
@@ -881,24 +882,13 @@ struct UnderlayState {
     var tilt: Float = 0
     var floorOctave: Float = 0
     var octaves: Float = 10
-    /// Waterfall only: the colour map (`Theme.waterfallRamp`).
-    var ramp = WaterfallRamp()
-}
-
-/// A spectrogram colour map as the waterfall shader reads it: `count` colours evenly spaced from the empty well (0)
-/// to the loudest (1), run straight between. A uniform rather than a compiled constant, so changing the map in
-/// Settings recolours the waterfall at once without rebuilding the pipelines.
-struct WaterfallRamp {
-    static let count = 16
-    var stops: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
-                SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
-        = (.zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero, .zero)
 }
 
 enum UnderlayKind { case waterfall, waveform }
 
 extension CanvasScene {
     var usesDampedLevels: Bool { true }
+    var underlayRamp: [SIMD4<Float>] { [] }
 }
 
 protocol CanvasScene: AnyObject {
@@ -907,6 +897,8 @@ protocol CanvasScene: AnyObject {
     var underlayKind: UnderlayKind { get }
     var underlayTexture: MTLTexture? { get }
     var underlayState: UnderlayState { get }
+    /// The waterfall's colour map (`Theme.waterfallRamp`), bound beside the state; empty for other underlays.
+    var underlayRamp: [SIMD4<Float>] { get }
     func prepare(frame: CanvasFrame)
     func build(_ builder: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float)
 }
@@ -1069,6 +1061,8 @@ final class CanvasRenderer {
             encoder.setRenderPipelineState(gpu.pipeline(scene.underlayKind))
             encoder.setFragmentTexture(texture, index: 0)
             encoder.setFragmentBytes(&state, length: MemoryLayout<UnderlayState>.stride, index: 0)
+            let ramp = scene.underlayRamp
+            if !ramp.isEmpty { encoder.setFragmentBytes(ramp, length: ramp.count * MemoryLayout<SIMD4<Float>>.stride, index: 1) }
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: underlayCount)
         }
         if shapeCount > 0 {
@@ -1427,7 +1421,7 @@ final class SpectrogramScene: CanvasScene {
     private var options = DisplayOptions()
     private var sampleRate = 48_000.0
     /// The colour map the shader reads, rebuilt when the map, the palette or the appearance changes.
-    private var ramp = WaterfallRamp()
+    private(set) var underlayRamp: [SIMD4<Float>] = []
     private var rampKey: (SpectrogramColors, Theme.Palette, Bool)?
 
     var usesDampedLevels: Bool { false }
@@ -1439,7 +1433,7 @@ final class SpectrogramScene: CanvasScene {
                              span: Float(span), floor: options.spectrogramRange.floor,
                              range: options.spectrogramRange.ceiling - options.spectrogramRange.floor,
                              tilt: options.tilt.decibelsPerOctave, floorOctave: Float(log2(20 / SpectrumTilt.pivot)),
-                             octaves: Float(log2(upper / 20)), ramp: ramp)
+                             octaves: Float(log2(upper / 20)))
     }
 
     init(device: MTLDevice) throws {
@@ -1471,7 +1465,7 @@ final class SpectrogramScene: CanvasScene {
         options = frame.options
         sampleRate = frame.sampleRate
         if rampKey.map({ $0 != (options.spectrogramColors, Theme.palette, Theme.dark) }) ?? true {
-            ramp = Theme.waterfallRamp(options.spectrogramColors)
+            underlayRamp = Theme.waterfallRamp(options.spectrogramColors)
             rampKey = (options.spectrogramColors, Theme.palette, Theme.dark)
         }
         let streamChanged = snapshot.streamID > 0 && snapshot.streamID != previousStream

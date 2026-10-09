@@ -686,19 +686,24 @@ package final class SpectrumAnalyzer {
     private func levels(_ maps: [BandMap], into output: inout [Float]) {
         let count = maps.count
         power.withUnsafeBufferPointer { bins in
-            for (index, map) in maps.enumerated() where !map.interpolated {
-                let width = map.last - map.first + 1
-                var power: Float = 0
-                var peak = map.first
-                if width < 8 {
-                    for bin in map.first...map.last where bins[bin] > power { power = bins[bin]; peak = bin }
-                } else {
-                    var offset: vDSP_Length = 0
-                    vDSP_maxvi(bins.baseAddress! + map.first, 1, &power, &offset, vDSP_Length(width))
-                    peak = map.first + Int(offset)
+            rowPower.withUnsafeMutableBufferPointer { rows in
+                rowPeakBin.withUnsafeMutableBufferPointer { peaks in
+                    for index in 0..<count where !maps[index].interpolated {
+                        let map = maps[index]
+                        let width = map.last - map.first + 1
+                        var power: Float = 0
+                        var peak = map.first
+                        if width < 8 {
+                            for bin in map.first...map.last where bins[bin] > power { power = bins[bin]; peak = bin }
+                        } else {
+                            var offset: vDSP_Length = 0
+                            vDSP_maxvi(bins.baseAddress! + map.first, 1, &power, &offset, vDSP_Length(width))
+                            peak = map.first + Int(offset)
+                        }
+                        rows[index] = max(0, power)
+                        peaks[index] = peak
+                    }
                 }
-                rowPower[index] = max(0, power)
-                rowPeakBin[index] = peak
             }
         }
         var scale = amplitudeScale * amplitudeScale
@@ -714,23 +719,38 @@ package final class SpectrumAnalyzer {
             vDSP_vsmul(base, 1, &ten, base, 1, vDSP_Length(count))
         }
         let scale2 = amplitudeScale * amplitudeScale
-        func decibels(_ bin: Int) -> Float { 10 * log10(max(power[bin] * scale2, 1e-12)) }
-        for (index, map) in maps.enumerated() {
-            guard map.interpolated else {
-                // A tone between two bins reads up to 1.4 dB low in either (Hann scalloping); where the band's loudest
-                // bin is a local maximum, the Hann peak estimate restores the level, if the tone lies in the band.
-                var level = rowPower[index]
-                let k = rowPeakBin[index]
-                if k > 0, k + 1 < power.count, power[k] > 0, power[k] >= power[k - 1], power[k] >= power[k + 1] {
-                    let peak = Self.hannPeak(decibels(k - 1), level, decibels(k + 1))
-                    let tone = Float(k) + peak.offset
-                    if tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 { level = peak.level }
+        // Read through buffer pointers, with the estimator fetched once: indexing the stored arrays and reaching the
+        // static estimator per band cost an access check, a lazy-initialisation check and a retain each time, which
+        // was most of the time the bands took.
+        let estimator = PeakEstimator.hann
+        power.withUnsafeBufferPointer { bins in
+            rowPower.withUnsafeBufferPointer { rows in
+                rowPeakBin.withUnsafeBufferPointer { peaks in
+                    lowDecibels.withUnsafeBufferPointer { low in
+                        output.withUnsafeMutableBufferPointer { out in
+                            func decibels(_ bin: Int) -> Float { 10 * log10(max(bins[bin] * scale2, 1e-12)) }
+                            for index in 0..<count {
+                                let map = maps[index]
+                                guard map.interpolated else {
+                                    // A tone between two bins reads up to 1.4 dB low in either (Hann scalloping); where
+                                    // the band's loudest bin is a local maximum, the Hann peak estimate restores the
+                                    // level, if the tone lies in the band.
+                                    var level = rows[index]
+                                    let k = peaks[index]
+                                    if k > 0, k + 1 < bins.count, bins[k] > 0, bins[k] >= bins[k - 1], bins[k] >= bins[k + 1] {
+                                        let peak = estimator.peak(decibels(k - 1), level, decibels(k + 1))
+                                        let tone = Float(k) + peak.offset
+                                        if tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 { level = peak.level }
+                                    }
+                                    out[index] = level
+                                    continue
+                                }
+                                out[index] = Self.interpolatedLevel(low, at: map.position, halfWidth: map.halfWidth,
+                                                                    estimator: estimator)
+                            }
+                        }
+                    }
                 }
-                output[index] = level
-                continue
-            }
-            output[index] = lowDecibels.withUnsafeBufferPointer {
-                Self.interpolatedLevel($0, at: map.position, halfWidth: map.halfWidth)
             }
         }
     }

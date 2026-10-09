@@ -586,17 +586,14 @@ enum Theme {
         return stops[index].mixed(with: stops[index + 1], amount: rampEased(colors) ? t * t * (3 - 2 * t) : t)
     }
 
-    /// The map sampled at `WaterfallRamp.count` evenly spaced positions for the waterfall shader, which runs
-    /// straight between them (within a fraction of a percent of `ramp(position:colors:)`).
-    static func waterfallRamp(_ colors: SpectrogramColors) -> WaterfallRamp {
-        var result = WaterfallRamp()
-        withUnsafeMutableBytes(of: &result.stops) { bytes in
-            let stops = bytes.bindMemory(to: SIMD4<Float>.self)
-            for index in 0..<WaterfallRamp.count {
-                stops[index] = exactRamp(position: Float(index) / Float(WaterfallRamp.count - 1), colors: colors).simd()
-            }
-        }
-        return result
+    /// Colours the waterfall shader reads per map: every 1/32, which holds each stop of the eight-segment maps exactly
+    /// and follows the theme's eased ramp within a fraction of a percent.
+    static let waterfallRampCount = 33
+
+    /// The map sampled at `waterfallRampCount` evenly spaced positions for the waterfall shader, which runs straight
+    /// between them.
+    static func waterfallRamp(_ colors: SpectrogramColors) -> [SIMD4<Float>] {
+        (0..<waterfallRampCount).map { exactRamp(position: Float($0) / Float(waterfallRampCount - 1), colors: colors).simd() }
     }
 
     // Soft dashboard card and recessed plot radii.

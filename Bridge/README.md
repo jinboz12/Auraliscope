@@ -1,20 +1,34 @@
 # Auraliscope LABS 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
-## 1.3dev build 70: spectrogram and spectrum readability
+## 1.3dev build 71: a clearer, more readable spectrogram and spectrum
 
-Install **Auraliscope LABS 1.3dev build 70.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
+Install **Auraliscope LABS 1.3dev build 71.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
 This is a local tester build, not a notarized public release. App: Apple silicon, macOS 13+; plugins: arm64/x86_64.
 
-- Sharp, one-screen-pixel spectrogram edges when zoomed; small displays retain narrow peaks.
-- Equal levels use equal colors at every age; the calibrated underlying measurements are unchanged from build 69.
-- Smooth live/average spectrum curves no longer invent peaks between measured bands.
-- Cleaner compact header, frequency-band bounds in spectrum hover, and honest blended-window information.
-- Average spectrum clears on source, rate and Stereo/Immersive changes; labels no longer allocate an FFT analyzer.
+- **Colour maps** (Settings ▸ Panels ▸ Colors): **Heat**, the new default, runs black → indigo → crimson → amber, so
+  neighbouring levels differ in hue as well as brightness; **Theme** is the palette's ramp, as before; **Gray** is
+  plain greyscale. On the light appearance each map runs from paper to ink. The header scale, the spectrum's fill and
+  exported images follow the choice. Levels, ranges and the tone curve are unchanged.
+- **No more mosaic.** A 1/30 s column is often 8–12 screen pixels wide; build 70 drew each as a hard-edged block, so
+  music read as tiles. Enlarged cells now blend smoothly from cell centre to cell centre; every centre still shows its
+  exact level, and where one pixel covers several cells the loudest is still shown, so clicks and thin partials are
+  never averaged away.
+- **A finer live spectrum.** The curve, its peak holds and its average use 128 bands (about 1/13 octave, twice the
+  64) from the same 8192-point transform, so neighbouring notes and low-mid harmonics separate. Being one
+  resolution, broadband sound keeps one calibration across the axis (pink noise reads as a straight −3 dB/octave
+  line), so the average can be read for tonal balance. They are a new result field (51); build 70 plugins still
+  work with build 71 LABS, which then shows each of their 64 bands across its two halves.
+- **Response** (Settings ▸ Panels ▸ Response): Fast (build 70's speed), Medium (the new default, steadier) or Slow
+  (for tonal balance) sets how quickly the curve follows the sound. Peak holds and the average are unaffected.
+- Silence leaves the spectrum strip empty instead of outlining its floor edge.
+- Exported spectrogram images are at least 900 pixels wide, so the caption is no longer cut off, and carry the
+  colour scale.
 
-For a useful comparison, keep Color range, Tilt, span, window size and input identical. Try a sustained tone,
-two neighboring notes, percussion and a slow sweep; then resize, mirror the panel, pause/resume and reset.
-Use the included plugins when checking resolution labels. Please report build, Mac/OS, DAW/plugin format,
-sample rate, source, settings and steps to reproduce. See VALIDATION.md for measured evidence and limits.
+To compare with build 70, set Colors to Theme and Response to Fast, keep Color range, Tilt, span, window size and
+input identical, then try a sustained tone, two neighbouring notes, percussion, a slow sweep, pink noise and real
+music; resize, mirror the panel, switch Light/Dark, pause/resume, reset, and copy or save an image. Use the included
+plugins (a build 70 plugin shows the coarser spectrum). Please report build, Mac/OS, DAW/plugin format, sample rate,
+source, settings and steps to reproduce. See VALIDATION.md for measured evidence and limits.
 
 
 Auraliscope Bridge is an audio effect (VST3 and AUv2) that you insert on a DAW track, bus or master. It passes the
@@ -23,12 +37,21 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 69 (build numbers continue after Auraliscope 1.2.2, build 62: 63–68 were earlier LABS test packages; builds 1 to 3 were
+Build 71 (build numbers continue after Auraliscope 1.2.2, build 62: 63–70 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
 [VALIDATION.md](VALIDATION.md) for what was tested.
+
+## Build 70 changes
+
+- Compressed waterfall views visit every covered cell and show the loudest, so a small view keeps narrow peaks.
+- Equal levels use equal colours at every age; the calibrated measurements are unchanged from build 69.
+- Live and average spectrum curves use shape-preserving interpolation, so they no longer invent peaks between bands.
+- Cleaner compact header, frequency-band bounds in spectrum hover, and blended-window information in waterfall hover.
+- The average spectrum clears on source, rate and Stereo/Immersive changes; labels no longer allocate an FFT analyzer.
+- (Build 70 also drew enlarged cells with one-pixel edges; build 71 replaces that with smooth cell blending.)
 
 ## Build 69 changes
 
@@ -238,7 +261,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 69/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 71/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz
