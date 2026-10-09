@@ -9,7 +9,7 @@ struct GlassCard<Content: View>: View {
 
     var body: some View {
         content
-            .padding(12)
+            .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background { CardSurface() }
     }
@@ -19,10 +19,15 @@ struct CardSurface: View {
     var radius: CGFloat = Theme.cardRadius
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        shape.fill(LinearGradient(colors: [Theme.cardTint, Theme.cardTint.opacity(0.94)],
-                                  startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.09), lineWidth: 0.5) }
-            .shadow(color: Theme.cardShadow, radius: Theme.dark ? 11 : 9, y: Theme.dark ? 5 : 3)
+        // A flat card with light falling softly from the top (a faint sheen on dark, frosted white on light) and the
+        // quietest edge, lifted by a wide, low shadow.
+        shape.fill(Theme.cardTint)
+            .overlay {
+                shape.fill(LinearGradient(colors: [Color.white.opacity(Theme.dark ? 0.035 : 0.45), .clear],
+                                          startPoint: .top, endPoint: .center))
+            }
+            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.07 : 0.06), lineWidth: 0.5) }
+            .shadow(color: Theme.cardShadow, radius: Theme.dark ? 18 : 16, y: Theme.dark ? 8 : 6)
     }
 }
 
@@ -31,7 +36,7 @@ struct WellSurface: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous)
         shape.fill(Theme.wellFill)
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.13 : 0.11), lineWidth: 0.5) }
+            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.08 : 0.07), lineWidth: 0.5) }
     }
 }
 
@@ -65,11 +70,15 @@ private struct PanelHeader<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Eyebrow(title).layoutPriority(1)
-            Text(verbatim: detail)
-                .font(.system(size: 10)).monospacedDigit()
-                .foregroundStyle(Theme.tertiary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            // Left out whole, rather than cut to "…", where the header is too tight for it.
+            ViewThatFits(in: .horizontal) {
+                Text(verbatim: detail)
+                    .font(.system(size: 10)).monospacedDigit()
+                    .foregroundStyle(Theme.tertiary)
+                    .lineLimit(1)
+                    .fixedSize()
+                Color.clear.frame(width: 0, height: 0)
+            }
             Spacer(minLength: 8)
             trailing
         }
@@ -837,16 +846,16 @@ struct StatTile: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
                 .fill(Theme.tileFill)
             if alert != nil {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
                     .fill(Theme.ember.opacity(0.14))
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: Theme.tileRadius, style: .continuous)
                     .strokeBorder(Theme.ember.opacity(0.55), lineWidth: 1)
             }
         }

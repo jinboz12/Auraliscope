@@ -422,8 +422,8 @@ enum Theme {
     /// Small labels set on a banner (LIVE, version) sit on this.
     static var chipFill: Color { style.dark ? Color.black.opacity(0.22) : ink.opacity(0.07) }
     /// Stat tiles on the summary: a faint lift on dark, frosted white on light.
-    static var tileFill: Color { style.dark ? ink.opacity(0.05) : Color.white.opacity(0.62) }
-    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.13 : 0.07) }
+    static var tileFill: Color { style.dark ? ink.opacity(0.04) : Color.white.opacity(0.55) }
+    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.18 : 0.06) }
     /// Type on a solid status fill (accent, ochre, slate): near-black on dark, where the hues are light, and
     /// cream on light, where they are deepened.
     static var onStatus: Color { style.dark ? style.display.color : style.cream.color }
@@ -596,9 +596,11 @@ enum Theme {
         (0..<waterfallRampCount).map { exactRamp(position: Float($0) / Float(waterfallRampCount - 1), colors: colors).simd() }
     }
 
-    // Soft dashboard card and recessed plot radii.
-    static let cardRadius: CGFloat = 18
-    static let wellRadius: CGFloat = 12
+    // Soft dashboard card, recessed plot and inset tile radii: generous and continuous, so the panels read as calm
+    // objects rather than boxes.
+    static let cardRadius: CGFloat = 24
+    static let wellRadius: CGFloat = 16
+    static let tileRadius: CGFloat = 14
 }
 
 extension AppearanceMode {

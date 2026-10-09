@@ -18,13 +18,13 @@ struct PanelSettingsButton: View {
     var body: some View {
         Button { open.toggle() } label: {
             Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 10.5, weight: .medium))
                 .foregroundStyle(open ? Theme.ink : Theme.secondary)
-                .frame(width: 22, height: 18)
-                .contentShape(Rectangle())
+                .frame(width: 24, height: 24)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .background(Capsule().fill(Theme.ink.opacity(open ? 0.12 : 0.05)))
+        .background(Circle().fill(Theme.ink.opacity(open ? 0.12 : 0.06)))
         .help(L("Panel settings"))
         .accessibilityLabel(L("Panel settings"))
         .popover(isPresented: $open, arrowEdge: .bottom) {

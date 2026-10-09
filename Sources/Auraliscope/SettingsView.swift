@@ -1084,10 +1084,10 @@ struct SettingsSection<Content: View>: View {
                 .padding(.leading, 12)
             VStack(spacing: 0) { content }
                 .padding(.horizontal, 14)
-                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.10), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous)
+                        .strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.07 : 0.06), lineWidth: 0.5)
                 }
         }
     }

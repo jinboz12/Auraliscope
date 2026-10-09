@@ -484,11 +484,16 @@ struct UtilityWindowProbe: NSViewRepresentable {
     }
 }
 
-/// Slate (or pale grey) dashboard backdrop with a quiet pool of light at the upper edge.
+/// Slate (or pale grey) dashboard backdrop with a quiet pool of light at the upper edge, and a soft haze of the
+/// palette's own colour rising from the lower corners, so the cards float in a little atmosphere.
 private struct WindowBackdrop: View {
     var body: some View {
         ZStack {
             LinearGradient(colors: [Theme.windowTop, Theme.windowBottom], startPoint: .top, endPoint: .bottom)
+            RadialGradient(colors: [Theme.bannerAccent.opacity(Theme.dark ? 0.16 : 0.22), .clear],
+                           center: .bottomLeading, startRadius: 0, endRadius: 900)
+            RadialGradient(colors: [Theme.bannerAccent.opacity(Theme.dark ? 0.10 : 0.14), .clear],
+                           center: .bottomTrailing, startRadius: 0, endRadius: 700)
             RadialGradient(colors: [Theme.dark ? Theme.ink.opacity(0.045) : Color.white.opacity(0.7), .clear],
                            center: .top, startRadius: 0, endRadius: 720)
         }
@@ -621,18 +626,18 @@ private struct DashboardHero: View {
         let ceiling = model.truePeakCeiling
         ZStack(alignment: .leading) {
             // The shadow sits on this static shape, not on the live content, so readings never re-render it.
-            RoundedRectangle(cornerRadius: 19, style: .continuous)
+            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .fill(LinearGradient(colors: [Theme.bannerAccent.opacity(0.90),
                                               Theme.bannerAccent.opacity(0.68),
                                               Theme.windowBottom],
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
                 .shadow(color: Theme.dark ? .clear : Theme.cardShadow, radius: 9, y: 3)
             HeroArtwork()
-                .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
             LinearGradient(colors: Theme.dark ? [.black.opacity(0.04), .black.opacity(0.34)]
                                               : [Color.white.opacity(0.10), Theme.ink.opacity(0.04)],
                            startPoint: .top, endPoint: .bottom)
-                .clipShape(RoundedRectangle(cornerRadius: 19, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
             GeometryReader { geometry in
                 // The VU panel joined the row in Beta 3, so the compact arrangement starts at a wider summary.
                 let compact = geometry.size.width < 1240
@@ -693,7 +698,7 @@ private struct DashboardHero: View {
                 .padding(.vertical, HeroLayout.verticalPadding(height: geometry.size.height, compact: compact))
             }
         }
-        .overlay { RoundedRectangle(cornerRadius: 19).strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
+        .overlay { RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous).strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
     }
 
     private var heroTitle: some View {
