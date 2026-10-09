@@ -57,17 +57,24 @@ Width of a −12 dBFS tone in semitones at −20 / −40 / −60 / −78 dB belo
 
 ### CPU
 
-One column (P-core micro-benchmark): 44 → 77 µs at 48 kHz, 66 → 166 µs at 96 kHz, 80 → 312 µs at 192 kHz.
+P-core micro-benchmark, build 68 → 69: one waterfall column (30 per second) 44 → 78 µs at 48 kHz, 67 → 140 µs at
+96 kHz, 81 → 257 µs at 192 kHz; one spectrum transform (60 per second) 19 µs at 48 kHz (unchanged), 41 µs at 96 kHz,
+152 µs at 192 kHz (the transform is 2× and 4× longer there).
 
-Paired full-plugin comparison, `CompareResources.py <build68.vst3> <build69.vst3>` (15 s runs, three alternating-order
-pairs, medians; every run bitwise passthrough, zero process errors; the 96 kHz case is new to the tool):
+Paired full-plugin comparison of the final build, `CompareResources.py <build68.vst3> <build69.vst3>` (15 s runs,
+three alternating-order pairs, medians; every run bitwise passthrough, zero process errors; the 96 kHz case is new to
+the tool):
 
 | Scenario | Build 68 CPU | Build 69 CPU | Relative change |
 |---|---:|---:|---:|
-| 8 mono instances, 48 kHz, 256 frames | 14.48% | 16.33% | +12.7% |
-| 32 stereo instances, 48 kHz, 256 frames | 31.32% | 33.38% | +6.6% |
-| 8 stereo instances, 96 kHz, 512 frames | 21.14% | 24.41% | +15.5% |
-| 8 stereo instances, 192 kHz, 1024 frames | 27.68% | 29.84% | +7.8% |
+| 8 mono instances, 48 kHz, 256 frames | 14.67% | 17.89% | +22.0% |
+| 32 stereo instances, 48 kHz, 256 frames | 32.91% | 34.49% | +4.8% |
+| 8 stereo instances, 96 kHz, 512 frames | 22.20% | 28.14% | +26.8% |
+| 8 stereo instances, 192 kHz, 1024 frames | 29.57% | 34.37% | +16.2% |
+
+Run-to-run spread is large in the small cases (8 mono baseline: 12.5, 14.7, 16.2 %). Two intermediate runs split
+the cost: the spectrogram changes alone measured +12.7 / +6.6 / +15.5 / +7.8 % against build 68 (same four cases),
+and the longer spectrum transform alone +0.8 / +0.3 / +3.6 / +13.0 % against that.
 
 The analysis runs on the plugins' analysis threads, never on the host's audio callback (unchanged).
 
@@ -75,7 +82,7 @@ The analysis runs on the plugins' analysis threads, never on the host's audio ca
 
 | Check | Build 69 result |
 |---|---|
-| Core suite | 45/45 (new: window choice and leakage > 85 dB down 1.5 semitones away, rate-independent zones, Blackman–Harris estimator against a real DFT, cell-exact history reads) |
+| Core suite | 45/45 (new: window choice and leakage > 85 dB down 1.5 semitones away, rate-independent zones, Blackman–Harris estimator against a real DFT, cell-exact history reads, peak readout and bass notes at 192 kHz) |
 | AddressSanitizer | core 45/45 and kernel checks pass |
 | Localization | 359 keys, en / zh-Hans / ko |
 | Bridge analysis | 95/95 |
