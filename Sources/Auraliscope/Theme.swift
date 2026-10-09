@@ -363,7 +363,7 @@ enum Theme {
         }
     }
 
-    private(set) static var style = Style.stored
+    private(set) static var style = Style.stored { didSet { rampTables = [:] } }
     static func resolve(palette: Palette, dark: Bool) { style = Style(palette: palette, dark: dark) }
     /// macOS's appearance before AppKit is up (offscreen renders from the command line).
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
@@ -540,12 +540,13 @@ enum Theme {
                          RGB(r: 0.976, g: 0.565, b: 0.075), RGB(r: 0.984, g: 0.765, b: 0.200),
                          RGB(r: 0.988, g: 0.988, b: 0.700)]
             guard !dark else { return stops }
-            // On paper: from white through pale amber to deep indigo, the same hues in reverse.
-            return [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.992, g: 0.925, b: 0.640),
-                    RGB(r: 0.984, g: 0.722, b: 0.290), RGB(r: 0.906, g: 0.447, b: 0.200),
-                    RGB(r: 0.741, g: 0.239, b: 0.329), RGB(r: 0.494, g: 0.118, b: 0.427),
-                    RGB(r: 0.290, g: 0.047, b: 0.420), RGB(r: 0.125, g: 0.035, b: 0.250),
-                    RGB(r: 0.020, g: 0.010, b: 0.060)]
+            // On paper: the same hues in reverse, lightness falling from white as steadily as it rises from black on
+            // dark, so quiet detail stays a pale wash and only loud partials turn deep.
+            return [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.990, g: 0.950, b: 0.850),
+                    RGB(r: 0.990, g: 0.880, b: 0.620), RGB(r: 0.980, g: 0.740, b: 0.380),
+                    RGB(r: 0.930, g: 0.550, b: 0.260), RGB(r: 0.820, g: 0.330, b: 0.270),
+                    RGB(r: 0.600, g: 0.150, b: 0.380), RGB(r: 0.330, g: 0.060, b: 0.400),
+                    RGB(r: 0.060, g: 0.020, b: 0.120)]
         case .gray:
             let black = RGB(r: 0.030, g: 0.030, b: 0.032), white = RGB(r: 0.965, g: 0.965, b: 0.955)
             return dark ? [black, white] : [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.060, g: 0.062, b: 0.070)]
@@ -561,8 +562,22 @@ enum Theme {
         ramp(position: SpectrogramTone.position(db, range: range), colors: colors)
     }
 
-    /// The colour at `x` (0…1) along `colors`' stops (`rampStops(_:)`).
+    /// The colour at `x` (0…1) along `colors`' stops (`rampStops(_:)`), from a fine table: the live spectrum asks for
+    /// about a thousand colours a frame.
     static func ramp(position x: Float, colors: SpectrogramColors) -> RGB {
+        let table = rampTables[colors] ?? {
+            let table = (0..<rampTableSize).map { exactRamp(position: Float($0) / Float(rampTableSize - 1), colors: colors) }
+            rampTables[colors] = table
+            return table
+        }()
+        return table[Int((max(0, min(1, x)) * Float(rampTableSize - 1)).rounded())]
+    }
+
+    private static let rampTableSize = 1024
+    /// `exactRamp` per map in the current style; cleared when the style changes.
+    private static var rampTables: [SpectrogramColors: [RGB]] = [:]
+
+    private static func exactRamp(position x: Float, colors: SpectrogramColors) -> RGB {
         let x = max(0, min(1, x))
         let stops = rampStops(colors)
         let scaled = x * Float(stops.count - 1)
@@ -578,7 +593,7 @@ enum Theme {
         withUnsafeMutableBytes(of: &result.stops) { bytes in
             let stops = bytes.bindMemory(to: SIMD4<Float>.self)
             for index in 0..<WaterfallRamp.count {
-                stops[index] = ramp(position: Float(index) / Float(WaterfallRamp.count - 1), colors: colors).simd()
+                stops[index] = exactRamp(position: Float(index) / Float(WaterfallRamp.count - 1), colors: colors).simd()
             }
         }
         return result

@@ -198,7 +198,7 @@ private struct BadgeSurface: View {
 /// itself (`SpectrogramTone`), linear in dB, with a notch every 24 dB; and the display slope when one is set.
 private struct SpectrogramLegend: View {
     @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
-    @AppStorage(SpectrogramColors.key) private var colorsKey = SpectrogramColors.theme.rawValue
+    @AppStorage(SpectrogramColors.key) private var colorsKey = SpectrogramColors.heat.rawValue
     @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
     @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
     @ObservedObject private var theme = ThemeSettings.shared
@@ -225,7 +225,7 @@ private struct SpectrogramLegend: View {
             Canvas { context, size in
                 let steps = 24
                 let span = range.ceiling - range.floor
-                let colors = SpectrogramColors(rawValue: colorsKey) ?? .theme
+                let colors = SpectrogramColors(rawValue: colorsKey) ?? .heat
                 let stops = (0...steps).map { step -> Gradient.Stop in
                     let fraction = Float(step) / Float(steps)
                     let color = Theme.ramp(decibels: range.floor + span * fraction, range: range, colors: colors).color
@@ -1146,7 +1146,7 @@ struct DisplayOptions: Equatable {
     var bandMarkers = true
     /// The levels the spectrogram's colors span, and the display slope of the spectrum and spectrogram.
     var spectrogramRange = SpectrogramRange.standard
-    var spectrogramColors = SpectrogramColors.theme
+    var spectrogramColors = SpectrogramColors.heat
     var tilt = SpectrumTilt.flat
     /// The live spectrum's long-term average since the last reset.
     var averageSpectrum = true

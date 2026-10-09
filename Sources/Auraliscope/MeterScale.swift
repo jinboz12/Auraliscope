@@ -276,10 +276,10 @@ enum SpectrogramRange: String, CaseIterable {
 /// levels are easier to tell apart; Gray is plain greyscale, the most neutral picture. On a light appearance each runs
 /// from the paper-white well toward ink instead (`Theme.rampStops(_:)`).
 enum SpectrogramColors: String, CaseIterable {
-    case theme, heat, gray
+    case heat, theme, gray
 
     static let key = "spectrogram.colors"
-    static var stored: SpectrogramColors { SpectrogramColors(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .theme }
+    static var stored: SpectrogramColors { SpectrogramColors(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .heat }
 
     var title: String {
         switch self {
@@ -345,10 +345,10 @@ enum SpectrumTilt: String, CaseIterable {
 enum SpectrogramTone {
     static let gamma: Float = 1.6
     static let contrast: Float = 0.6
-    /// How far, in cells, an enlarged waterfall cell eases into its neighbour (`waterfallAxis`): columns are 1/30 s
-    /// and usually several pixels wide, so they ease over most of a cell; rows are a pixel or two and stay crisp.
-    static let columnSoftness: Float = 0.7
-    static let rowSoftness: Float = 0.5
+    /// How far, in cells, an enlarged waterfall cell eases into its neighbour (`waterfallAxis`): a whole cell, so
+    /// enlarged cells blend from centre to centre like a smooth image while each cell's centre keeps its exact level.
+    static let columnSoftness: Float = 1.0
+    static let rowSoftness: Float = 1.0
 
     static func position(_ db: Float, range: SpectrogramRange) -> Float {
         let linear = max(0, min(1, (db - range.floor) / (range.ceiling - range.floor)))

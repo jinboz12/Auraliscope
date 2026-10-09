@@ -25,7 +25,7 @@ using namespace metal;
 \(reduction)
 kernel void ranges(constant float2 *input [[buffer(0)]], device int2 *output [[buffer(1)]],
                    uint i [[thread_position_in_grid]]) {
-    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y, 0.7);
+    WaterfallAxis axis = waterfallAxis(input[i].x, input[i].y, 1.0);
     output[i] = int2(axis.first[0], axis.last[0]);
 }
 kernel void edges(constant float4 *input [[buffer(0)]], device float *output [[buffer(1)]],
@@ -103,7 +103,7 @@ for tilt: Float in [0, 3, 4.5] {
 let edgePipeline = try device.makeComputePipelineState(function: library.makeFunction(name: "edges")!)
 var edgeInputs: [SIMD4<Float>] = []
 // Magnified cells: a hard one-device-pixel edge (softness 0) and the display's eased columns and rows.
-for softness: Float in [0, 0.5, 0.7] {
+for softness: Float in [0, 0.5, 1] {
     for footprint: Float in [0.05, 0.1, 0.25, 0.5, 1] {
         for step in 0...100 { edgeInputs.append(SIMD4(Float(step) / 100, footprint, softness, 0)) }
     }
@@ -124,7 +124,7 @@ for (i, input) in edgeInputs.enumerated() {
     let expected = t * t * (3 - 2 * t)
     if abs(edgeValues[i] - expected) > 0.0001 { errors += 1 }
     // A cell keeps its full value over the middle of its box, outside the eased band.
-    if input.z <= 0.7, abs(input.x - floor(input.x) - 0.5) >= ease + 0.001, edgeValues[i] != 0, edgeValues[i] != 1 { errors += 1 }
+    if abs(input.x - floor(input.x) - 0.5) >= ease + 0.001, edgeValues[i] != 0, edgeValues[i] != 1 { errors += 1 }
 }
 print("\(edgeInputs.count) GPU edge comparisons at 1–20 device pixels per cell, hard and eased")
 let rangePipeline = try device.makeComputePipelineState(function: library.makeFunction(name: "ranges")!)
