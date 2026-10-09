@@ -18,12 +18,16 @@ final class DSPWorker {
     private final class Clock { var paused: CFTimeInterval = 0 }
     private let clock = Clock()
     private var pausedAt: CFTimeInterval?
+    /// Owned by `queue`: only ever touched there.
+    private let pipeline: MeterPipeline
+    private var spectrogramMode = SpectrogramMode.classic
 
     init?(ring: OpaquePointer, sampleRate: Double, streamID: UInt32, activeRoles: [Bool], detector: FormatDetector) {
         precondition(SnapshotSlots.total == Int(METER_SNAPSHOT_FLOATS), "snapshot layout and C buffer disagree")
         guard let pipeline = MeterPipeline(sampleRate: sampleRate, activeRoles: activeRoles, detector: detector, streamID: streamID),
               let exchange = meter_exchange_create() else { return nil }
         self.exchange = exchange
+        self.pipeline = pipeline
         let source = DispatchSource.makeTimerSource(queue: queue)
         var batch = [ChannelFrame](repeating: ChannelFrame(), count: 4096)
         var values = [Float](repeating: 0, count: Int(METER_SNAPSHOT_FLOATS))
@@ -78,6 +82,13 @@ final class DSPWorker {
     /// Spatial monitoring: spectrum and waterfall sum every routed channel.
     func setSpatialSpectrum(_ spatial: Bool) { meter_exchange_set_mode(exchange, spatial ? 1 : 0) }
 
+    /// The waterfall's analysis for the columns from now on.
+    func setSpectrogramMode(_ mode: SpectrogramMode) {
+        guard mode != spectrogramMode else { return }
+        spectrogramMode = mode
+        queue.async { [pipeline] in pipeline.spectrum.spectrogramMode = mode }
+    }
+
     func latest() -> MeterSnapshot? {
         guard meter_exchange_read(exchange, &readValues) != 0 else { return nil }
         return Self.decode(readValues)
@@ -87,6 +98,7 @@ final class DSPWorker {
         var s = MeterSnapshot()
         s.spectrum = Array(v[SnapshotSlots.spectrum..<(SnapshotSlots.spectrum + MeterSnapshot.bandCount)])
         s.spectrumFine = Array(v[SnapshotSlots.spectrumFine..<(SnapshotSlots.spectrumFine + MeterSnapshot.fineBandCount)])
+        s.spectrogramMode = v[SnapshotSlots.spectrogramMode]
         s.channelPeaks = Array(v[SnapshotSlots.peaks..<(SnapshotSlots.peaks + Role.count)])
         s.channelRMS = Array(v[SnapshotSlots.rms..<(SnapshotSlots.rms + Role.count)])
         s.channelTruePeaks = Array(v[SnapshotSlots.truePeaks..<(SnapshotSlots.truePeaks + Role.count)])
@@ -627,6 +639,9 @@ final class MeterModel: ObservableObject {
 
     func canvasFrame() -> CanvasFrame {
         worker?.setSpatialSpectrum(format == .spatial)
+        let mode: SpectrogramMode = displayOptions.spectrogramAnalysis == .enhanced ? .enhanced : .classic
+        worker?.setSpectrogramMode(mode)
+        bridge?.setSpectrogram(mode)
         return CanvasFrame(snapshot: pollSnapshot(), sampleRate: sampleRate, running: running, frozen: frozen,
                     activeRoles: routedRoles, epoch: epoch, spatial: format == .spatial, mono: format == .mono,
                     layout: speakerLayout, spectrumStrip: spectrumStrip, truePeakEpoch: truePeakEpoch,

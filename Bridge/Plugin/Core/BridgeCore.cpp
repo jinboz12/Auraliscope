@@ -375,6 +375,7 @@ bool BridgeCore::startGeneration(double sampleRate, uint32_t channels, uint32_t 
     ++generationCounter_;
     const bool paused = pausedWanted_.load(std::memory_order_relaxed);
     abr_analyzer_set_measuring(next, paused ? 0 : 1);
+    abr_analyzer_set_spectrogram_mode(next, spectrogramMode_.load(std::memory_order_relaxed));
     generation_.store(generationCounter_, std::memory_order_relaxed);
     measurement_.store(paused ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
     framesAnalysed_.store(0, std::memory_order_relaxed);
@@ -446,6 +447,7 @@ void BridgeCore::runCommands() {
 // analysis between the right frames. Then the newest state goes to the mailbox for the sender.
 uint32_t BridgeCore::analyse(uint64_t nowNs, double maxSeconds) {
     runCommands();
+    if (analyzer_) abr_analyzer_set_spectrogram_mode(analyzer_, spectrogramMode_.load(std::memory_order_relaxed));
     const double now = double(nowNs) / 1e9;
     uint32_t analysed = 0;
     CaptureRecord header;
@@ -642,11 +644,19 @@ bool BridgeCore::readControl() {
             } else if (header.type == ABR_MSG_SUBSCRIBE) {
                 AbrReader r = abr_reader(payload, header.length);
                 AbrField f;
-                uint32_t subscription = 0;
-                while (abr_next_field(&r, &f)) if (f.tag == ABR_SUBSCRIBE_SUBSCRIPTION) abr_field_u32(&f, &subscription);
-                if (subscription != 0) subscription_.store(subscription, std::memory_order_release);
+                uint32_t subscription = 0, spectrogram = 0;
+                while (abr_next_field(&r, &f)) {
+                    if (f.tag == ABR_SUBSCRIBE_SUBSCRIPTION) abr_field_u32(&f, &subscription);
+                    if (f.tag == ABR_SUBSCRIBE_SPECTROGRAM) abr_field_u32(&f, &spectrogram);
+                }
+                // Repeating the current number only changes the options: the columns carry on where they were.
+                if (subscription != 0) {
+                    spectrogramMode_.store(spectrogram, std::memory_order_relaxed);
+                    subscription_.store(subscription, std::memory_order_release);
+                }
             } else if (header.type == ABR_MSG_UNSUBSCRIBE) {
                 subscription_.store(0, std::memory_order_release);
+                spectrogramMode_.store(0, std::memory_order_relaxed);  // nobody is watching: the cheaper analysis
             } else if (header.type == ABR_MSG_COMMAND) {
                 handleCommand(payload, header.length);
             }

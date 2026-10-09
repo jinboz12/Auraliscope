@@ -1152,6 +1152,70 @@ final class CoreTests {
         }
     }
 
+    func testReassignedSpectrogram() throws {
+        let rows = MeterSnapshot.spectrogramBandCount
+        func row(_ hz: Double, upper: Double = 20_000) -> Int { Int(log(hz / 20) / log(upper / 20) * Double(rows)) }
+        func power(_ db: Float) -> Double { pow(10, Double(db) / 10) }
+        let zones = try unwrap(ReassignedSpectrogram(sampleRate: 48_000, span: 8192)).resolutions
+        checkEqual(zones.map(\.length), [8192, 4096, 2048, 1024, 512])
+        checkEqual(zones.map { Int($0.low) }, [0, 375, 750, 1500, 3000])
+        func column(rate: Double, _ sample: (Int) -> Float) throws -> [Float] {
+            let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: rate))
+            analyzer.spectrogramMode = .enhanced
+            let frames = (0..<analyzer.historyLength).map { index -> StereoFrame in
+                let value = sample(index)
+                return StereoFrame(left: value, right: value)
+            }
+            frames.withUnsafeBufferPointer { analyzer.consume($0) }
+            return analyzer.snapshot().spectrogram
+        }
+        // A sine of amplitude ½ collapses onto its own rows at −6.02 dBFS in every zone and at any bin offset, and a
+        // semitone and a half away nothing is left within any colour range (in the bass, where that is closer than
+        // the main lobe's half-width, nothing above the Standard range's floor).
+        for (rate, hz) in [(48_000.0, 55.0), (48_000, 130.8), (48_000, 440), (48_000, 1_000.7), (48_000, 2_600),
+                           (48_000, 5_000.3), (48_000, 12_345), (44_100, 997), (96_000, 440), (96_000, 6_000)] {
+            let values = try column(rate: rate) { Float(sin(2 * Double.pi * hz * Double($0) / rate)) * 0.5 }
+            let upper = min(20_000, rate / 2), centre = row(hz, upper: upper)
+            let total = (centre - 2...centre + 2).reduce(0.0) { $0 + power(values[$1]) }
+            checkEqual(10 * log10(total), -6.02, accuracy: 0.3)
+            for offset in [-1.5, 1.5] {
+                let away = row(hz * pow(2, offset / 12), upper: upper)
+                if away < rows { checkTrue(values[away] < (hz < 200 ? -80 : -100)) }
+            }
+        }
+        // A click lands in the column of its own instant: at the column's centre it lights the mid and treble rows;
+        // 40 ms later (the next column but one) this column keeps almost none of it. A click has no pitch, so its
+        // energy stays on the bins' own frequencies, which in a zone's lower rows are wider apart than the rows:
+        // read a third of an octave.
+        let centre = SpectrumAnalyzer.historyLength(sampleRate: 48_000) / 2
+        let now = try column(rate: 48_000) { $0 == centre ? 1 : 0 }
+        let later = try column(rate: 48_000) { $0 == centre + 1_920 ? 1 : 0 }
+        func third(_ values: [Float], _ hz: Double) -> Double {
+            10 * log10((row(hz / 1.12)...row(hz * 1.12)).reduce(1e-30) { $0 + power(values[$1]) })
+        }
+        for hz in [1_000.0, 4_000, 10_000] {
+            checkTrue(third(now, hz) > -50)
+            checkTrue(third(later, hz) < third(now, hz) - 30)
+        }
+        // Broadband noise reads the power in each row's slice of frequency, so the zones join without a step
+        // (averaged over 32 noise columns: a single one is grainy by design).
+        var seed: UInt64 = 0x2545F4914F6CDD1D
+        var noise = [Double](repeating: 0, count: rows)
+        for _ in 0..<32 {
+            let values = try column(rate: 48_000) { _ in
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                return Float(Int64(bitPattern: seed >> 11) % 1_000_000) / 2_000_000
+            }
+            for index in 0..<rows { noise[index] += power(values[index]) }
+        }
+        for boundary in [375.0, 750, 1_500, 3_000] {
+            let below = (row(boundary / 1.5)..<row(boundary)).reduce(0.0) { $0 + noise[$1] }
+            let above = (row(boundary)..<row(boundary * 1.5)).reduce(0.0) { $0 + noise[$1] }
+            // White noise's power grows with each slice's width: 1.5 times as many hertz above as below.
+            checkEqual(10 * log10(above / below), 10 * log10(1.5), accuracy: 1)
+        }
+    }
+
     func testFullRangeSpectrogramHistory() throws {
         let analyzer = try unwrap(SpectrumAnalyzer(sampleRate: 48_000))
         let frames = (0..<SpectrumAnalyzer.fftSize).map { index -> StereoFrame in
@@ -2106,6 +2170,7 @@ struct TestRunner {
             ("8192 FFT, 512-row float spectrogram history, tone curve and tilt", suite.testFullRangeSpectrogramHistory),
             ("128 fine spectrum bands: sine calibration at three rates and agreement with the 64", suite.testFineSpectrumBands),
             ("multi-resolution spectrogram: window choice, calibration across zones and blends, treble timing", suite.testMultiResolutionSpectrogram),
+            ("enhanced (reassigned) spectrogram: zones, sine calibration and sharpness, click timing, zone joins", suite.testReassignedSpectrogram),
             ("critically damped 60 Hz display convergence", suite.testDampedDisplayConvergence),
             ("IEC meter scale and shared panel layouts", suite.testMeterScaleAndLayouts),
             ("stereo ↔ spatial detector attack, hold and silence freeze", suite.testFormatDetectorHysteresis),

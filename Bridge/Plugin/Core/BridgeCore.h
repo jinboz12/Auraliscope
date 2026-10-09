@@ -214,6 +214,7 @@ private:
 
     // Sender thread state (the atomics are also read by other threads).
     std::atomic<uint32_t> subscription_{0};     // 0: not sending results
+    std::atomic<uint32_t> spectrogramMode_{0};  // the subscriber's waterfall analysis (ABR_SUBSCRIBE_SPECTROGRAM)
     std::atomic<bool> connected_{false};
     std::atomic<bool> receiverTooOld_{false};
     std::atomic<bool> receiverTooNew_{false};

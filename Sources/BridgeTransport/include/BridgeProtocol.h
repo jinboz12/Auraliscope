@@ -162,6 +162,7 @@ enum {  // STATUS
 };
 enum {  // SUBSCRIBE
     ABR_SUBSCRIBE_SUBSCRIPTION = 1,  // u32, non-zero: echoed in every RESULT of this subscription
+    ABR_SUBSCRIBE_SPECTROGRAM = 2,   // u32: the waterfall analysis wanted, 0 Classic (default), 1 Enhanced
 };
 enum {  // COMMAND
     ABR_COMMAND_ID = 1,              // u32: chosen by the application, echoed in the ACK

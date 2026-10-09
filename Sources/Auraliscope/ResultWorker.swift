@@ -12,6 +12,7 @@ protocol MeterWorker: AnyObject {
     func stop()
     func resetTruePeaks()
     func setSpatialSpectrum(_ spatial: Bool)
+    func setSpectrogramMode(_ mode: SpectrogramMode)
 }
 
 extension DSPWorker: MeterWorker {}
@@ -75,6 +76,8 @@ final class ResultWorker: MeterWorker {
 
     func resetTruePeaks() {}
     func setSpatialSpectrum(_ spatial: Bool) {}
+    /// The plugin analyses: `BridgeReceiver.setSpectrogram` asks it.
+    func setSpectrogramMode(_ mode: SpectrogramMode) {}
 
     deinit {
         stop()

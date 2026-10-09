@@ -44,6 +44,8 @@ void abr_analyzer_interrupt(AbrAnalyzer *analyzer, uint64_t lost_frames, uint32_
 int abr_analyzer_idle(AbrAnalyzer *analyzer, double now);
 void abr_analyzer_set_measuring(AbrAnalyzer *analyzer, int measuring);
 void abr_analyzer_reset_true_peaks(AbrAnalyzer *analyzer);
+// The waterfall's analysis for the columns from now on: 0 Classic, 1 Enhanced (others are Classic).
+void abr_analyzer_set_spectrogram_mode(AbrAnalyzer *analyzer, uint32_t mode);
 // Ticks published so far (a new result is ready when this grows).
 uint64_t abr_analyzer_ticks(const AbrAnalyzer *analyzer);
 // Writes a RESULT payload (Bridge/PROTOCOL.md) into `buffer`; returns its size, 0 when there is nothing yet or it

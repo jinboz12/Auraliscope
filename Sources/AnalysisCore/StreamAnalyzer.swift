@@ -122,6 +122,12 @@ package final class StreamAnalyzer {
         return true
     }
 
+    /// The waterfall's analysis, as the subscribed display asked for it; columns from now on follow it.
+    package var spectrogramMode: SpectrogramMode {
+        get { pipeline.spectrum.spectrogramMode }
+        set { pipeline.spectrum.spectrogramMode = newValue }
+    }
+
     /// Pausing keeps everything measured so far and accumulates nothing until resumed; resuming carries on without
     /// a break, as Auraliscope's Pause Capture does.
     package func setMeasuring(_ on: Bool) { measuring = on }
@@ -275,6 +281,7 @@ package final class StreamAnalyzer {
         }
         w.f32s(ResultTag.spectrogram.rawValue, columns)
         w.u64(ResultTag.spectrogramLatest.rawValue, spectrogramLatest)
+        w.u32(ResultTag.spectrogramMode.rawValue, spectrogramMode.rawValue)
         // Columns this receiver will never get: skipped because they left the queue before they could be sent.
         w.u64(ResultTag.spectrogramDropped.rawValue, afterSpectrogram > 0 ? spectrogramFirst - afterSpectrogram - 1 : 0)
 

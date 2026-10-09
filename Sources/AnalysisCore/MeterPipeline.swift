@@ -33,7 +33,9 @@ package enum SnapshotSlots {
     package static let breaks = waveform + WaveformEnvelope.publishedFloats
     package static let missing = breaks + 1
     package static let spectrumFine = missing + 1
-    package static let total = spectrumFine + MeterSnapshot.fineBandCount
+    /// `SpectrogramMode` of the newest waterfall column.
+    package static let spectrogramMode = spectrumFine + MeterSnapshot.fineBandCount
+    package static let total = spectrogramMode + 1
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -358,6 +360,7 @@ package final class MeterPipeline {
         }
         for i in 0..<MeterSnapshot.spectrogramBandCount { v[SnapshotSlots.spectrogram + i] = column[i] }
         v[SnapshotSlots.spectrogramSerial] = Float(spectrogramSerial)
+        v[SnapshotSlots.spectrogramMode] = Float(spectrum.spectrogramMode.rawValue)
         v[SnapshotSlots.format] = Float(format.rawValue)
 
         let loudness = loudness.loudnessValues()

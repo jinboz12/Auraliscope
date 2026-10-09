@@ -136,6 +136,7 @@ package final class ResultAssembler {
         copy(m.spectrumFine.count == MeterSnapshot.fineBandCount ? m.spectrumFine
                  : (0..<MeterSnapshot.fineBandCount).map { $0 / 2 < m.spectrum.count ? m.spectrum[$0 / 2] : -120 },
              to: SnapshotSlots.spectrumFine, count: MeterSnapshot.fineBandCount, fill: -120)
+        values[SnapshotSlots.spectrogramMode] = Float(m.spectrogramMode ?? SpectrogramMode.classic.rawValue)
         values[SnapshotSlots.peakFrequency] = m.dominant.count == 2 ? m.dominant[0] : 0
         values[SnapshotSlots.peakLevel] = m.dominant.count == 2 ? m.dominant[1] : -120
         for i in 0..<(2 * SpectrumAnalyzer.maxNotes) {

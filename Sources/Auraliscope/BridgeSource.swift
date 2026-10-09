@@ -295,6 +295,14 @@ final class BridgeReceiver {
         else { abr_server_select(server, nil) }
     }
 
+    /// The waterfall analysis every subscription asks for; a change reaches the subscribed instance at once.
+    func setSpectrogram(_ mode: SpectrogramMode) {
+        guard mode != spectrogram else { return }
+        spectrogram = mode
+        abr_server_set_spectrogram(server, mode.rawValue)
+    }
+    private var spectrogram = SpectrogramMode.classic
+
     /// Delivers the selected instance's results into `inbox` until `detach`. The inbox must outlive the attachment.
     func attach(_ inbox: ResultInbox) {
         abr_server_detach(server)

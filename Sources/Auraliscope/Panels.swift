@@ -1154,6 +1154,11 @@ struct DisplayOptions: Equatable {
     var spectrumResponse = SpectrumResponse.medium
     /// Seconds across the spectrogram.
     var spectrogramSpan = SpectrogramSpan.auto
+    /// Smoothing of the live spectrum across frequency.
+    var spectrumSmoothing = SpectrumSmoothing.sixth
+    /// Classic or reassigned spectrogram, drawn flat or in 3D.
+    var spectrogramAnalysis = SpectrogramAnalysis.classic
+    var spectrogramView = SpectrogramView.flat
 
     static let peakHoldsKey = "spectrum.peakHolds"
     static let waveSecondsKey = "waveform.seconds"
@@ -1170,7 +1175,8 @@ struct DisplayOptions: Equatable {
                               bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
                               spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored,
                               averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
-                              spectrumResponse: .stored, spectrogramSpan: .stored)
+                              spectrumResponse: .stored, spectrogramSpan: .stored, spectrumSmoothing: .stored,
+                              spectrogramAnalysis: .stored, spectrogramView: .stored)
     }
 }
 

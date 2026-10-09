@@ -198,6 +198,8 @@ package enum ResultTag: UInt16 {
     case spectrogramLatest = 63    // u64: newest column serial analysed (≥ first + n − 1)
     case spectrogramDropped = 64   // u64: columns skipped just before `first` because the receiver fell more than
                                    // the plugin's queue (about 2 s) behind; 0 when contiguous or for a new receiver
+    case spectrogramMode = 65      // u32: analysis of the newest columns (`SpectrogramMode`: 0 Classic, 1 Enhanced;
+                                   // build 72 and later, absent before: Classic)
     case waveformFirst = 70        // u64
     case waveformColumnRate = 71   // f64: columns per second of audio (240)
     case waveform = 72             // f32[n × channels × 2]: n columns, oldest first, (min, max) per channel
@@ -260,6 +262,8 @@ package struct ResultMessage {
     package var spectrogramRows = ResultMessage.spectrogramRows
     package var spectrogram: [Float] = []
     package var spectrogramLatest: UInt64 = 0
+    /// nil from a plugin that does not say (before build 72): its columns are Classic.
+    package var spectrogramMode: UInt32?
     package var spectrogramDropped: UInt64 = 0
     package var waveformFirst: UInt64 = 0
     package var waveformColumnRate: Double = WaveformEnvelope.columnRate
@@ -343,6 +347,7 @@ package struct ResultMessage {
             case .spectrogram:
                 take(field.f32s(limit: StreamAnalyzer.spectrogramCapacity * spectrogramRows)) { m.spectrogram = $0 }
             case .spectrogramLatest: take(field.u64) { m.spectrogramLatest = $0 }
+            case .spectrogramMode: take(field.u32) { m.spectrogramMode = $0 }
             case .spectrogramDropped: take(field.u64) { m.spectrogramDropped = $0 }
             case .waveformFirst: take(field.u64) { m.waveformFirst = $0 }
             case .waveformColumnRate: take(field.f64) { m.waveformColumnRate = $0 }

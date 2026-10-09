@@ -315,6 +315,81 @@ enum SpectrumResponse: String, CaseIterable {
     }
 }
 
+/// How much the live spectrum's curve, peak holds and average are smoothed across frequency: a Gaussian of the given
+/// width (full width at half maximum, in octaves), averaged in power so a narrow peak keeps its energy. Off draws
+/// every fine band; 1/6 octave reads like a mixing engineer's analyser; 1/3 octave shows the broad tonal balance.
+enum SpectrumSmoothing: String, CaseIterable {
+    case off, twelfth, sixth, third
+
+    static let key = "spectrum.smoothing"
+    static var stored: SpectrumSmoothing { SpectrumSmoothing(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .sixth }
+
+    var octaves: Double {
+        switch self {
+        case .off: return 0
+        case .twelfth: return 1.0 / 12
+        case .sixth: return 1.0 / 6
+        case .third: return 1.0 / 3
+        }
+    }
+    var title: String {
+        switch self {
+        case .off: return L("Off")
+        case .twelfth: return "1/12"
+        case .sixth: return "1/6"
+        case .third: return "1/3"
+        }
+    }
+
+    /// Normalised kernel weights for offsets −n…n points, with `pointsPerOctave` points to an octave; empty when off
+    /// or narrower than a point.
+    func kernel(pointsPerOctave: Double) -> [Float] {
+        let sigma = octaves * pointsPerOctave / 2.3548
+        guard sigma > 0.35 else { return [] }
+        let reach = Int((3 * sigma).rounded(.up))
+        let weights = (-reach...reach).map { Float(exp(-0.5 * pow(Double($0) / sigma, 2))) }
+        let sum = weights.reduce(0, +)
+        return weights.map { $0 / sum }
+    }
+
+    /// `levels` (dBFS) smoothed with `kernel` in power; the ends reuse the nearest point.
+    static func apply(_ kernel: [Float], to levels: [Float]) -> [Float] {
+        guard !kernel.isEmpty else { return levels }
+        let reach = kernel.count / 2
+        let power = levels.map { pow(10, $0 / 10) }
+        return levels.indices.map { index in
+            var sum: Float = 0
+            for (offset, weight) in kernel.enumerated() {
+                sum += weight * power[max(0, min(levels.count - 1, index + offset - reach))]
+            }
+            return max(-120, 10 * log10(max(sum, 1e-12)))
+        }
+    }
+}
+
+/// How the spectrogram is analysed. Classic is the multi-resolution short-time Fourier analysis, every row at its
+/// calibrated level. Enhanced reassigns each bin's energy to where its phase says it belongs, in time and in frequency
+/// (`ReassignedSpectrogram`): tones become thin lines and onsets sharp edges, while noise breaks into fine grain.
+enum SpectrogramAnalysis: String, CaseIterable {
+    case classic, enhanced
+
+    static let key = "spectrogram.analysis"
+    static var stored: SpectrogramAnalysis { SpectrogramAnalysis(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .classic }
+
+    var title: String { self == .classic ? L("Classic") : L("Enhanced") }
+}
+
+/// The spectrogram as a flat image scrolling in time, or as a 3D landscape: time across, frequency in depth, level
+/// as height, seen from above the front.
+enum SpectrogramView: String, CaseIterable {
+    case flat, surface
+
+    static let key = "spectrogram.view"
+    static var stored: SpectrogramView { SpectrogramView(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .flat }
+
+    var title: String { self == .flat ? "2D" : "3D" }
+}
+
 /// How many seconds the spectrogram shows: Auto fits 3 to 8 s to the panel's width (about 100 pt a second); a fixed
 /// span shows that much at any width, up to 15 s to see a whole phrase (the history keeps 17 s).
 enum SpectrogramSpan: String, CaseIterable {

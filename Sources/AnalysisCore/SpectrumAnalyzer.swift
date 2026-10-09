@@ -206,6 +206,8 @@ package struct MeterSnapshot: Equatable {
     package var sequence: Float = 0
     /// Advances once per waterfall column (30 per second), independent of the snapshot rate.
     package var spectrogramSerial: Float = 0
+    /// `SpectrogramMode` of the newest column (a plugin before build 72 sends only Classic).
+    package var spectrogramMode: Float = 0
     package var streamID: Float = 0
     package var leftPeak: Float = 0
     package var rightPeak: Float = 0
@@ -302,6 +304,9 @@ package final class SpectrumAnalyzer {
     /// The waterfall's own multi-resolution analysis of the same history rings; tests and comparisons may substitute
     /// one of another window or resolving power.
     package var spectrogramAnalyzer: SpectrogramAnalyzer
+    /// Which analysis the waterfall's columns use; Enhanced builds its analyser the first time it is asked for.
+    package var spectrogramMode = SpectrogramMode.classic
+    private var reassigned: ReassignedSpectrogram?
     /// Roles the newest transform was asked for, which the waterfall column follows (L and R, or every Spatial role).
     private var requestedRoles = [Role.left, Role.right]
     /// Roles the newest transform analysed: L and R, and the requested roles that were sounding.
@@ -615,6 +620,17 @@ package final class SpectrumAnalyzer {
         // The newest transform is the bass zone's own: the same Hann window over the same ring, for the same roles
         // unless one fell silent within the window.
         let reuse = sounding == analysedRoles
+        if spectrogramMode == .enhanced {
+            if reassigned == nil { reassigned = ReassignedSpectrogram(sampleRate: sampleRate, span: length) }
+            if let reassigned {
+                history.withUnsafeBufferPointer { rings in
+                    rows.withUnsafeMutableBufferPointer { out in
+                        reassigned.column(rings: rings.baseAddress!, cursor: cursor, roles: sounding, into: out.baseAddress!)
+                    }
+                }
+                return
+            }
+        }
         history.withUnsafeBufferPointer { rings in
             power.withUnsafeBufferPointer { longest in
                 rows.withUnsafeMutableBufferPointer { out in

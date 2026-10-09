@@ -820,27 +820,6 @@ struct ShapeBuilder {
         Self.appendQuad(&shapes, a, b, c, d)
     }
 
-    /// A polyline drawn as dashes of `dash` points with `gap` between them, measured along the line.
-    mutating func dashed(_ points: [CGPoint], width: CGFloat, dash: CGFloat, gap: CGFloat, _ color: SIMD4<Float>) {
-        var phase: CGFloat = 0
-        for (p, q) in zip(points, points.dropFirst()) {
-            let length = hypot(q.x - p.x, q.y - p.y)
-            guard length > 0 else { continue }
-            var start: CGFloat = 0
-            while start < length {
-                let within = phase.truncatingRemainder(dividingBy: dash + gap)
-                let run = within < dash ? min(dash - within, length - start) : min(dash + gap - within, length - start)
-                if within < dash {
-                    let a = start / length, c = (start + run) / length
-                    line(CGPoint(x: p.x + (q.x - p.x) * a, y: p.y + (q.y - p.y) * a),
-                         CGPoint(x: p.x + (q.x - p.x) * c, y: p.y + (q.y - p.y) * c), width: width, color)
-                }
-                start += run
-                phase += run
-            }
-        }
-    }
-
     mutating func triangle(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint,
                            _ ca: SIMD4<Float>, _ cb: SIMD4<Float>, _ cc: SIMD4<Float>) {
         shapes.append(Self.vertex(a.x, a.y, local: .zero, color: ca, shape: .zero))
@@ -1275,28 +1254,29 @@ final class SpectrumScene: CanvasScene {
             for i in 0..<Self.pointCount { Self.damp(&shown[i], &velocity[i], target[i], step, rate: rate) }
         }
         let count = Self.pointCount
-        // The display slope at each point's centre (`SpectrumTilt`); zero when flat.
         let upper = MeterScale.upperFrequency(sampleRate: frame.sampleRate)
+        // Every line is smoothed alike across frequency (`SpectrumSmoothing`), so they compare point for point.
+        let kernel = frame.options.spectrumSmoothing.kernel(pointsPerOctave: Double(count) / log2(upper / 20))
+        let live = SpectrumSmoothing.apply(kernel, to: shown)
+        // The display slope at each point's centre (`SpectrumTilt`); zero when flat.
         let tilt = (0..<count).map { frame.options.tilt.offset(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count))) }
         let step = strip.height / CGFloat(count)
         func y(_ index: Int) -> CGFloat { strip.maxY - (CGFloat(index) + 0.5) * step }
-        let points = (0..<count).map { CGPoint(x: layout.x(decibels: shown[$0] + tilt[$0]), y: y($0)) }
-        curve.removeAll(keepingCapacity: true)
-        curve.append(CGPoint(x: points[0].x, y: strip.maxY))
-        curve.append(contentsOf: Self.spline(points, clampX: strip.minX...strip.maxX, subdivisions: Self.subdivisions))
-        curve.append(CGPoint(x: points[count - 1].x, y: strip.minY))
-        // The fill wears the waterfall's colours: each row is tinted as the newest waterfall column shows it,
-        // strongest at the curve, so a bright partial in the spectrogram lights the same row here.
-        func level(_ point: CGPoint) -> Float {
-            MeterScale.spectrumFloor * (1 - Float(abs(point.x - layout.floorX) / max(1, strip.width)))
+        func line(_ levels: [Float]) -> [CGPoint] {
+            Self.spline((0..<count).map { CGPoint(x: layout.x(decibels: levels[$0] + tilt[$0]), y: y($0)) },
+                        clampX: strip.minX...strip.maxX, subdivisions: Self.subdivisions)
         }
-        let range = frame.options.spectrogramRange, colors = frame.options.spectrogramColors
+        curve.removeAll(keepingCapacity: true)
+        curve.append(CGPoint(x: layout.x(decibels: live[0] + tilt[0]), y: strip.maxY))
+        curve.append(contentsOf: line(live))
+        curve.append(CGPoint(x: layout.x(decibels: live[count - 1] + tilt[count - 1]), y: strip.minY))
+        // One quiet tint under the curve, fading toward the floor: the shape reads at a glance and the lines on it
+        // stay legible.
+        let tint = Theme.sageRGB
         for (p, q) in zip(curve, curve.dropFirst()) {
-            let cp = Theme.ramp(decibels: level(p), range: range, colors: colors)
-            let cq = Theme.ramp(decibels: level(q), range: range, colors: colors)
             let pb = CGPoint(x: layout.floorX, y: p.y), qb = CGPoint(x: layout.floorX, y: q.y)
-            b.triangle(p, q, qb, cp.simd(0.85), cq.simd(0.85), cq.simd(0.35))
-            b.triangle(p, qb, pb, cp.simd(0.85), cq.simd(0.35), cp.simd(0.35))
+            b.triangle(p, q, qb, tint.simd(0.24), tint.simd(0.24), tint.simd(0.03))
+            b.triangle(p, qb, pb, tint.simd(0.24), tint.simd(0.03), tint.simd(0.03))
         }
         // The waterfall's octave lines at every C continue faintly across the spectrum.
         for octave in 0...9 {
@@ -1304,22 +1284,12 @@ final class SpectrumScene: CanvasScene {
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
             b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(octave == 4 ? 0.10 : 0.045))
         }
-        // The long-term average, under the live curve, in the second accent and dashed, so it reads apart from the
-        // live curve in any palette.
-        if frame.options.averageSpectrum, let average {
-            let points = (0..<count).map { CGPoint(x: layout.x(decibels: average[$0] + tilt[$0]), y: y($0)) }
-            b.dashed(Self.spline(points, clampX: strip.minX...strip.maxX, subdivisions: Self.subdivisions),
-                     width: 1.5, dash: 5, gap: 3, Theme.sandRGB.simd(0.95))
-        }
-        // Segments resting on the floor are not drawn: silence leaves the strip empty instead of outlining its edge.
-        func onFloor(_ p: CGPoint) -> Bool { abs(p.x - layout.floorX) < 0.5 }
-        for (p, q) in zip(curve, curve.dropFirst()) where !(onFloor(p) && onFloor(q)) {
-            b.line(p, q, width: 1.5, Theme.sageRGB.simd())
-        }
-        // Held while frozen, unless peak holds are switched off meanwhile.
+        // Peak holds: one faint line over the curve, each point held 1.2 s and then falling. Held while frozen,
+        // unless they are switched off meanwhile.
         let holdDt = frame.options.peakHolds ? frame.signal(dt) : dt
+        let peaks = SpectrumSmoothing.apply(kernel, to: target)
         for index in 0..<count {
-            let value = frame.running && frame.options.peakHolds ? target[index] : -120
+            let value = frame.running && frame.options.peakHolds ? peaks[index] : -120
             if value >= holds[index] {
                 holds[index] = value
                 holdTimers[index] = 1.2
@@ -1328,10 +1298,25 @@ final class SpectrumScene: CanvasScene {
             } else {
                 holds[index] = max(-120, holds[index] - 18 * holdDt)
             }
-            // Only show a hold where it floats clearly beyond the live curve.
-            guard holds[index] > MeterScale.spectrumFloor + 1, holds[index] - shown[index] > 2 else { continue }
-            let x = layout.x(decibels: holds[index] + tilt[index])
-            b.rect(CGRect(x: x - 0.5, y: y(index) - step * 0.35, width: 1, height: max(1, step * 0.7)), ink.simd(0.42))
+        }
+        // Segments resting on the floor are not drawn: silence leaves the strip empty instead of outlining its edge.
+        func onFloor(_ p: CGPoint) -> Bool { abs(p.x - layout.floorX) < 0.5 }
+        if holds.contains(where: { $0 > MeterScale.spectrumFloor + 1 }) {
+            let held = line(holds.indices.map { max(holds[$0], live[$0]) })
+            for (p, q) in zip(held, held.dropFirst()) where !(onFloor(p) && onFloor(q)) {
+                b.line(p, q, width: 1, ink.simd(0.30))
+            }
+        }
+        // The long-term average, in the second accent: a calm solid line, so it reads apart from the live curve
+        // in any palette without dashes breaking up its shape.
+        if frame.options.averageSpectrum, let average {
+            let points = line(SpectrumSmoothing.apply(kernel, to: average))
+            for (p, q) in zip(points, points.dropFirst()) where !(onFloor(p) && onFloor(q)) {
+                b.line(p, q, width: 1.25, Theme.sandRGB.simd(0.85))
+            }
+        }
+        for (p, q) in zip(curve, curve.dropFirst()) where !(onFloor(p) && onFloor(q)) {
+            b.line(p, q, width: 1.5, Theme.sageRGB.simd())
         }
     }
 

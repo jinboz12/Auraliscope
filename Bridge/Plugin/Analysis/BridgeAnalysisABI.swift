@@ -47,6 +47,11 @@ func abrAnalyzerResetTruePeaks(_ pointer: OpaquePointer) {
     analyzer(pointer).resetTruePeaks()
 }
 
+@_cdecl("abr_analyzer_set_spectrogram_mode")
+func abrAnalyzerSetSpectrogramMode(_ pointer: OpaquePointer, _ mode: UInt32) {
+    analyzer(pointer).spectrogramMode = SpectrogramMode(rawValue: mode) ?? .classic
+}
+
 @_cdecl("abr_analyzer_ticks")
 func abrAnalyzerTicks(_ pointer: OpaquePointer) -> UInt64 {
     analyzer(pointer).ticks

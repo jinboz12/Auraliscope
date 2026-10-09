@@ -86,6 +86,10 @@ void abr_server_disconnect(AbrServer *_Nonnull server, const uint8_t *_Nonnull s
 // and only results sent for it are delivered: nothing queued for an earlier one is ever replayed.
 void abr_server_select(AbrServer *_Nonnull server, const uint8_t *_Nullable session_id);
 
+// The waterfall analysis to ask every subscription for (ABR_SUBSCRIBE_SPECTROGRAM: 0 Classic, 1 Enhanced). A change
+// reaches the subscribed instance at once, without a new subscription.
+void abr_server_set_spectrogram(AbrServer *_Nonnull server, uint32_t mode);
+
 // Delivers the selected instance's results to `sink` until detached.
 void abr_server_attach(AbrServer *_Nonnull server, AbrResultSink _Nonnull sink, void *_Nullable context);
 // After return, the sink is not running and will not be called again.

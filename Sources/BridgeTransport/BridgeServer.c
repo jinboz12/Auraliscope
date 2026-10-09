@@ -31,6 +31,7 @@ typedef struct {
     bool subscribed;              // what the server last told the plugin
     uint64_t subscribed_selection; // the selection generation that SUBSCRIBE belongs to
     uint32_t subscription;        // the number sent with that SUBSCRIBE (0: none); other results are stale
+    uint32_t subscribed_spectrogram; // the ABR_SUBSCRIBE_SPECTROGRAM sent with it
     uint32_t send_sequence;
     _Atomic uint64_t last_message_ns, last_result_ns;  // read by abr_server_sources on another thread
     PendingCommand commands[MAX_PENDING_COMMANDS];  // to send (under AbrServer.lock)
@@ -51,6 +52,7 @@ struct AbrServer {
     uint8_t selected[16];
     bool has_selection;
     uint64_t selection;           // bumped by every abr_server_select, even of the same instance
+    uint32_t spectrogram;         // ABR_SUBSCRIBE_SPECTROGRAM for every subscription (under `lock`)
     uint8_t refused[16];          // abr_server_disconnect: this session is turned away until refused_until
     uint64_t refused_until;
     uint32_t next_subscription;   // server thread only
@@ -387,18 +389,37 @@ static void reconcile_subscriptions(AbrServer *server) {
         bool wanted = client->greeted && server->has_selection && memcmp(server->selected, client->info.session_id, 16) == 0;
         client->info.selected = wanted;
         const uint64_t selection = server->selection;
+        const uint32_t spectrogram = server->spectrogram;
         pthread_mutex_unlock(&server->lock);
         // Selected again (A → B → A): a fresh subscription, so nothing captured for the earlier one is delivered.
         const bool renew = wanted && client->subscribed && client->subscribed_selection != selection;
+        // Another waterfall analysis wanted: the same subscription again with the new option, so the columns carry on.
+        const bool retune = wanted && client->subscribed && !renew && client->subscribed_spectrogram != spectrogram;
+        if (client->greeted && retune) {
+            uint8_t payload[32];
+            AbrWriter w = abr_writer(payload, sizeof payload);
+            pthread_mutex_lock(&server->lock);
+            const uint32_t current = client->subscription;
+            pthread_mutex_unlock(&server->lock);
+            abr_put_u32(&w, ABR_SUBSCRIBE_SUBSCRIPTION, current);
+            abr_put_u32(&w, ABR_SUBSCRIBE_SPECTROGRAM, spectrogram);
+            if (current != 0 && !send_message(client, ABR_MSG_SUBSCRIBE, payload, (uint32_t)w.used)) {
+                close_client(server, i);
+                continue;
+            }
+            client->subscribed_spectrogram = spectrogram;
+        }
         if (client->greeted && (wanted != client->subscribed || renew)) {
             bool sent;
             uint32_t subscription = 0;
             if (wanted) {
                 if (++server->next_subscription == 0) server->next_subscription = 1;
                 subscription = server->next_subscription;
-                uint8_t payload[16];
+                uint8_t payload[32];
                 AbrWriter w = abr_writer(payload, sizeof payload);
                 abr_put_u32(&w, ABR_SUBSCRIBE_SUBSCRIPTION, subscription);
+                abr_put_u32(&w, ABR_SUBSCRIBE_SPECTROGRAM, spectrogram);
+                client->subscribed_spectrogram = spectrogram;
                 sent = send_message(client, ABR_MSG_SUBSCRIBE, payload, (uint32_t)w.used);
             } else {
                 sent = send_message(client, ABR_MSG_UNSUBSCRIBE, NULL, 0);
@@ -590,6 +611,14 @@ void abr_server_select(AbrServer *server, const uint8_t *session_id) {
     }
     pthread_mutex_unlock(&server->lock);
     wake(server);
+}
+
+void abr_server_set_spectrogram(AbrServer *server, uint32_t mode) {
+    pthread_mutex_lock(&server->lock);
+    const bool changed = server->spectrogram != mode;
+    server->spectrogram = mode;
+    pthread_mutex_unlock(&server->lock);
+    if (changed) wake(server);
 }
 
 void abr_server_attach(AbrServer *server, AbrResultSink sink, void *context) {
