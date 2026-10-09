@@ -1110,7 +1110,7 @@ final class CanvasRenderer {
         // `--preview-image`: the context menu's exported image of the same waterfall.
         if let url = Diagnostics.previewImage, let scene = spectrogram.scene as? SpectrogramScene,
            let image = SpectrogramImage.make(history: scene.history, columns: Int(scene.span), sampleRate: frame.sampleRate,
-                                             options: frame.options, caption: SpectrogramImage.caption(source: "L+R", options: frame.options)),
+                                             options: frame.options, caption: SpectrogramImage.caption(source: "L+R", sampleRate: frame.sampleRate, options: frame.options)),
            let output = CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil) {
             CGImageDestinationAddImage(output, image, nil)
             CGImageDestinationFinalize(output)

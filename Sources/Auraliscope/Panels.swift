@@ -309,7 +309,7 @@ private struct SpectrogramInspector: View {
         guard let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene else { return nil }
         let options = DisplayOptions.stored
         return SpectrogramImage.make(history: scene.history, columns: Int(scene.span), sampleRate: sampleRate, options: options,
-                                     caption: SpectrogramImage.caption(source: source, options: options))
+                                     caption: SpectrogramImage.caption(source: source, sampleRate: sampleRate, options: options))
     }
 
     private struct Reading {
@@ -444,11 +444,14 @@ private struct SpectrogramInspector: View {
 
 /// The waterfall's analysis at a row, for the inspector: the window and its length and duration at the source's
 /// rate, as this build analyses it (in Labs and in the plugins).
-@MainActor
 enum SpectrogramResolution {
-    private static var analyzer: SpectrogramAnalyzer?
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var analyzer: SpectrogramAnalyzer?
 
+    /// One analysis for the newest rate asked about, kept for the readouts (it is only read).
     private static func analysis(_ sampleRate: Double) -> SpectrogramAnalyzer? {
+        lock.lock()
+        defer { lock.unlock() }
         if analyzer?.sampleRate != sampleRate {
             analyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
         }
