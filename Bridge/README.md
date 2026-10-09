@@ -6,12 +6,40 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 68 (build numbers continue after Auraliscope 1.2.2, build 62: 63–67 were earlier LABS test packages; builds 1 to 3 were
+Build 69 (build numbers continue after Auraliscope 1.2.2, build 62: 63–68 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for how it works, [PROTOCOL.md](PROTOCOL.md) for the result protocol and
 [VALIDATION.md](VALIDATION.md) for what was tested.
+
+## Build 69 changes
+
+**A clearer spectrogram, with the same calibration.** Every cause of blur found in the analysis-to-screen pipeline was
+measured with tones, close pairs, clicks, sweeps and noise before and after (VALIDATION.md):
+
+- **Leakage, not resolution, blurred loud partials.** Build 68's short Hann windows leaked into a ±2-semitone fan at
+  the floor of the 78 dB colour range (Hann's sidelobes start at −31 dB). Rows the span can resolve now use a minimum
+  4-term Blackman–Harris window (sidelobes below −92 dB) at twice the Hann length, which is narrower than Hann at
+  every level from −3 to −78 dB; a loud tone above ~1 kHz is ≤ 1 semitone wide at the floor (was 4.4). The bass below
+  750 Hz (48 kHz), which no window of the span resolves to ±½ semitone, keeps the narrower Hann main lobe, exactly
+  as before. Shortest window now 512 points only above 12 kHz; a 1024-point window (21 ms) is already shorter than a
+  1/30 s column, so nothing visible was lost in time.
+- **High sample rates.** The history rings hold ~170 ms at every rate (8192 samples at 44.1/48 kHz, 16384 at
+  88.2/96, 32768 at 176.4/192), so the waterfall resolves the same Hz at 192 kHz as at 48 kHz (a 440 Hz tone was
+  ±12 semitones wide at the floor at 192 kHz). The live spectrum still transforms the newest 8192 samples.
+- **Display interpolation.** The waterfall drew each column as a linear ramp to the next, so a click one column wide
+  became a two-column triangle peaking in a single pixel, and rows were interpolated too. Each analysis cell is now drawn as the box it stands for, with a
+  short edge ramp (a pixel, or 0.3 of a cell when cells are large); where a pixel covers several cells, the loudest
+  is shown, so a click or a thin partial is never averaged away.
+- **Coverage.** Frames per column are now chosen so that every instant (between columns too) weighs within 1 dB;
+  the old 50 % overlap of Hann windows left up to 3 dB of ripple, so of four identical clicks two drew dimmer.
+- **Inspector.** It reads the very cell drawn (no interpolation), names the row's centre frequency, gives the time
+  the column's audio was centred on (half the span, ~85 ms, before it was published), and shows the analysis behind
+  the cell (FFT length, window, duration). A harmonic cursor marks the 2nd to 8th harmonics of the frequency under
+  the pointer.
+- Unchanged: the 512-row protocol, sine calibration (within 0.05 dB in every zone), colour ranges, tone curve and
+  palette. Build 68 plugins work with build 69 LABS but show build 68's analysis until replaced.
 
 ## Build 68 changes
 
@@ -79,7 +107,7 @@ See [TESTING-zh.md](TESTING-zh.md) for the short Chinese installation and listen
 
 | Item | Where | Identity |
 |---|---|---|
-| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 68/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
+| Auraliscope LABS.app | `experimental-dist/Auraliscope LABS 1.3dev build 69/` | `com.jinboz.SoundMeterJBZ.Labs`, beta icon, own preferences and logs (`~/Library/Logs/Auraliscope Labs`) |
 | Auraliscope Bridge.vst3 | same folder | class `03A87F06-69544B23-B85B74F8-248F8E42`, vendor JINBOZ |
 | Auraliscope Bridge.component | same folder | `aufx Abrg Jnbz`, "JINBOZ: Auraliscope Bridge" |
 
@@ -106,10 +134,10 @@ static library per format; the Swift runtime is the system's). Other scripts: `f
 
 ## Install
 
-**Testers: the installer.** `Auraliscope LABS 1.3dev build 68.pkg` installs, for every user of the Mac, the app
+**Testers: the installer.** `Auraliscope LABS 1.3dev build 69.pkg` installs, for every user of the Mac, the app
 into `/Applications` and both plugins into `/Library/Audio/Plug-Ins/{VST3,Components}` (three choices, all selected).
 The app stays independent of Auraliscope. The plugins use the paths, names and bundle IDs an official Auraliscope
-Bridge would use, with bundle versions below any release (0.68; the plugin window and hosts show "1.3dev build 68"),
+Bridge would use, with bundle versions below any release (0.69; the plugin window and hosts show "1.3dev build 69"),
 so an official installer replaces them, and this package never replaces a newer plugin. Nothing is relocated to
 another copy. The package is not signed: open it with Control-click ▸ Open, or System Settings ▸ Privacy & Security ▸
 Open Anyway. Apple silicon, macOS 13 or later. Build it with:
@@ -191,7 +219,7 @@ Bridge/scripts/test-analysis.sh
 scripts/test.sh
 ```
 ```bash
-.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 68/Auraliscope Bridge.vst3"
+.build/bridge/validator/validator -e "experimental-dist/Auraliscope LABS 1.3dev build 69/Auraliscope Bridge.vst3"
 ```
 ```bash
 auval -strict -v aufx Abrg Jnbz

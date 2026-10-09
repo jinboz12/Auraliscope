@@ -29,6 +29,7 @@ for path in (host, args.baseline, args.candidate):
         parser.error(f'missing: {path}')
 cases = [('8x-mono-48k', 8, 1, 48000, 256),
          ('32x-stereo-48k', 32, 2, 48000, 256),
+         ('8x-stereo-96k', 8, 2, 96000, 512),
          ('8x-stereo-192k', 8, 2, 192000, 1024)]
 rows = []
 with tempfile.TemporaryDirectory(prefix='abr-perf-') as directory:

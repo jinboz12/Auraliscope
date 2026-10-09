@@ -260,8 +260,10 @@ private struct SpectrogramLegend: View {
 }
 
 /// Hover over the Spectrum well to read it: over the waterfall, the level of the very cell on screen, with its
-/// pitch, frequency and age; over the live spectrum, the level of the band under the pointer. A crosshair marks the
-/// spot. Pause first to read a moment at leisure: the waterfall holds still and so do its values.
+/// row's pitch and centre frequency, how long ago its audio was, and the analysis behind it; over the live spectrum,
+/// the level of the band under the pointer. A crosshair marks the spot, with the harmonics of its frequency marked
+/// above it over the waterfall. Pause first to read a moment at leisure: the waterfall holds still and so do its
+/// values.
 private struct SpectrogramInspector: View {
     let sampleRate: Double
     let strip: CGFloat
@@ -280,6 +282,8 @@ private struct SpectrogramInspector: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
+                        // A held diagnostic point (`--snapshot-inspect`) is not moved by the real pointer.
+                        guard Diagnostics.inspectPoint == nil else { return }
                         switch phase {
                         case .active(let point): location = point
                         case .ended: location = nil
@@ -315,6 +319,8 @@ private struct SpectrogramInspector: View {
         let secondsAgo: Double?
         /// The long-term average of the band, over the live spectrum while it is shown.
         var average: Float? = nil
+        /// The analysis behind the cell (window, length, duration), over the waterfall.
+        var resolution: String? = nil
     }
 
     private func reading(at point: CGPoint, layout: SpectrogramLayout) -> Reading? {
@@ -331,7 +337,8 @@ private struct SpectrogramInspector: View {
             let delay = Double(SpectrumAnalyzer.historyLength(sampleRate: sampleRate)) / 2 / sampleRate
             let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: Double(row))
             return Reading(frequency: centre, level: cell?.level,
-                           secondsAgo: (cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds) + delay)
+                           secondsAgo: (cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds) + delay,
+                           resolution: SpectrogramResolution.describe(row: row, sampleRate: sampleRate))
         }
         if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
             let scene = SceneStore.existing(.spectrum) as? SpectrumScene
@@ -359,11 +366,27 @@ private struct SpectrogramInspector: View {
                 }
             }
             .stroke(lineColor, style: dash)
+            // The harmonic cursor: where the 2nd to 8th harmonics of the frequency under the pointer fall, so an
+            // overtone series (or a resonance's partials) can be checked at a glance.
+            if reading.secondsAgo != nil {
+                let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+                ForEach(Array(2...8).filter { Double($0) * reading.frequency < upper }, id: \.self) { harmonic in
+                    let y = layout.y(frequency: Double(harmonic) * reading.frequency, sampleRate: sampleRate)
+                    let opacity = (Theme.dark ? 0.75 : 0.65) * (1 - Double(harmonic - 2) * 0.08)
+                    Capsule().fill(Theme.ink.opacity(opacity)).frame(width: 12, height: 1.5)
+                        .offset(x: point.x - 6, y: y - 0.75)
+                    if harmonic <= 4 {
+                        Text(verbatim: "\(harmonic)×").font(.system(size: 8, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Theme.ink.opacity(opacity)).fixedSize()
+                            .offset(x: point.x + 8, y: y - 6)
+                    }
+                }
+            }
             let tag = InspectorTag(reading: reading)
             let width = InspectorTag.width(reading)
             let flip = point.x + 14 + width > span.maxX
             let x = flip ? point.x - 14 - width : point.x + 14
-            let y = min(max(span.minY + 2, point.y - 30), span.maxY - 24)
+            let y = min(max(span.minY + 2, point.y - (reading.resolution == nil ? 30 : 40)), span.maxY - (reading.resolution == nil ? 24 : 36))
             tag.frame(width: width, alignment: .leading).offset(x: max(span.minX + 2, x), y: y)
         }
     }
@@ -378,24 +401,29 @@ private struct SpectrogramInspector: View {
         var body: some View {
             let pitch = Pitch(frequency: reading.frequency)
             let font = Font.caption2.weight(.medium).monospacedDigit()
-            HStack(spacing: 5) {
-                Text(verbatim: pitch.map { "\($0.label) \($0.centsLabel)" } ?? "--").font(font.weight(.semibold)).foregroundStyle(Theme.sage)
-                dot
-                Text(verbatim: Self.frequency(reading.frequency)).font(font).foregroundStyle(Theme.ink)
-                if let seconds = reading.secondsAgo {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(verbatim: pitch.map { "\($0.label) \($0.centsLabel)" } ?? "--").font(font.weight(.semibold)).foregroundStyle(Theme.sage)
                     dot
-                    Text(verbatim: seconds < 0.02 ? L("now") : String(format: "−%.2f s", seconds)).font(font).foregroundStyle(Theme.secondary)
-                }
-                dot
-                Text(verbatim: reading.level.map { MeterScale.tenths($0, floor: -119.9) + " dBFS" } ?? "-- dBFS")
-                    .font(font).foregroundStyle(reading.level == nil ? Theme.tertiary : Theme.ink)
-                if reading.secondsAgo == nil {
-                    Text(L("live")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
-                }
-                if let average = reading.average {
+                    Text(verbatim: Self.frequency(reading.frequency)).font(font).foregroundStyle(Theme.ink)
+                    if let seconds = reading.secondsAgo {
+                        dot
+                        Text(verbatim: seconds < 0.02 ? L("now") : String(format: "−%.2f s", seconds)).font(font).foregroundStyle(Theme.secondary)
+                    }
                     dot
-                    Text(verbatim: MeterScale.tenths(average, floor: -119.9)).font(font).foregroundStyle(Theme.sand)
-                    Text(L("avg")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                    Text(verbatim: reading.level.map { MeterScale.tenths($0, floor: -119.9) + " dBFS" } ?? "-- dBFS")
+                        .font(font).foregroundStyle(reading.level == nil ? Theme.tertiary : Theme.ink)
+                    if reading.secondsAgo == nil {
+                        Text(L("live")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                    }
+                    if let average = reading.average {
+                        dot
+                        Text(verbatim: MeterScale.tenths(average, floor: -119.9)).font(font).foregroundStyle(Theme.sand)
+                        Text(L("avg")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                    }
+                }
+                if let resolution = reading.resolution {
+                    Text(verbatim: resolution).font(.system(size: 9, weight: .medium).monospacedDigit()).foregroundStyle(Theme.tertiary)
                 }
             }
             .lineLimit(1)
@@ -411,6 +439,23 @@ private struct SpectrogramInspector: View {
             hertz < 100 ? String(format: "%.1f Hz", hertz)
                 : hertz < 1_000 ? String(format: "%.0f Hz", hertz) : String(format: "%.2f kHz", hertz / 1_000)
         }
+    }
+}
+
+/// The waterfall's analysis at a row, for the inspector: the window and its length and duration at the source's
+/// rate, as this build analyses it (in Labs and in the plugins).
+@MainActor
+private enum SpectrogramResolution {
+    private static var analyzer: SpectrogramAnalyzer?
+
+    static func describe(row: Int, sampleRate: Double) -> String? {
+        if analyzer?.sampleRate != sampleRate {
+            analyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
+        }
+        guard let analyzer, row >= 0, row < analyzer.rows else { return nil }
+        let length = analyzer.length(ofRow: row)
+        let window = analyzer.window(ofRow: row) == .hann ? "Hann" : "Blackman–Harris"
+        return "FFT \(length) · \(window) · " + String(format: "%.0f ms", Double(length) / sampleRate * 1_000)
     }
 }
 
