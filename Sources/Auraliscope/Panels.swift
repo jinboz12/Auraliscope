@@ -110,7 +110,7 @@ struct SpectrumPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"),
-                            detail: "\(source) · FFT \(SpectrogramAnalyzer.minimumLength)–\(SpectrumAnalyzer.fftSize) · " + L("pitch")) {
+                            detail: "\(source) · " + SpectrogramResolution.range(sampleRate: sampleRate) + " · " + L("pitch")) {
                     SpectrogramLegend()
                 }
                 GeometryReader { proxy in
@@ -445,14 +445,25 @@ private struct SpectrogramInspector: View {
 /// The waterfall's analysis at a row, for the inspector: the window and its length and duration at the source's
 /// rate, as this build analyses it (in Labs and in the plugins).
 @MainActor
-private enum SpectrogramResolution {
+enum SpectrogramResolution {
     private static var analyzer: SpectrogramAnalyzer?
 
-    static func describe(row: Int, sampleRate: Double) -> String? {
+    private static func analysis(_ sampleRate: Double) -> SpectrogramAnalyzer? {
         if analyzer?.sampleRate != sampleRate {
             analyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
         }
-        guard let analyzer, row >= 0, row < analyzer.rows else { return nil }
+        return analyzer
+    }
+
+    /// The FFT lengths the waterfall uses at this rate, for the card's header ("FFT 512–8192" at 48 kHz).
+    static func range(sampleRate: Double) -> String {
+        let lengths = analysis(sampleRate)?.resolutions.map(\.length) ?? []
+        guard let low = lengths.min(), let high = lengths.max() else { return "FFT \(SpectrumAnalyzer.fftSize)" }
+        return "FFT \(low)–\(high)"
+    }
+
+    static func describe(row: Int, sampleRate: Double) -> String? {
+        guard let analyzer = analysis(sampleRate), row >= 0, row < analyzer.rows else { return nil }
         let length = analyzer.length(ofRow: row)
         let window = analyzer.window(ofRow: row) == .hann ? "Hann" : "Blackman–Harris"
         return "FFT \(length) · \(window) · " + String(format: "%.0f ms", Double(length) / sampleRate * 1_000)

@@ -254,7 +254,8 @@ package struct MeterSnapshot: Equatable {
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
 package final class SpectrumAnalyzer {
     // 8192 points: 5.9 Hz bins at 48 kHz, so the bottom octaves get real detail. The waterfall reads the same
-    // history at several resolutions of its own (`SpectrogramAnalyzer`). Channels share complex transforms in
+    // history rings, which hold ~170 ms at every rate (`historyLength`), at several resolutions of its own
+    // (`SpectrogramAnalyzer`). Channels share complex transforms in
     // pairs (one real, one imaginary) and are separated by conjugate symmetry, which halves the FFT cost without
     // giving up any resolution; that is cheaper than dropping to 4096 points and keeps the 5.9 Hz bins.
     package static let fftSize = 8192

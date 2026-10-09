@@ -1,5 +1,88 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
+## Build 69 — 2026-10-08
+
+This round targets spectrogram clarity without changing what the levels mean. Every change below follows a
+measured cause; protocol 3, schema 1, the 512-row column, sine calibration, colour ranges, tone curve and palette are
+unchanged. Measurements use a harness that runs synthetic signals through `SpectrumAnalyzer.spectrogram` one column
+per 1/30 s, built once from the build 68 sources and once from build 69 (same inputs, same settings).
+
+### Causes found
+
+| Stage | Finding | Evidence | Change |
+|---|---|---|---|
+| Window | Hann sidelobes (−31 dB, 18 dB/oct) fall inside the 78 dB colour range; with the short treble windows a loud tone fanned out ±2 semitones at the floor | −12 dBFS tone, width at −78 dB: 4.4 semitones at 1–10 kHz (build 67, one 8192 window: 0.2–2.8) | Blackman–Harris (≤ −92 dB) at twice the Hann length where the span resolves ±½ semitone; Hann kept below |
+| FFT lengths | 512-point windows (11 ms) above 6 kHz bought time detail the 33 ms column cannot show, at 4× the frequency smear | impulse lit 1 column with 512 or 1024 points | shortest window 512 only above 12 kHz |
+| Span at high rates | history fixed at 8192 samples: 43 ms at 96 kHz, 21 ms at 192 kHz | 440 Hz tone width at −78 dB: 4.2 st at 48 kHz, 13.1 at 96, 25.5 at 192 | history ~170 ms at every rate |
+| Coverage | 50 % overlapped Hann frames weigh instants unevenly (power ∝ w²) | four identical clicks: two drawn dimmer (pixel luminance 14–15 vs 19) | frames chosen for ≤ 1 dB ripple across the frame lattice |
+| Display | linear interpolation between columns and rows | a one-column click drawn as a two-column triangle peaking in one pixel | cells drawn as boxes, 1 px / 0.3-cell edge ramp, loudest of covered cells |
+| Not causes | texture size (r32Float, read per texel, no hardware filtering), drawable scale (follows backing scale), FFT normalisation (sine within 0.05 dB in every zone), zone timing (all windows centred on one instant), tone curve | | unchanged |
+
+Zero padding is not used anywhere; resolution claims refer to window length.
+
+### Measured before and after (48 kHz unless stated)
+
+Width of a −12 dBFS tone in semitones at −20 / −40 / −60 / −78 dB below its peak (rows are 0.23 semitone; 512 rows):
+
+| Tone | Build 68 | Build 69 |
+|---|---|---|
+| 100 Hz | 3.04 / 4.20 / 8.41 / 17.75 | 3.04 / 4.20 / 8.41 / 17.75 (unchanged by design) |
+| 440 Hz | 0.47 / 0.93 / 2.34 / 4.20 | 0.47 / 0.93 / 2.34 / 4.20 |
+| 1 kHz | 0.70 / 1.17 / 2.34 / 4.44 | 0.47 / 0.93 / 0.93 / 0.93 |
+| 2.5 kHz | 0.47 / 0.93 / 2.34 / 4.44 | 0.47 / 0.70 / 0.93 / 0.93 |
+| 5 kHz | 0.70 / 0.93 / 2.34 / 4.20 | 0.70 / 0.70 / 0.70 / 0.70 |
+| 10 kHz | 0.70 / 1.17 / 2.34 / 4.44 | 0.70 / 0.70 / 0.70 / 0.93 |
+| 440 Hz at 96 kHz | 1.64 / 3.04 / 6.54 / 13.08 | 0.47 / 0.93 / 2.34 / 4.20 |
+| 440 Hz at 192 kHz | 3.04 / 5.37 / 11.45 / 25.46 | 0.47 / 0.93 / 2.34 / 4.20 |
+
+- Level: sine peak error 0.00 dB (±0.05 dB tested) in every zone at 44.1, 48, 96 and 192 kHz.
+- Close tones (smallest spacing with a 10 dB dip between two equal tones): 60 Hz 2.55 st, 110 Hz 0.50, 220 Hz 1.25,
+  440 Hz 0.75 (build 68 0.75), 1 kHz 0.60 (0.65), 3 kHz 0.45 (0.75), 8 kHz 0.60 (0.65).
+- Impulse: lit columns (within 20 dB of the row's maximum) 4 at 60–200 Hz, 3 at 1 kHz, 1 at 4 and 12 kHz, all rows'
+  maxima in the same column (build 68 identical); clicks now read the same wherever they fall.
+- Sweep (20 Hz–20 kHz in 8 s): ridge within ±0.15 semitone of the instantaneous frequency (both builds); −20 dB width
+  at 13.5 kHz 0.93 st (same), at 1.7 kHz 1.64 st (1.17). The fast sweep reads up to ~3 dB lower than in build 68
+  between 0.8 and 3.4 kHz because the longer windows see it move further: the documented time cost.
+- White noise (−20 dBFS RMS) per row: as before it reads per analysis bandwidth (+3 dB per halving of the window);
+  2–8 kHz now 0.2–1.3 dB lower, 16 kHz the same.
+- Time cost: above 750 Hz windows are twice as long, Blackman–Harris concentrates them (effective duration ~1.44× the
+  Hann window they replace); above ~3 kHz they remain shorter than one column. The column's centre is half the span
+  before it is published: 85 ms at 48/96/192 kHz (build 68: 85, 43, 21 ms); the inspector's time includes it.
+- Rendering: the probe programme (tones and close pairs, clicks, sweep, chord) and the 18 s synthetic music
+  programme, rendered with both builds at the same size, span (8 s), range (Standard) and tilt (flat): build 69 shows
+  thinner partials above 1 kHz, separate hi-hat strokes, and clicks of equal brightness; the bass is unchanged.
+
+### CPU
+
+One column (P-core micro-benchmark): 44 → 77 µs at 48 kHz, 66 → 166 µs at 96 kHz, 80 → 312 µs at 192 kHz.
+
+Paired full-plugin comparison, `CompareResources.py <build68.vst3> <build69.vst3>` (15 s runs, three alternating-order
+pairs, medians; every run bitwise passthrough, zero process errors; the 96 kHz case is new to the tool):
+
+| Scenario | Build 68 CPU | Build 69 CPU | Relative change |
+|---|---:|---:|---:|
+| 8 mono instances, 48 kHz, 256 frames | 14.48% | 16.33% | +12.7% |
+| 32 stereo instances, 48 kHz, 256 frames | 31.32% | 33.38% | +6.6% |
+| 8 stereo instances, 96 kHz, 512 frames | 21.14% | 24.41% | +15.5% |
+| 8 stereo instances, 192 kHz, 1024 frames | 27.68% | 29.84% | +7.8% |
+
+The analysis runs on the plugins' analysis threads, never on the host's audio callback (unchanged).
+
+### Completed validation
+
+| Check | Build 69 result |
+|---|---|
+| Core suite | 45/45 (new: window choice and leakage > 85 dB down 1.5 semitones away, rate-independent zones, Blackman–Harris estimator against a real DFT, cell-exact history reads) |
+| AddressSanitizer | core 45/45 and kernel checks pass |
+| Localization | 359 keys, en / zh-Hans / ko |
+| Bridge analysis | 95/95 |
+| Bridge transport | 95/95 |
+| Steinberg VST3 validator | 537 passed, 0 failed |
+| Plugin → ResultProbe | 12/12, VST3 and AU at 44.1–192 kHz; bitwise audio passthrough |
+| Plugin → LABS | 11/11 |
+
+Not done: manual tests in DAWs, a real-pointer test of the inspector (checked with `--snapshot-inspect`).
+
 ## Build 68 — 2026-10-08
 
 This round rewrites the spectrogram end to end (analysis in the shared core, display, legend, inspector, export) and
