@@ -484,31 +484,29 @@ struct UtilityWindowProbe: NSViewRepresentable {
     }
 }
 
-/// The window's backdrop, where the palette lives now that the summary has no card of its own.
-/// On dark: near-black, with the palette's light pooling behind the summary at the top and a faint echo lower down.
-/// On light: the palette's own wash at the top, turning through a pale band into the window grey, with a haze of the
-/// palette at the left and white light rising from the bottom, so the frosted cards have colour to sit over.
+/// The window's backdrop: the atmosphere the panels float in, and the only place the palette is used as light.
+/// On dark: a deep blue-black, the palette's light pooled softly behind the top row and a faint cool counter-light low
+/// on the right. On light: the palette's pale wash at the top, turning into a cool grey, with white light rising from
+/// the bottom. Static gradients, drawn once per size.
 private struct WindowBackdrop: View {
     var body: some View {
         ZStack {
             if Theme.dark {
                 LinearGradient(colors: [Theme.windowTop, Theme.windowBottom], startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.50), Theme.bannerAccent.opacity(0.14), .clear],
-                               center: UnitPoint(x: 0.2, y: 0), startRadius: 0, endRadius: 820)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.24), .clear],
-                               center: UnitPoint(x: 0.82, y: 0.02), startRadius: 0, endRadius: 620)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.10), .clear],
-                               center: UnitPoint(x: 0, y: 0.72), startRadius: 0, endRadius: 640)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.42), Theme.bannerAccent.opacity(0.10), .clear],
+                               center: UnitPoint(x: 0.28, y: -0.05), startRadius: 0, endRadius: 900)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.16), .clear],
+                               center: UnitPoint(x: 0.95, y: 0.95), startRadius: 0, endRadius: 700)
             } else {
                 LinearGradient(stops: [.init(color: Theme.backdropTop, location: 0),
-                                       .init(color: Theme.backdropMiddle, location: 0.30),
-                                       .init(color: Theme.windowTop, location: 0.58),
+                                       .init(color: Theme.backdropMiddle, location: 0.26),
+                                       .init(color: Theme.windowTop, location: 0.55),
                                        .init(color: Theme.windowBottom, location: 1)],
                                startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.55), .clear],
-                               center: UnitPoint(x: 0, y: 0.58), startRadius: 0, endRadius: 620)
-                RadialGradient(colors: [Color.white.opacity(0.65), .clear],
-                               center: UnitPoint(x: 0.55, y: 1.05), startRadius: 0, endRadius: 760)
+                RadialGradient(colors: [Theme.bannerAccent.opacity(0.40), .clear],
+                               center: UnitPoint(x: 0.02, y: 0.62), startRadius: 0, endRadius: 640)
+                RadialGradient(colors: [Color.white.opacity(0.70), .clear],
+                               center: UnitPoint(x: 0.6, y: 1.08), startRadius: 0, endRadius: 820)
             }
         }
         .ignoresSafeArea()
@@ -529,8 +527,10 @@ private struct TransportButtons: View {
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
+        // Paused, the button offers to resume in the accent, the colour of the live signal it brings back.
         Button(action: model.toggleCapture) {
             Image(systemName: model.running ? "pause.fill" : "play.fill")
+                .foregroundStyle(model.running ? Theme.secondary : Theme.sage)
         }
         .help(model.captureActionTitle)
         .accessibilityLabel(model.captureActionTitle)
@@ -638,13 +638,12 @@ private struct DashboardHero: View {
     var body: some View {
         let target = model.loudnessTarget
         let ceiling = model.truePeakCeiling
-        // No card: the summary is set straight on the window's backdrop, where the palette's colour lives, between
-        // the cards of the 15 s history and the VU meter, which reach its full height.
+        // Three sibling panels in one row: loudness, the 15 s history and the VU meter, none nested in another.
         GeometryReader { geometry in
             // The VU panel joined the row in Beta 3, so the compact arrangement starts at a wider summary.
             let compact = geometry.size.width < 1240
             let gap = HeroLayout.gap(compact: compact)
-            let row = geometry.size.width - HeroLayout.inset
+            let row = geometry.size.width - HeroLayout.inset - HeroLayout.trailingInset
             let columns = HeroLayout.columns(width: row, compact: compact, loudness: CGFloat(loudnessWidth), vu: CGFloat(vuWidth))
             let scale = HeroLayout.contentScale(height: geometry.size.height, compact: compact, loudnessWidth: columns.loudness)
             let gauge = HeroLayout.showsGauge(height: geometry.size.height)
@@ -654,8 +653,8 @@ private struct DashboardHero: View {
                 VStack(alignment: .leading, spacing: 6 * scale) {
                     HStack(spacing: 10) {
                         ViewThatFits(in: .horizontal) {
-                            HStack(spacing: 10) { heroTitle; statusChip(format: true) }
-                            HStack(spacing: 10) { heroTitle; statusChip(format: false) }
+                            HStack(spacing: 12) { heroTitle; StatusReading(model: model, detail: formatName) }
+                            HStack(spacing: 12) { heroTitle; StatusReading(model: model) }
                             heroTitle
                         }
                         Spacer(minLength: 8)
@@ -681,7 +680,10 @@ private struct DashboardHero: View {
                 }
                 .frame(width: HeroLayout.leadWidth(compact: compact) + gap + columns.loudness)
                 .padding(.leading, HeroLayout.inset)
+                .padding(.trailing, HeroLayout.trailingInset)
                 .padding(.vertical, HeroLayout.verticalPadding(height: geometry.size.height, compact: compact))
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background { CardSurface() }
 
                 // The dividers in the gaps either side of the history resize it against its neighbours.
                 PanelDivider(axis: .horizontal, leading: columns.loudness,
@@ -702,28 +704,13 @@ private struct DashboardHero: View {
 
     private var heroTitle: some View {
         HStack(alignment: .center, spacing: 8) {
-            Eyebrow(L("LOUDNESS"), color: Theme.ink.opacity(0.88)).fixedSize()
+            Eyebrow(L("LOUDNESS"), color: Theme.title).fixedSize()
             PanelSettingsButton(panel: .loudness)
         }
     }
 
-    /// LIVE or PAUSED, with the monitoring format when there is room for it.
-    private func statusChip(format: Bool) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(model.running ? Theme.sage : Theme.ink.opacity(0.45))
-                .frame(width: 6, height: 6)
-            Text(model.running ? L("LIVE") : (model.frozen ? L("PAUSED") : L("STANDBY")))
-                .font(.system(size: 10, weight: .bold)).tracking(1)
-            if format {
-                Text("·")
-                Text(verbatim: model.format == .spatial ? model.speakerLayout.name : model.format.title)
-                    .font(.system(size: 10, weight: .medium))
-            }
-        }
-        .lineLimit(1)
-        .fixedSize()
-        .foregroundStyle(Theme.ink.opacity(0.95))
-    }
+    /// The monitoring format beside the status, when there is room for it.
+    private var formatName: String { model.format == .spatial ? model.speakerLayout.name : model.format.title }
 
     // Store the clamped result, so a drag held against a limit does not churn user defaults.
     private func setLoudness(_ width: CGFloat, row: CGFloat, compact: Bool) {
@@ -924,30 +911,35 @@ struct SummaryMenu<Content: View>: View {
     let value: String
     let help: String
     @ViewBuilder var content: Content
+    @State private var hovering = false
 
+    /// A field on the panel's control scale: the name in the heading voice, the value, and the menu's chevron, on a
+    /// quiet rounded rectangle that lifts under the pointer. One shape for every menu (TARGET, CEILING, BANDS).
     var body: some View {
-        // A capsule of our own in every version (the system glass button draws a rounded rectangle at this size):
-        // interactive Liquid Glass on macOS 26, a quiet material capsule before it.
+        let shape = RoundedRectangle(cornerRadius: Theme.controlRadius - 1, style: .continuous)
         Menu { content.pickerStyle(.inline) } label: {
             label
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 9)
                 .frame(height: 22)
-                .glassSurface(Capsule(), interactive: true,
-                              fallback: Theme.dark ? Color.black.opacity(0.22) : Color.white.opacity(0.55))
-                .contentShape(Capsule())
+                .background {
+                    shape.fill(hovering ? Theme.controlHover : Theme.controlFill)
+                        .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.08), lineWidth: 0.5) }
+                }
+                .contentShape(shape)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+        .onHover { hovering = $0 }
         .help(help)
     }
 
-    /// One Text, not a stack: the glass menu button keeps only the first view of a stacked label.
+    /// One Text, not a stack: the menu button keeps only the first view of a stacked label.
     private var label: some View {
         Text(title)
             .font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(Localizer.shared.tracking(Tracking.eyebrow))
-            .foregroundColor(Theme.ink.opacity(0.72))
+            .foregroundColor(Theme.tertiary)
         + Text(verbatim: "  ")
         + Text(value)
             .font(.system(size: 10, weight: .semibold)).monospacedDigit()
@@ -955,7 +947,7 @@ struct SummaryMenu<Content: View>: View {
         + Text(verbatim: " ")
         + Text(Image(systemName: "chevron.up.chevron.down"))
             .font(.system(size: 7, weight: .bold))
-            .foregroundColor(Theme.ink.opacity(0.72))
+            .foregroundColor(Theme.tertiary)
     }
 }
 

@@ -3,83 +3,108 @@ import SwiftUI
 
 // MARK: - Surfaces
 
-/// A card groups each panel, and its live display is drawn straight onto it: no inset well, so the traces float
-/// on the card as on a hardware panel.
+/// A panel: a translucent frame around one module, its title row and its plot plate.
 struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
         content
-            .padding(16)
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background { CardSurface() }
     }
 }
 
-/// On dark, a flat charcoal card a step above the near-black window, with the quietest edge and no shadow. On light,
-/// frosted glass: white, clearer toward the top where the backdrop's colour shows through, with a bright rim and a
-/// wide, faint shadow.
+/// A panel's frame. The backdrop's colour shows faintly through it; light catches its top edge and fades down
+/// the sides, and a soft shadow lifts it off the window, so modules separate by depth rather than by heavy borders.
+/// Static: drawn once per size, never per frame.
 struct CardSurface: View {
     var radius: CGFloat = Theme.cardRadius
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        if Theme.dark {
-            shape.fill(Theme.cardTint)
-                .overlay { shape.strokeBorder(Theme.hairline.opacity(0.05), lineWidth: 0.5) }
-        } else {
-            shape.fill(LinearGradient(colors: [Color.white.opacity(0.74), Color.white.opacity(0.93)],
-                                      startPoint: .top, endPoint: .bottom))
-                .overlay { shape.strokeBorder(Theme.hairline.opacity(0.05), lineWidth: 0.5) }
-                .overlay { shape.inset(by: 0.5).strokeBorder(Color.white.opacity(0.9), lineWidth: 1) }
-                .shadow(color: Theme.cardShadow, radius: 22, y: 10)
-        }
+        let dark = Theme.dark
+        shape.fill(Theme.panelFill)
+            .overlay {
+                // A sheen in the top third, as light falls on frosted glass.
+                shape.fill(LinearGradient(colors: [Color.white.opacity(dark ? 0.035 : 0.22), .clear],
+                                          startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.35)))
+            }
+            .overlay {
+                shape.strokeBorder(LinearGradient(colors: dark ? [Color.white.opacity(0.11), Color.white.opacity(0.035)]
+                                                               : [Color.white.opacity(0.95), Color.white.opacity(0.55)],
+                                                  startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            }
+            .overlay { if !dark { shape.strokeBorder(Theme.hairline.opacity(0.07), lineWidth: 0.5) } }
+            .shadow(color: Theme.cardShadow, radius: dark ? 14 : 18, y: dark ? 6 : 8)
     }
 }
 
-/// The title row of the summary's small cards (the 15 s history, the VU meter): the title and the status light at
-/// the card's usual inset. A narrow card gives up the light and some of the inset before the title is cut.
+/// The plate a plot is drawn on: opaque and flat, a step darker than its panel on dark and paper white on light,
+/// so level colours, curves and scales always read against the same ground, whatever lies behind the panel.
+struct PlotPlate: View {
+    var radius: CGFloat = Theme.wellRadius
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        shape.fill(Theme.display)
+            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.08 : 0.09), lineWidth: 0.5) }
+    }
+}
+
+/// The title row of the summary's small panels (the 15 s history, the VU meter), at the panel's usual inset. A narrow
+/// panel gives up some of the inset before the title is cut.
 struct CardTitle: View {
     let title: String
     let model: MeterModel?
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            row(light: true).padding(.horizontal, 20)
-            row(light: true).padding(.horizontal, 14)
-            row(light: false).padding(.horizontal, 12)
-            Eyebrow(title).padding(.horizontal, 10)
+            Eyebrow(title, color: Theme.title).fixedSize().padding(.horizontal, 18)
+            Eyebrow(title, color: Theme.title).fixedSize().padding(.horizontal, 12)
+            Eyebrow(title, color: Theme.title).padding(.horizontal, 10)
         }
-        .frame(height: 24)
-        .padding(.top, 16)
-    }
-
-    private func row(light: Bool) -> some View {
-        HStack(spacing: 8) {
-            Eyebrow(title).fixedSize()
-            Spacer(minLength: 4)
-            if light, let model { PanelLight(model: model) }
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 22)
+        .padding(.top, 14)
     }
 }
 
-/// The card's status light, top right as on a hardware panel: lit in the accent while the meter runs, an empty
-/// ring while it is paused or on standby.
-struct PanelLight: View {
+/// The meter's one status reading: LIVE with an accent dot, PAUSED with a pause glyph on an outlined tag, STANDBY
+/// with an empty ring. Shape and word carry the state as well as colour.
+struct StatusReading: View {
     @ObservedObject var model: MeterModel
+    var detail: String? = nil
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
-        let lit = model.running
-        Circle()
-            .fill(lit ? Theme.sage : Color.clear)
-            .overlay { Circle().strokeBorder(lit ? Theme.sage : Theme.tertiary.opacity(0.7), lineWidth: 1) }
-            .frame(width: 6, height: 6)
-            .background {
-                Circle().fill(Theme.glow(Theme.sage, lit ? 0.45 : 0)).frame(width: 12, height: 12).blur(radius: 3)
+        let paused = !model.running && model.frozen
+        HStack(spacing: 6) {
+            if model.running {
+                Circle().fill(Theme.sage).frame(width: 6, height: 6)
+                    .background { Circle().fill(Theme.glow(Theme.sage, 0.5)).frame(width: 12, height: 12).blur(radius: 3) }
+            } else if paused {
+                Image(systemName: "pause.fill").font(.system(size: 7, weight: .black))
+            } else {
+                Circle().strokeBorder(Theme.tertiary, lineWidth: 1).frame(width: 7, height: 7)
             }
-            .frame(width: 12, height: 12)
-            .help(lit ? L("LIVE") : (model.frozen ? L("PAUSED") : L("STANDBY")))
-            .accessibilityHidden(true)
+            Text(model.running ? L("LIVE") : (paused ? L("PAUSED") : L("STANDBY")))
+                .font(.system(size: 10, weight: .bold)).tracking(1)
+            if let detail {
+                Text(verbatim: "·").foregroundStyle(Theme.tertiary)
+                Text(verbatim: detail).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.secondary)
+            }
+        }
+        .foregroundStyle(model.running ? Theme.ink : (paused ? Theme.ink : Theme.tertiary))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, paused ? 7 : 0)
+        .frame(height: 20)
+        .background {
+            if paused {
+                RoundedRectangle(cornerRadius: Theme.tagRadius, style: .continuous)
+                    .strokeBorder(Theme.ink.opacity(0.45), lineWidth: 1)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: model.running)
     }
 }
 
@@ -108,35 +133,25 @@ struct StableNumber: View {
 /// what acts on the card (its settings, a band switch) and its status light. Keys and readings live in the card.
 private struct PanelHeader<Trailing: View>: View {
     let title: String
+    /// What the panel shows, after the title in the quieter voice; dropped first when the row is tight.
+    var detail: String? = nil
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Eyebrow(title).fixedSize().layoutPriority(1)
+        HStack(alignment: .center, spacing: 6) {
+            Eyebrow(title, color: Theme.title).fixedSize().layoutPriority(1)
+            if let detail {
+                ViewThatFits(in: .horizontal) {
+                    Text(verbatim: detail).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.tertiary)
+                        .lineLimit(1).fixedSize().padding(.leading, 6)
+                    Color.clear.frame(width: 0, height: 0)
+                }
+            }
             Spacer(minLength: 8)
             trailing
         }
         .frame(height: 24)
         .padding(.horizontal, 4)
-    }
-}
-
-/// One reading set like a hardware panel's parameter: its name over its value, centred on each other. The template
-/// reserves the value's usual width, so neighbours hold still while digits change.
-struct ParameterReading: View {
-    let title: String
-    let value: String
-    var template = "−88.8"
-    var color: Color = Theme.ink
-    var titleColor: Color = Theme.tertiary
-
-    var body: some View {
-        VStack(spacing: 5) {
-            Eyebrow(title, color: titleColor)
-            StableNumber(text: value, template: template, font: .system(size: 13, weight: .medium), color: color,
-                         alignment: .center)
-        }
-        .fixedSize()
     }
 }
 
@@ -174,53 +189,44 @@ struct SpectrumPanel: View {
         let left = side == SpectrumSide.left.rawValue
         let flat = view != SpectrogramView.surface.rawValue
         GlassCard {
-            GeometryReader { card in
-                // The readings row under the plot, as under a hardware panel's display, once the card is tall enough
-                // to give it up; shorter, the peak badge floats over the waterfall instead.
-                let readings = card.size.height >= SpectrumReadings.minimumCard
-                VStack(alignment: .leading, spacing: 10) {
-                    PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM")) {
-                        PanelSettingsButton(panel: .spectrum, model: model)
-                        PanelLight(model: model)
-                    }
-                    GeometryReader { proxy in
-                        let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
-                        ZStack(alignment: .topLeading) {
-                            MeterCanvas(kind: .spectrogram, model: model)
-                            MeterCanvas(kind: .spectrum, model: model)
-                            // The keyboard, its notes and the hover readings follow the flat image's rows; the 3D view
-                            // labels its own depth instead.
-                            if flat {
-                                PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
-                                PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
-                            } else {
-                                SurfaceLabels(sampleRate: sampleRate, strip: strip, left: left)
-                            }
-                            SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left, notes: flat)
-                            SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, source: source, waterfall: flat)
-                            // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
-                            PanelDivider(axis: .horizontal, leading: layout.dividerLeading,
-                                         onResize: { setStrip(layout.strip(forDivider: $0), size: proxy.size, left: left) },
-                                         onReset: { setStrip(0, size: proxy.size, left: left) })
-                                .frame(width: SpectrogramLayout.spectrumGap, height: layout.plot.height)
-                                .offset(x: layout.dividerX, y: layout.plot.minY)
-                            // In the waterfall's top corner, clear of the spectrum's frequency labels (the top one
-                            // names the full range) and of the keyboard, in either orientation.
-                            if !readings {
-                                PeakBadge(readouts: model.readouts)
-                                    .padding(.top, 6)
-                                    .padding(.trailing, 6)
-                                    .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
-                                    .offset(x: layout.plot.minX, y: layout.plot.minY)
-                            }
+            VStack(alignment: .leading, spacing: 10) {
+                PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"), detail: source) {
+                    SpectrogramLegend()
+                    PanelSettingsButton(panel: .spectrum, model: model)
+                }
+                GeometryReader { proxy in
+                    let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+                    ZStack(alignment: .topLeading) {
+                        MeterCanvas(kind: .spectrogram, model: model)
+                        MeterCanvas(kind: .spectrum, model: model)
+                        // The keyboard, its notes and the hover readings follow the flat image's rows; the 3D view
+                        // labels its own depth instead.
+                        if flat {
+                            PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
+                            PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
+                        } else {
+                            SurfaceLabels(sampleRate: sampleRate, strip: strip, left: left)
                         }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
-                    if readings {
-                        SpectrumReadings(readouts: model.readouts)
-                            .frame(maxWidth: .infinity)
+                        SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left, notes: flat)
+                        // In the waterfall's top corner, clear of the spectrum's frequency labels and of the keyboard,
+                        // in either orientation; under the hover readout, which must never be hidden.
+                        PeakBadge(readouts: model.readouts)
+                            .padding(.top, 6)
+                            .padding(.trailing, 6)
+                            .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
+                            .offset(x: layout.plot.minX, y: layout.plot.minY)
+                            .allowsHitTesting(false)
+                        SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, source: source, waterfall: flat)
+                        // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
+                        PanelDivider(axis: .horizontal, leading: layout.dividerLeading,
+                                     onResize: { setStrip(layout.strip(forDivider: $0), size: proxy.size, left: left) },
+                                     onReset: { setStrip(0, size: proxy.size, left: left) })
+                            .frame(width: SpectrogramLayout.spectrumGap, height: layout.plot.height)
+                            .offset(x: layout.dividerX, y: layout.plot.minY)
                     }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -233,30 +239,59 @@ struct SpectrumPanel: View {
     }
 }
 
-/// Dominant peak as pitch · frequency · level, e.g. "A4 (+2¢) • 440.0 Hz • −12.4 dBFS".
-/// Every field reserves its widest value so the capsule never changes size while values move.
+/// The three strongest peaks, one per row as pitch (cents) · frequency · level, e.g. "1  A4 (+2¢) • 440.0 Hz • −12.4 dBFS".
+/// Row 1 is the dominant peak of the whole spectrum (`PeakTracker`); rows 2 and 3 are the next loudest notes the analyzer
+/// finds sounding with it (`NoteHolds`: tonal peaks from 27 Hz to 4.2 kHz within 18 dB of the loudest, overtones left
+/// out), skipping any note within a semitone of the dominant peak. Every field reserves its widest value and an empty row keeps its place,
+/// so the tag never changes size while values move.
 private struct PeakBadge: View {
     @ObservedObject var readouts: Readouts
 
+    private struct Row {
+        let frequency: Float
+        let level: Float
+    }
+
     var body: some View {
-        let peak = readouts.values.peak
-        let pitch = peak.visible ? Pitch(frequency: Double(peak.frequency)) : nil
-        let font = Font.caption2.weight(.medium)
-        HStack(spacing: 6) {
-            StableNumber(text: pitch?.label ?? "--", template: "A#8", font: font.weight(.semibold),
-                         color: pitch == nil ? Theme.tertiary : Theme.sage)
-            StableNumber(text: pitch.map { "(\($0.centsLabel))" } ?? "", template: "(−50¢)", font: font, color: Theme.secondary)
-            separator
-            StableNumber(text: peak.visible ? Self.frequency(peak.frequency) : "-- Hz", template: "88.88 kHz", font: font,
-                         color: peak.visible ? Theme.ink : Theme.tertiary)
-            separator
-            StableNumber(text: peak.visible ? MeterScale.tenths(peak.level) + " dBFS" : "-- dBFS", template: "−88.8 dBFS",
-                         font: font, color: peak.visible ? Theme.ink : Theme.tertiary)
+        let values = readouts.values
+        let peak = values.peak
+        let first = peak.visible ? Row(frequency: peak.frequency, level: peak.level) : nil
+        // The dominant peak's estimate and a note's can differ by a few hertz for one partial, so any note within a
+        // semitone of it is that same peak.
+        let others = values.notes.notes
+            .filter { note in first.map { abs(1200 * log2(Double(note.frequency / $0.frequency))) >= 100 } ?? true }
+            .sorted { $0.level > $1.level }
+            .prefix(2)
+            .map { Row(frequency: $0.frequency, level: $0.level) }
+        let rows: [Row?] = [first, others.first, others.dropFirst().first]
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(0..<3, id: \.self) { rank in row(rank, rows[rank]) }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
         .background { BadgeSurface() }
         .accessibilityElement(children: .combine)
+    }
+
+    /// The dominant row reads strongest; the two below it a step quieter, so the ranking shows at a glance.
+    private func row(_ rank: Int, _ row: Row?) -> some View {
+        let pitch = row.flatMap { Pitch(frequency: Double($0.frequency)) }
+        let font = Font.caption2.weight(.medium)
+        let ink = rank == 0 ? Theme.ink : Theme.secondary
+        return HStack(spacing: 6) {
+            Text(verbatim: "\(rank + 1)").font(.system(size: 8, weight: .bold).monospacedDigit())
+                .foregroundStyle(Theme.tertiary).frame(width: 7, alignment: .leading)
+            StableNumber(text: pitch?.label ?? "—", template: "A#8", font: font.weight(.semibold),
+                         color: pitch == nil ? Theme.disabled : (rank == 0 ? Theme.sage : ink), alignment: .leading)
+            StableNumber(text: pitch.map { "(\($0.centsLabel))" } ?? "", template: "(−50¢)", font: font, color: Theme.tertiary,
+                         alignment: .leading)
+            separator
+            StableNumber(text: row.map { Self.frequency($0.frequency) } ?? "— Hz", template: "88.88 kHz", font: font,
+                         color: row == nil ? Theme.disabled : ink)
+            separator
+            StableNumber(text: row.map { MeterScale.tenths($0.level) + " dBFS" } ?? "— dBFS", template: "−88.8 dBFS",
+                         font: font, color: row == nil ? Theme.disabled : ink)
+        }
     }
 
     private var separator: some View {
@@ -268,41 +303,13 @@ private struct PeakBadge: View {
     }
 }
 
-/// Under the plot, the dominant peak as a hardware panel prints its parameters (its note and cents, frequency and
-/// level), and the colour scale the waterfall is drawn on.
-private struct SpectrumReadings: View {
-    @ObservedObject var readouts: Readouts
-    @ObservedObject private var l10n = Localizer.shared
-    /// Cards shorter than this keep the plot's height and float the peak badge instead.
-    static let minimumCard: CGFloat = 330
-
-    var body: some View {
-        let peak = readouts.values.peak
-        let pitch = peak.visible ? Pitch(frequency: Double(peak.frequency)) : nil
-        HStack(alignment: .top, spacing: 30) {
-            ParameterReading(title: L("PEAK"), value: pitch.map { "\($0.label) \($0.centsLabel)" } ?? "—",
-                             template: "A#8 −50¢", color: pitch == nil ? Theme.tertiary : Theme.ink,
-                             titleColor: pitch == nil ? Theme.tertiary : Theme.sage)
-            ParameterReading(title: L("FREQUENCY"), value: peak.visible ? PeakBadge.frequency(peak.frequency) : "—",
-                             template: "88.88 kHz", color: peak.visible ? Theme.ink : Theme.tertiary)
-            ParameterReading(title: L("LEVEL"), value: peak.visible ? MeterScale.tenths(peak.level) + " dBFS" : "—",
-                             template: "−88.8 dBFS", color: peak.visible ? Theme.ink : Theme.tertiary)
-            VStack(spacing: 7) {
-                Eyebrow(L("COLOR"), color: Theme.tertiary)
-                SpectrogramLegend()
-            }
-            .fixedSize()
-        }
-        .padding(.bottom, 2)
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// A solid chip over the plot. Glass here would re-sample the live spectrum under it on every frame.
 private struct BadgeSurface: View {
     var body: some View {
-        Capsule().fill(Theme.wellFill.opacity(0.88))
-            .overlay { Capsule().strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.16 : 0.12), lineWidth: 0.5) }
+        let shape = RoundedRectangle(cornerRadius: Theme.tagRadius, style: .continuous)
+        shape.fill(Theme.wellFill.opacity(0.94))
+            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.18 : 0.14), lineWidth: 0.5) }
+            .shadow(color: .black.opacity(Theme.dark ? 0.35 : 0.10), radius: 4, y: 2)
     }
 }
 
@@ -474,8 +481,9 @@ private struct SpectrogramInspector: View {
 
     @ViewBuilder
     private func overlay(_ reading: Reading, at point: CGPoint, layout: SpectrogramLayout, size: CGSize) -> some View {
-        let lineColor = Theme.ink.opacity(Theme.dark ? 0.45 : 0.4)
-        let dash = StrokeStyle(lineWidth: 0.75, dash: [3, 3])
+        // A precise solid crosshair, a ring at the point read, and the readout on an opaque tag beside it.
+        let lineColor = Theme.ink.opacity(Theme.dark ? 0.55 : 0.5)
+        let dash = StrokeStyle(lineWidth: 0.5)
         let span = layout.plot.union(layout.spectrum)
         ZStack(alignment: .topLeading) {
             Path { path in
@@ -487,6 +495,10 @@ private struct SpectrogramInspector: View {
                 }
             }
             .stroke(lineColor, style: dash)
+            Circle().strokeBorder(Theme.ink, lineWidth: 1.25)
+                .background(Circle().fill(Theme.display.opacity(0.6)))
+                .frame(width: 9, height: 9)
+                .offset(x: point.x - 4.5, y: point.y - 4.5)
             // The harmonic cursor: where the 2nd to 8th harmonics of the frequency under the pointer fall, so an
             // overtone series (or a resonance's partials) can be checked at a glance.
             if reading.secondsAgo != nil {
@@ -938,14 +950,7 @@ struct StatTile: View {
         VStack(alignment: .leading, spacing: 5 * scale) {
             HStack(spacing: 6) {
                 Eyebrow(title, color: Theme.tertiary)
-                if let alert {
-                    Text(alert)
-                        .font(.system(size: 8, weight: .heavy)).tracking(Localizer.shared.tracking(0.6))
-                        .foregroundStyle(Theme.onStatus)
-                        .lineLimit(1).fixedSize()
-                        .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .background(Capsule().fill(Theme.ember))
-                }
+                if let alert { AlarmTag(text: alert) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 StableNumber(text: value, template: template, font: .system(size: 19 * scale, weight: .medium),
@@ -960,6 +965,47 @@ struct StatTile: View {
     }
 }
 
+/// The plate of the summary's small panels (the 15 s history and the VU meter): under the title row, inset by the
+/// panel's margin.
+struct PanelPlate: View {
+    static let inset: CGFloat = 10
+    static let top: CGFloat = 46
+    static func rect(in size: CGSize) -> CGRect {
+        CGRect(x: inset, y: top, width: max(1, size.width - 2 * inset), height: max(1, size.height - top - inset))
+    }
+    var body: some View {
+        GeometryReader { proxy in
+            let rect = Self.rect(in: proxy.size)
+            PlotPlate().frame(width: rect.width, height: rect.height).offset(x: rect.minX, y: rect.minY)
+        }
+    }
+}
+
+/// The chart line scale, shared by every SwiftUI plot: the zero or reference line, major and minor grid lines,
+/// and the short ticks the axis labels name. The Metal scenes use the same opacities (`MeterGrid`).
+enum ChartInk {
+    static var reference: Double { Theme.dark ? 0.22 : 0.24 }
+    static var major: Double { Theme.dark ? 0.10 : 0.11 }
+    static var minor: Double { Theme.dark ? 0.05 : 0.06 }
+    static var tick: Double { Theme.dark ? 0.30 : 0.34 }
+}
+
+/// An alarm: the only filled tag in the interface, ember with a warning glyph, so an over reads by shape and word as
+/// well as colour.
+struct AlarmTag: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 7, weight: .bold))
+            Text(text).font(.system(size: 8, weight: .heavy)).tracking(Localizer.shared.tracking(0.6))
+        }
+        .foregroundStyle(Theme.onStatus)
+        .lineLimit(1).fixedSize()
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.ember))
+    }
+}
+
 /// Last 15 s of short-term (accent) over momentary (faint), with the ±1 LU target band and 5 s time marks, on a card
 /// of its own beside the summary.
 struct LoudnessHistory: View {
@@ -971,16 +1017,18 @@ struct LoudnessHistory: View {
 
     var body: some View {
         Canvas { context, size in
-            let rect = CGRect(x: 18, y: 42, width: max(1, size.width - 36), height: max(1, size.height - 42 - 30))
+            let plate = PanelPlate.rect(in: size)
+            let rect = CGRect(x: plate.minX + 8, y: plate.minY + 10, width: max(1, plate.width - 16), height: max(1, plate.height - 30))
             func y(_ lufs: Float) -> CGFloat { rect.maxY - MeterScale.loudnessFraction(lufs) * rect.height }
             let band = CGRect(x: rect.minX, y: y(target + 1), width: rect.width, height: max(1, y(target - 1) - y(target + 1)))
             context.fill(Path(band), with: .color(Theme.sage.opacity(Theme.dark ? 0.12 : 0.12)))
             for lufs: Float in [-12, -24] {
-                context.fill(Path(CGRect(x: rect.minX, y: y(lufs), width: rect.width, height: 0.5)), with: .color(Theme.hairline.opacity(0.08)))
+                context.fill(Path(CGRect(x: rect.minX, y: y(lufs), width: rect.width, height: 0.5)), with: .color(Theme.hairline.opacity(ChartInk.major)))
             }
             for seconds in stride(from: 5.0, to: Readouts.historySeconds, by: 5) {
                 let x = rect.maxX - CGFloat(seconds / Readouts.historySeconds) * rect.width
-                context.fill(Path(CGRect(x: x, y: rect.minY, width: 0.5, height: rect.height)), with: .color(Theme.hairline.opacity(0.07)))
+                context.fill(Path(CGRect(x: x, y: rect.minY, width: 0.5, height: rect.height)), with: .color(Theme.hairline.opacity(ChartInk.minor)))
+                context.fill(Path(CGRect(x: x, y: rect.maxY, width: 0.5, height: 4)), with: .color(Theme.hairline.opacity(ChartInk.tick)))
             }
             let step = rect.width / CGFloat(max(1, Readouts.historyLength - 1))
             func path(_ values: [Float]) -> Path {
@@ -1000,8 +1048,10 @@ struct LoudnessHistory: View {
         }
         .overlay(alignment: .top) { CardTitle(title: L("LAST 15 S"), model: model) }
         .overlay(alignment: .bottomTrailing) {
-            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary).padding(.bottom, 14).padding(.trailing, 20)
+            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary)
+                .padding(.bottom, PanelPlate.inset + 6).padding(.trailing, PanelPlate.inset + 8)
         }
+        .background { PanelPlate() }
         .background { CardSurface() }
     }
 }
@@ -1048,7 +1098,7 @@ struct WaveformPanel: View {
     var body: some View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                WaveHeader(model: model)
+                WaveHeader(model: model, format: format, layout: layout)
                 GeometryReader { proxy in
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .waveform, model: model)
@@ -1058,6 +1108,7 @@ struct WaveformPanel: View {
                     .animation(.formatShift, value: format)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -1101,6 +1152,7 @@ struct SoundstagePanel: View {
                     .animation(.formatShift, value: resolution)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -1159,9 +1211,10 @@ struct ChannelLevelsPanel: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 PanelHeader(title: L("CHANNEL LEVELS")) {
+                    // The key to the bars, while the title row has room for it.
+                    ViewThatFits(in: .horizontal) { MeterLegend(); Color.clear.frame(width: 0, height: 0) }
                     PanelSettingsButton(panel: .levels, model: model)
-                    PanelLight(model: model)
-                }
+                        }
                 GeometryReader { proxy in
                     let mix = FormatMix(format)
                     ZStack(alignment: .topLeading) {
@@ -1190,6 +1243,7 @@ struct ChannelLevelsPanel: View {
                     .animation(.formatShift, value: resolution)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -1361,9 +1415,15 @@ struct GlassSegments<Value: Hashable>: View {
     let select: (Value) -> Void
     var large = false
     @Namespace private var thumb
+    @State private var hovered: Value?
 
+    /// A recessed track holding the choices; the chosen one is a raised plate that slides to it, the others lift
+    /// under the pointer. Rounded rectangles on the panels' radius scale, so the control reads as an instrument's
+    /// switch rather than a pill.
     var body: some View {
-        HStack(spacing: 2) {
+        let outer = large ? Theme.controlRadius + 1 : Theme.controlRadius
+        let inner = outer - 2
+        HStack(spacing: 1) {
             ForEach(options, id: \.0) { value, title, name in
                 let chosen = value == selection
                 Button {
@@ -1372,26 +1432,37 @@ struct GlassSegments<Value: Hashable>: View {
                 } label: {
                     Text(verbatim: title)
                         .font(.system(size: large ? 13 : 11, weight: chosen ? .semibold : .medium))
-                        .foregroundStyle(chosen ? Theme.onInk : Theme.secondary)
+                        .foregroundStyle(chosen ? Theme.ink : (hovered == value ? Theme.ink.opacity(0.92) : Theme.secondary))
                         .lineLimit(1)
                         .fixedSize()
-                        .padding(.horizontal, large ? 14 : 9)
+                        .padding(.horizontal, large ? 12 : 9)
                         .frame(height: large ? 24 : 20)
                         .background {
+                            let shape = RoundedRectangle(cornerRadius: inner, style: .continuous)
                             if chosen {
-                                Capsule().fill(Theme.ink).matchedGeometryEffect(id: "thumb", in: thumb)
+                                shape.fill(Theme.raised)
+                                    .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
+                                    .shadow(color: .black.opacity(Theme.dark ? 0.35 : 0.12), radius: 1.5, y: 1)
+                                    .matchedGeometryEffect(id: "thumb", in: thumb)
+                            } else if hovered == value {
+                                shape.fill(Theme.controlFill)
                             }
                         }
-                        .contentShape(Capsule())
+                        .contentShape(RoundedRectangle(cornerRadius: inner, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .onHover { inside in hovered = inside ? value : (hovered == value ? nil : hovered) }
                 .accessibilityLabel(name)
                 .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
             }
         }
-        .padding(large ? 2 : 2)
+        .padding(2)
         .fixedSize()
-        .glassSurface(Capsule())
+        .background {
+            let shape = RoundedRectangle(cornerRadius: outer, style: .continuous)
+            shape.fill(Theme.ink.opacity(Theme.dark ? 0.08 : 0.07))
+                .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.08 : 0.06), lineWidth: 0.5) }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(label)
     }
@@ -1420,13 +1491,15 @@ struct MeterLegend: View {
 
 private struct WaveHeader: View {
     let model: MeterModel
+    let format: ChannelFormat
+    let layout: SpeakerLayout
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         // Each lane names its channel, so the title stands alone.
         PanelHeader(title: L("WAVEFORM")) {
+            ViewThatFits(in: .horizontal) { WaveformKey(format: format, layout: layout); Color.clear.frame(width: 0, height: 0) }
             PanelSettingsButton(panel: .waveform, model: model)
-            PanelLight(model: model)
         }
     }
 }
@@ -1441,7 +1514,6 @@ private struct StageHeader<Trailing: View>: View {
         PanelHeader(title: L("SOUNDSTAGE")) {
             trailing.layoutPriority(1)
             PanelSettingsButton(panel: .soundstage)
-            PanelLight(model: model)
         }
     }
 }
@@ -1769,7 +1841,7 @@ private struct SoundstageReadouts: View, Animatable {
             text = width >= 30 ? MeterScale.tenths(peak, floor: -119) : MeterScale.signedInteger(peak)
         }
         let overs = active && over > 0
-        // An over reads as a status pill, like ON TARGET and OVER on the loudness summary.
+        // An over reads as an alarm tag, like OVER on the loudness summary: the only filled tags in the interface.
         return Text(verbatim: text)
             .font(.system(size: width >= 30 ? 10 : (width >= 20 ? 9 : 7.5), weight: overs ? .bold : .medium).monospacedDigit())
             .foregroundStyle(!active ? Theme.tertiary : (overs ? Theme.onStatus : (peak >= -3 ? Theme.ochre : Theme.ink)))
@@ -1777,7 +1849,7 @@ private struct SoundstageReadouts: View, Animatable {
             .minimumScaleFactor(0.6)
             .padding(.horizontal, overs ? 4 : 0)
             .padding(.vertical, overs ? 1 : 0)
-            .background { if overs { Capsule().fill(Theme.ember) } }
+            .background { if overs { RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.ember) } }
     }
 
     private func correlation(stage: SoundstageLayout, values: Readouts.Values) -> some View {

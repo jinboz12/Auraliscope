@@ -1,6 +1,34 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
 
+## Build 73 — 2026-10-09
+
+### Changes
+- A new visual system for the app, with the layout, controls and typography kept: backdrop atmosphere, translucent
+  panels with lit edges and soft shadows, opaque plates under every plot, one radius scale (16/10/8/5), recessed
+  segmented controls with a raised choice, field-style menus, a single LIVE/PAUSED/STANDBY status, an alarm tag with a
+  glyph for overs, one chart line scale (`ChartInk`) across SwiftUI and Metal, full-width meter slots, a solid hover
+  crosshair. The colour scale and the spectrum's source stay in the spectrogram's title row as in build 72; the meter
+  and waveform keys return to their title rows when they fit.
+- The peak readout lists the three strongest peaks: the dominant peak (`PeakTracker`), then the two loudest notes of
+  the published `notes` field (`NoteHolds`, now keeping each note's frequency) more than a semitone from it.
+- No analysis, plugin, protocol or measurement code changed since build 72 (`git diff 363d475` touches only
+  `Sources/Auraliscope`, localisation, docs and the version). Axes, units, scales and peak positions are unchanged;
+  only panel padding, gutters (14 → 10 pt) and meter bar thickness (Immersive 10 → 9 pt, Stereo 18 → 16 pt) moved.
+- Diagnostics: `--snapshot-paused` and `--snapshot-hot` (demo 10 dB hot) for reviewing paused and warning states.
+
+### Validation
+- Core checks: 49 passed; kernel checks passed; 379 localization keys in en, zh-Hans and ko.
+- Before/after window captures (build 72 vs build 73, demo signal, same window size and defaults): Dark and Light,
+  Stereo and Immersive, 1280×760 and the 1000×628 minimum, paused, hot (OVER and above target), hover inspector,
+  mirrored spectrum in Chinese, Korean at the minimum size, the spectrum settings popover and Settings ▸ Audio.
+- Rendering cost, debug builds, demo signal, Immersive, Dark, the same 1280×760 window, `top` every 2 s for 20 s after
+  an 8 s settle, the first sample dropped, three alternating rounds: Auraliscope 31.6 % (build 72) vs 26.7 % (build 73)
+  vs 32.0 % (build 73 without panel shadows); WindowServer 40.1 % vs 36.3 % vs 35.4 %. An earlier run that kept the
+  first sample gave WindowServer 33.5 % vs 37.3 % and the app 28.1 % vs 26.3 %. Rounds of the same build differ by up
+  to ±4 points, more than any difference measured, so no cost of the new surfaces could be detected; panel shadows
+  showed none. Not measured: GPU time, release builds, larger or Retina-external windows, older Macs.
+
 ## Build 72 — 2026-10-08
 
 ### Changes

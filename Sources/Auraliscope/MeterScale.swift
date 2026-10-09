@@ -206,6 +206,8 @@ struct NoteHolds: Equatable {
 
     struct Note: Equatable {
         let midi: Int
+        /// The newest refined frequency the analyzer found for this key, in Hz.
+        var frequency: Float
         var level: Float
         var hold: Double
     }
@@ -220,10 +222,11 @@ struct NoteHolds: Equatable {
             guard frequency > 0, level >= PeakTracker.gate else { continue }
             let midi = Int((69 + 12 * log2(Double(frequency) / 440)).rounded())
             if let index = notes.firstIndex(where: { $0.midi == midi }) {
+                notes[index].frequency = frequency
                 notes[index].level = level
                 notes[index].hold = Self.holdTime
             } else {
-                notes.append(Note(midi: midi, level: level, hold: Self.holdTime))
+                notes.append(Note(midi: midi, frequency: frequency, level: level, hold: Self.holdTime))
             }
         }
         notes.removeAll { $0.hold <= 0 }
@@ -758,8 +761,9 @@ enum HeroLayout {
     static func leadWidth(compact: Bool) -> CGFloat { compact ? 190 : 250 }
     /// Between the short-term reading and the loudness column.
     static func gap(compact: Bool) -> CGFloat { compact ? 14 : 22 }
-    /// The summary sits on the backdrop with no card; its title lines up with the titles of the cards below it.
-    static let inset: CGFloat = 20
+    /// The loudness panel's inner margins: its title lines up with the titles of the panels below it.
+    static let inset: CGFloat = 18
+    static let trailingInset: CGFloat = 16
     /// Between the loudness column and the history card, and between the history and VU cards: the panels' gutter.
     static let cardGap: CGFloat = PanelLayout.divider
     static func defaultVU(compact: Bool) -> CGFloat { compact ? 170 : 236 }
@@ -935,9 +939,9 @@ struct SoundstageLayout {
     /// Column pitch L and R widen to in Stereo, and the single column in Mono, when the well allows it.
     static let stereoPitch: CGFloat = 112
     static let monoPitch: CGFloat = 128
-    /// Bar thickness limit: 10 pt in Spatial, up to 18 pt for the wide Stereo and Mono columns.
-    static let spatialBar: CGFloat = 6
-    static let pairBar: CGFloat = 12
+    /// Bar thickness limit: 9 pt in Spatial, up to 16 pt for the wide Stereo and Mono columns.
+    static let spatialBar: CGFloat = 9
+    static let pairBar: CGFloat = 16
     /// Column pitch in Spatial: small layouts get wider columns (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14
     /// or more channels. A narrow well compresses every column alike.
     static func spatialPitch(channels: Int) -> CGFloat { max(30, min(42, 44 - CGFloat(channels))) }
@@ -1088,7 +1092,7 @@ struct SoundstageLayout {
     /// The bar inside a column: thickness follows the column pitch, so narrowing columns thin out as they fade.
     func bar(_ index: Int) -> CGRect {
         let column = columns[index]
-        // Slim, like the loudness gauge on the summary, in Atmos; the two wide Stereo columns carry fuller bars.
+        // Narrow in Immersive; the two wide Stereo columns carry fuller bars.
         let limit = Self.pairBar + (Self.spatialBar - Self.pairBar) * presence
         let thickness = min(column.width * 0.6, max(3, min(limit, column.width * 0.4)))
         return CGRect(x: column.midX - thickness / 2, y: scale.minY, width: thickness, height: scale.height)

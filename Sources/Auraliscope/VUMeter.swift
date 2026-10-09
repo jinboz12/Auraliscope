@@ -28,14 +28,15 @@ struct VUMeterPanel: View {
                 StableNumber(text: level > -100 ? MeterScale.tenths(vu, floor: -99) + " VU" : "— VU", template: "−88.8 VU",
                              font: .system(size: 10, weight: .semibold),
                              color: vu >= 0 && level > -100 ? Theme.ember : (level > -100 ? Theme.ink : Theme.tertiary))
-                    .padding(.trailing, 20).padding(.bottom, 14)
+                    .padding(.trailing, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
             .overlay(alignment: .top) { CardTitle(title: "VU · " + L("ALL CHANNELS"), model: model) }
             .overlay(alignment: .bottomLeading) {
                 Text(verbatim: "0 VU = \(MeterScale.signedInteger(reference)) dBFS")
                     .font(.axis).foregroundStyle(Theme.tertiary)
-                    .padding(.leading, 20).padding(.bottom, 14)
+                    .padding(.leading, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
+            .background { PanelPlate() }
             .background { CardSurface() }
             .help(L("VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS).",
                     MeterScale.signedInteger(reference)))
@@ -50,10 +51,10 @@ struct VUGeometry {
     let radius: CGFloat
 
     init(size: CGSize) {
-        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 20, dy: 0)
-        // Leave the top 40 pt to the title row: labels sit 15 pt outside the arc.
-        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 84))
-        pivot = CGPoint(x: rect.midX, y: size.height - 28)
+        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 26, dy: 0)
+        // Leave the title row and the plate's top margin: labels sit 15 pt outside the arc.
+        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 104))
+        pivot = CGPoint(x: rect.midX, y: size.height - 34)
     }
 
     /// Needle angle from vertical, clockwise positive; `fraction` 0 is the rest stop, 1 is +3 VU.

@@ -980,7 +980,7 @@ struct LayoutDiagram: View {
             }
             context.fill(Path(ellipseIn: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)), with: .color(Theme.ink.opacity(0.7)))
         }
-        .background(Theme.display.opacity(Theme.dark ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.display, in: RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
         .accessibilityLabel(Text(verbatim: layout.name))
     }
 }
@@ -1066,7 +1066,8 @@ struct PreviewBanner: View {
             .padding(.leading, 14)
             .padding(.trailing, 6)
             .padding(.vertical, 6)
-            .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.16 : 0.10))
+            .glassSurface(RoundedRectangle(cornerRadius: Theme.controlRadius + 4, style: .continuous),
+                          tint: Theme.sage.opacity(Theme.dark ? 0.16 : 0.10))
             .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
@@ -1080,14 +1081,17 @@ struct SettingsSection<Content: View>: View {
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(Localizer.shared.tracking(0.6))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.tertiary)
                 .padding(.leading, 12)
+            // The meter's panel material, opaque here: a lit top edge fading down the sides.
             VStack(spacing: 0) { content }
                 .padding(.horizontal, 14)
-                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous)
-                        .strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.07 : 0.06), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous)
+                        .strokeBorder(LinearGradient(colors: Theme.dark ? [Color.white.opacity(0.10), Color.white.opacity(0.03)]
+                                                                         : [Theme.hairline.opacity(0.06), Theme.hairline.opacity(0.10)],
+                                                     startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
                 }
         }
     }

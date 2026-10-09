@@ -417,5 +417,3 @@
 "Classic shows every row at its calibrated level. Enhanced moves each component's energy to the time and frequency its phase points to (reassignment): tones become thin lines and onsets sharp, while noise breaks into fine grain." = "Classic shows every row at its calibrated level. Enhanced moves each component's energy to the time and frequency its phase points to (reassignment): tones become thin lines and onsets sharp, while noise breaks into fine grain.";
 "How finely the correlation splits the spectrum: the full band, three bands or five." = "How finely the correlation splits the spectrum: the full band, three bands or five.";
 "This plugin sends Classic columns. Install the plugins of this build for Enhanced." = "This plugin sends Classic columns. Install the plugins of this build for Enhanced.";
-"FREQUENCY" = "FREQUENCY";
-"LEVEL" = "LEVEL";

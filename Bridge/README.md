@@ -1,9 +1,38 @@
 # Auraliscope LABS 1.3dev and Auraliscope Bridge (DAW integration prototype)
 
+## 1.3dev build 73: a new visual system
+
+Install **Auraliscope LABS 1.3dev build 73.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
+This is a local tester build, not a notarized public release. App: Apple silicon, macOS 13+; plugins: arm64/x86_64.
+
+Build 73 redesigns how LABS looks, not what it measures: the analysis, the plugins' results, units, axes and peak
+positions are those of build 72, and every panel, divider, menu and button is where it was. Typography is unchanged.
+
+- **Atmosphere around the panels, stable ground under the plots.** The window backdrop carries the palette as soft
+  light; the panels are translucent frames with a lit top edge and a soft shadow; every plot (spectrogram, spectrum,
+  waveform, soundstage, meters, 15 s history, VU dial) now sits on an opaque plate, so gradients never lie under a level
+  colour or a curve.
+- **One shape system.** Panels 16 pt corners, plates 10, controls 8, tags 5. The loudness summary is a panel of its own
+  beside the history and VU panels instead of one card holding the others; its readings have no tiles.
+- **Controls.** Segmented controls are a recessed track with a raised plate for the choice (no solid pill); TARGET,
+  CEILING and BANDS are quiet fields; panel buttons are rounded squares; all lift under the pointer.
+- **Colour with one meaning each.** The accent is the live signal; ink marks holds, the target, needles and cursors;
+  ochre is caution; ember is an alarm only (OVER now carries a warning glyph). Selection is shown by the raised plate.
+- **One status.** LIVE (accent dot), PAUSED (outlined tag with a pause glyph; the toolbar's play button turns accent) or
+  STANDBY (empty ring) beside LOUDNESS; the status lights on every card are gone.
+- **Charts.** One grid scale across all plots; meter bars run in a full-width recessed slot with clearer peak holds
+  (ochre within 3 dB of full scale); a solid crosshair with a ring marks the hover point; tags are opaque.
+- **Three peaks.** The peak readout over the waterfall lists the three strongest peaks, each as note (cents) ·
+  frequency · level: the dominant peak of the whole spectrum, then the next two notes sounding with it (the analysis's
+  own tonal peaks, 27 Hz–4.2 kHz within 18 dB of the loudest, overtones left out; the ones the keyboard lights).
+  Empty rows keep their place, so the readout never jumps in size. No analysis changed: the plugins already send these.
+- As in build 72, the colour scale and the spectrum's source sit in the spectrogram's title row; the meter and waveform
+  keys are in their title rows whenever they fit.
+
+To compare with build 72: same window size, Light and Dark, Stereo and Immersive, paused, and with an over.
+
 ## 1.3dev build 72: Enhanced and 3D spectrogram, a calmer spectrum, settings on each panel
 
-Install **Auraliscope LABS 1.3dev build 72.pkg** for the app plus VST3/AU plugins. Quit LABS and your DAW first.
-This is a local tester build, not a notarized public release. App: Apple silicon, macOS 13+; plugins: arm64/x86_64.
 
 - **Settings on each panel.** Every panel has a small settings button (☰ sliders) at the right of its header; its
   popover holds that panel's choices, which apply at once and are kept. Settings no longer has a Panels page. Hover a
@@ -65,7 +94,7 @@ levels, true peak, loudness, spectrum, stereo image, spectrogram and waveform. *
 build of Auraliscope, shows those results; it receives no audio from the plugin. Labs still analyses microphones,
 interfaces and system audio itself, with the same code. The DAW is the plugin host; nothing here hosts plugins.
 
-Build 72 (build numbers continue after Auraliscope 1.2.2, build 62: 63–70 were earlier LABS test packages; builds 1 to 3 were
+Build 73 (build numbers continue after Auraliscope 1.2.2, build 62: 63–72 were earlier LABS test packages; builds 1 to 3 were
 the earlier prototypes) is on the experimental branch `claude/bridge-plugin-analysis`, started from the build 2 prototype (`7f7e733`,
 branch `claude/auraliscope-daw-bridge-187076`, which is left as it was), with Auraliscope 1.2.2 (build 62,
 `10e35cd`) as the application baseline. It is not merged, tagged or released. See

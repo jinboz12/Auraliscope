@@ -13,18 +13,23 @@ struct PanelSettingsButton: View {
     let panel: PanelKind
     var model: MeterModel? = nil
     @State private var open = false
+    @State private var hovering = false
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         Button { open.toggle() } label: {
             Image(systemName: "slider.horizontal.3")
                 .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(open ? Theme.ink : Theme.secondary)
-                .frame(width: 24, height: 24)
-                .contentShape(Circle())
+                .foregroundStyle(open || hovering ? Theme.ink : Theme.secondary)
+                .frame(width: 26, height: 22)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.controlRadius - 2, style: .continuous)
+                        .fill(open ? Theme.controlHover : (hovering ? Theme.controlFill : .clear))
+                }
+                .contentShape(RoundedRectangle(cornerRadius: Theme.controlRadius - 2, style: .continuous))
         }
         .buttonStyle(.plain)
-        .background(Circle().fill(Theme.ink.opacity(open ? 0.12 : 0.06)))
+        .onHover { hovering = $0 }
         .help(L("Panel settings"))
         .accessibilityLabel(L("Panel settings"))
         .onAppear {
@@ -149,6 +154,8 @@ private struct PanelSettingsForm: View {
                 .tracking(l10n.tracking(0.6))
                 .foregroundStyle(Theme.tertiary)
             VStack(alignment: .leading, spacing: 6) { content() }
+                .padding(.top, 2)
+                .overlay(alignment: .top) { Rectangle().fill(Theme.hairline.opacity(ChartInk.minor)).frame(height: 0.5).offset(y: -2) }
         }
     }
 

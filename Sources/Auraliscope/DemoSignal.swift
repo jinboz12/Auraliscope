@@ -54,12 +54,13 @@ enum DemoSignal {
             let wobble = 4 * sin(time * (1.3 + Double(role) * 0.37) + Double(role))
             // Sit the channel levels where a −18 LUFS mix really is (≈ −20 dBFS RMS on the fronts), so the
             // meters, the VU needle and the loudness readouts tell one story.
-            let rms = base[role] + wobble - 15
+            let rms = base[role] + wobble - 15 + (Diagnostics.snapshotHot ? 10 : 0)
             let crest = role == Role.lfe ? 5.0 : 9 + 2 * sin(time * 2.1 + Double(role))
             let silent = !spatial && role >= 2
             result.channelRMS[role] = silent ? 0 : Float(pow(10, rms / 20))
+            let ceiling = Diagnostics.snapshotHot ? 1.2 : 0.3
             result.channelPeaks[role] = silent ? 0 : Float(pow(10, min(-0.4, rms + crest) / 20))
-            result.channelTruePeaks[role] = silent ? 0 : Float(pow(10, min(0.3, rms + crest + 0.4) / 20))
+            result.channelTruePeaks[role] = silent ? 0 : Float(pow(10, min(ceiling, rms + crest + 0.4) / 20))
         }
         // Band energy per role for the Immersive room: bass in the front and LFE, mids spread out, air in the
         // surrounds and the upper layer, each breathing a little, so every band points somewhere of its own.
@@ -139,9 +140,10 @@ enum DemoSignal {
         result.rightPeak = result.channelPeaks[1]
         result.leftRMS = result.channelRMS[0]
         result.rightRMS = result.channelRMS[1]
-        result.momentaryLUFS = Float(-17.5 + 3 * sin(time * 0.9))
-        result.shortLUFS = Float(-18.6 + 1.6 * sin(time * 0.25))
-        result.integratedLUFS = Float(-19.2 + 0.3 * sin(time * 0.05))
+        let hot: Double = Diagnostics.snapshotHot ? 10 : 0
+        result.momentaryLUFS = Float(-17.5 + hot + 3 * sin(time * 0.9))
+        result.shortLUFS = Float(-18.6 + hot + 1.6 * sin(time * 0.25))
+        result.integratedLUFS = Float(-19.2 + hot + 0.3 * sin(time * 0.05))
         return result
     }
 }

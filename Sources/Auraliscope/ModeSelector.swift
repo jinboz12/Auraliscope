@@ -28,7 +28,7 @@ extension ChannelFormat {
     static let selectorOrder: [ChannelFormat] = [.mono, .stereo, .spatial]
 }
 
-/// Top-bar monitoring mode: Mono | Stereo | Immersive on a glass capsule, the mode in use a solid ink pill that
+/// Top-bar monitoring mode: Mono | Stereo | Immersive on a recessed track, the mode in use a raised plate that
 /// slides between them (`GlassSegments`), plus the AUTO switch. Choosing a segment pins that mode; AUTO hands
 /// control back to the detector. Each segment is sized to its label in every language, so nothing is cropped.
 struct ModeSelector: View {
@@ -64,7 +64,7 @@ struct ModeSelector: View {
 
 /// AUTO: the system switch with its label, so it is the Liquid Glass switch on macOS 26 (the knob turns to glass
 /// while pressed or dragged) and the classic switch before it; clicking the label flips it, as beside any macOS
-/// switch. It sits on a glass capsule of its own, tinted with the accent while the detector drives the mode.
+/// switch. It sits on a track like the segments', tinted with the accent while the detector drives the mode.
 private struct AutoToggle: View {
     let auto: Bool
     let detected: ChannelFormat
@@ -90,7 +90,12 @@ private struct AutoToggle: View {
         .padding(.leading, 7)
         .padding(.trailing, 11)
         .frame(height: ModeSelector.height)
-        .glassSurface(Capsule(), tint: auto ? Theme.sage.opacity(Theme.dark ? 0.22 : 0.14) : nil)
+        .background {
+            // The segments' track, tinted with the accent while the detector drives the mode.
+            let shape = RoundedRectangle(cornerRadius: Theme.controlRadius + 1, style: .continuous)
+            shape.fill(auto ? Theme.sage.opacity(Theme.dark ? 0.20 : 0.13) : Theme.ink.opacity(Theme.dark ? 0.08 : 0.07))
+                .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.08 : 0.06), lineWidth: 0.5) }
+        }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: auto)
         .accessibilityLabel(L("Auto mode"))
         .help(L("Auto: Mono when a single input is routed. Otherwise Immersive after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@.", detected.localizedName))

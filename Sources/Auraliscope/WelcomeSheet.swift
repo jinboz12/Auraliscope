@@ -117,7 +117,7 @@ struct WelcomeSheet: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: 12))
+            .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous))
             .padding(.horizontal, 20)
             .padding(.bottom, 16)
 
@@ -181,7 +181,7 @@ private struct WelcomeFeature: View {
         }
         .frame(maxWidth: .infinity, minHeight: 75, alignment: .topLeading)
         .padding(13)
-        .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: 12))
+        .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }

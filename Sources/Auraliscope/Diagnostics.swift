@@ -32,6 +32,10 @@ enum Diagnostics {
     static let snapshotFullScreen = CommandLine.arguments.contains("--snapshot-full-screen")
     /// With `--snapshot`: opens the Spectrum panel's settings popover and captures the window's screen area with it.
     static let snapshotPanelSettings = CommandLine.arguments.contains("--snapshot-panel-settings")
+    /// With `--snapshot`: pauses 1.5 s before the capture, to review the paused state.
+    static let snapshotPaused = CommandLine.arguments.contains("--snapshot-paused")
+    /// With `--snapshot`: drives the demo 10 dB hot, so true-peak overs and the loudness warnings show.
+    static let snapshotHot = CommandLine.arguments.contains("--snapshot-hot")
     static var snapshotSize: CGSize? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--snapshot-size"), index + 1 < arguments.count else { return nil }
@@ -313,6 +317,9 @@ enum Diagnostics {
     /// `--demo` it runs on the selected source (silence is fine).
     @MainActor
     static func testPauseResumeIfRequested(model: MeterModel) {
+        if snapshotRequested && snapshotPaused {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { model.toggleCapture() } }
+        }
         guard CommandLine.arguments.contains("--test-pause-resume"), !pauseResumeStarted else { return }
         pauseResumeStarted = true
         let driver = CanvasDriver.shared

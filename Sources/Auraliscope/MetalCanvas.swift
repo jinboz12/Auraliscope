@@ -1356,11 +1356,12 @@ final class SpectrumScene: CanvasScene {
         b.roundedRect(strip, radius: 3, ink.simd(0.025))
         for db in SpectrogramLayout.grid {
             let x = (layout.x(decibels: db) * 2).rounded() / 2
-            b.rect(CGRect(x: max(strip.minX, min(strip.maxX - 0.5, x)), y: strip.minY, width: 0.5, height: strip.height), ink.simd(db == 0 ? 0.10 : 0.06))
+            b.rect(CGRect(x: max(strip.minX, min(strip.maxX - 0.5, x)), y: strip.minY, width: 0.5, height: strip.height),
+                   ink.simd(Float(db == 0 ? ChartInk.reference : ChartInk.major)))
             // A fainter line halfway to the next labelled level, so a level reads to 12 dB at a glance.
             let minor = (layout.x(decibels: db - 12) * 2).rounded() / 2
             if db - 12 > MeterScale.spectrumFloor {
-                b.rect(CGRect(x: minor, y: strip.minY, width: 0.5, height: strip.height), ink.simd(0.03))
+                b.rect(CGRect(x: minor, y: strip.minY, width: 0.5, height: strip.height), ink.simd(Float(ChartInk.minor) * 0.7))
             }
         }
         // A line under each frequency label, stronger at 100 Hz, 1 kHz and 10 kHz.
@@ -1368,7 +1369,7 @@ final class SpectrumScene: CanvasScene {
             let y = (layout.y(frequency: tick.0, sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
             let decade = [100.0, 1_000, 10_000].contains(tick.0)
-            b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(decade ? 0.12 : 0.06))
+            b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(Float(decade ? ChartInk.major * 1.3 : ChartInk.minor)))
         }
 
         // The newest bands, followed at the chosen response; held while frozen, and a new stream starts from its own.
@@ -1631,13 +1632,13 @@ final class SpectrogramScene: CanvasScene {
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > plot.minY + 1, y < plot.maxY - 1 else { continue }
-            b.rect(CGRect(x: plot.minX, y: y, width: plot.width, height: 0.5), ink.simd(octave == 4 ? 0.12 : 0.06))
+            b.rect(CGRect(x: plot.minX, y: y, width: plot.width, height: 0.5), ink.simd(Float(octave == 4 ? ChartInk.major * 1.3 : ChartInk.minor)))
         }
         // A hairline each second, and a short tick at the foot of each so the time labels have something to name.
         for seconds in stride(from: 1.0, to: layout.seconds, by: 1) {
             let x = (layout.x(secondsAgo: seconds) * 2).rounded() / 2
-            b.rect(CGRect(x: x, y: plot.minY, width: 0.5, height: plot.height), ink.simd(0.06))
-            b.rect(CGRect(x: x, y: plot.maxY - 4, width: 0.5, height: 4), ink.simd(0.22))
+            b.rect(CGRect(x: x, y: plot.minY, width: 0.5, height: plot.height), ink.simd(Float(ChartInk.minor)))
+            b.rect(CGRect(x: x, y: plot.maxY - 4, width: 0.5, height: 4), ink.simd(Float(ChartInk.tick)))
         }
     }
 
@@ -2572,19 +2573,19 @@ final class SoundstageScene: CanvasScene {
         return result
     }
 
-    /// Channel meters drawn like the loudness slider on the summary, stood on end: a hairline slot, one slim capsule
-    /// fill whose colour follows the current level only (the accent, ochre while
-    /// the channel peaks within 3 dB of full scale), the peak as the same colour translucent behind it, and the peak
-    /// hold as a thin ink mark across the bar, like the gauge's target mark. An over never recolours the bar: above
-    /// 0 dB the track is tinted ember and fills to the highest true-peak over, and a dot over the bar stays lit
-    /// until the next reset.
+    /// Channel meters: each bar runs in a recessed slot its full width, so the scale reads down the whole height even
+    /// when the channel is quiet. One fill whose colour follows the current level only (the accent, ochre while the
+    /// channel peaks within 3 dB of full scale), the peak as the same colour translucent behind it, and the peak hold as
+    /// a 2 pt mark across the slot, ink (ochre within 3 dB of full scale). An over never recolours the bar: above 0 dB
+    /// the slot is tinted ember and fills to the highest true-peak over, and a dot over the bar stays lit until the
+    /// next reset.
     private func drawMeters(_ b: inout ShapeBuilder, layout: SoundstageLayout, frame: CanvasFrame) {
         guard layout.scale.height > 8 else { return }
         let ink = Theme.inkRGB
         let ember = Theme.emberRGB
         if let first = layout.columns.first(where: { $0.width > 0.5 }), let last = layout.columns.last(where: { $0.width > 0.5 }) {
             let zero = layout.y(decibels: 0).rounded()
-            b.rect(CGRect(x: first.minX, y: zero - 0.25, width: last.maxX - first.minX, height: 0.5), ink.simd(0.10))
+            b.rect(CGRect(x: first.minX, y: zero - 0.25, width: last.maxX - first.minX, height: 0.5), ink.simd(Float(ChartInk.reference)))
         }
         // Group rules under each header, in the group's colour.
         for header in layout.headers {
@@ -2601,9 +2602,9 @@ final class SoundstageScene: CanvasScene {
             guard bar.width > 1 else { continue }
             let active = frame.activeRoles[role]
             let radius = bar.width / 2
-            // Track: a hairline slot down the bar's centre, like the loudness slider's, tinted ember above 0 dB.
-            let slot = CGRect(x: bar.midX - 1, y: bar.minY, width: 2, height: bar.height)
-            b.roundedRect(slot, radius: 1, ink.simd((active ? 0.16 : 0.07) * v))
+            // Track: a recessed slot the bar's full width, so its scale runs the whole height even when quiet, tinted
+            // ember above 0 dB.
+            b.roundedRect(bar, radius: radius, ink.simd((active ? 0.075 : 0.04) * v))
             let overTrack = layout.overTrack(index)
             b.roundedRect(overTrack, radius: min(radius, overTrack.height / 2), ember.simd(0.10 * v))
             if active {
@@ -2627,7 +2628,8 @@ final class SoundstageScene: CanvasScene {
                 if holds[role] > -60 {
                     // Peak hold: the gauge's target mark, a thin ink bar across the track.
                     let y = layout.y(decibels: min(0, holds[role]))
-                    b.roundedRect(CGRect(x: bar.minX - 3, y: y - 1, width: bar.width + 6, height: 2), radius: 1, ink.simd(v))
+                    b.roundedRect(CGRect(x: bar.minX - 2, y: y - 1, width: bar.width + 4, height: 2), radius: 1,
+                                  (holds[role] >= -3 ? Theme.ochreRGB : ink).simd(v))
                 }
             }
             // Clip light, like the LIVE dot: faint while clear, ember once an over or a full-scale sample has

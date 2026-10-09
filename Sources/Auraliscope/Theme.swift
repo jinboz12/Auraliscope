@@ -142,18 +142,23 @@ enum ThemeFade {
     }
 }
 
-/// Auraliscope dashboard palette, in a dark and a light appearance.
+/// Auraliscope's visual system, in a dark and a light appearance.
 ///
-/// - **Surfaces**: a near-black window with flat charcoal cards; or the palette's own gradient with frosted white
-///   cards. Each live display is drawn straight onto its card.
-/// - **Ink** is the high-contrast voice for type, peak readouts and lit edges: the palette's cream on dark,
-///   slate ink on light.
-/// - The selected **accent** marks actions, selections, signal levels and the live summary.
+/// - **Atmosphere** belongs to the window backdrop alone: deep blue-black or a pale palette wash, with the palette's
+///   light pooled softly at the top. Panels are translucent frames over it with a lit top edge and a soft shadow.
+///   Every plot sits on an opaque **plate** (`display`), so no gradient or translucency ever lies under a measurement.
+/// - **Radius scale**: panels 16, plates 10, controls 8, tags 5.
+/// - **Type levels**: readings in `ink`; panel titles in `title`; reading names, scales and units in `tertiary`;
+///   unavailable things in `disabled`.
+/// - **Colour roles**: the palette's **accent** is the live signal (levels, traces, LIVE, the resume button, AUTO
+///   while it drives the mode). **Ink** marks what is held or pointed at: peak holds, the target, needles, cursors,
+///   the chosen segment. **Ochre** is caution (near full scale, above target, wide stereo), **ember** is an alarm
+///   only (overs, out of phase, clipping), always with a word or glyph as well, and **slate** is below target.
+///   Selection is shown by a raised plate, never by a warning hue.
 ///
-/// Beyond those, hue carries meaning in only two places: level zones (accent → ochre → ember) and speaker
-/// groups (bed accent, height heather, LFE clay). On light surfaces every hue is deepened just enough to read as
-/// body text does (4.5 : 1), so a pale accent such as Starlight stays legible. Metal draws with the `RGB`
-/// values, SwiftUI with the matching `Color`s, so both layers read as one surface.
+/// Beyond those, hue carries meaning only for speaker groups (bed accent, height heather, LFE clay) and frequency
+/// bands. On light surfaces every hue is deepened just enough to read as body text does (4.5 : 1). Metal draws with
+/// the `RGB` values, SwiftUI with the matching `Color`s, so both layers read as one surface.
 enum Theme {
     struct RGB: Equatable {
         let r: Float, g: Float, b: Float
@@ -295,12 +300,12 @@ enum Theme {
                         ember: RGB(r: 0.894, g: 0.408, b: 0.357), slate: RGB(r: 0.576, g: 0.651, b: 0.675))
             if dark {
                 ink = cream
-                // Near-black studio dark: flat charcoal cards a step above the window, and the displays drawn
-                // straight onto them, so `display` is the card itself.
-                windowTop = RGB(r: 0.058, g: 0.062, b: 0.070)
-                windowBottom = RGB(r: 0.040, g: 0.043, b: 0.049)
-                card = RGB(r: 0.106, g: 0.112, b: 0.124)
-                display = card
+                // Graphite studio dark: a deep blue-black window, translucent graphite panels a step above it, and
+                // each plot on an opaque plate a step below the panel, so measurements sit on a stable ground.
+                windowTop = RGB(r: 0.070, g: 0.076, b: 0.090)
+                windowBottom = RGB(r: 0.032, g: 0.035, b: 0.042)
+                card = RGB(r: 0.122, g: 0.130, b: 0.146)
+                display = RGB(r: 0.066, g: 0.071, b: 0.082)
                 accent = swatch
                 sand = hues.sand
                 heather = hues.heather
@@ -310,16 +315,15 @@ enum Theme {
                 slate = hues.slate
                 // Dark enough under cream type even when the accent itself is very bright.
                 banner = swatch.scaled(min(1, 0.5 / max(swatch.r, max(swatch.g, swatch.b))))
-                secondaryOpacity = 0.88
-                tertiaryOpacity = 0.68
+                secondaryOpacity = 0.80
+                tertiaryOpacity = 0.62
             } else {
                 ink = RGB(r: 0.102, g: 0.110, b: 0.125)
-                windowTop = RGB(r: 0.953, g: 0.954, b: 0.950)
-                windowBottom = RGB(r: 0.918, g: 0.920, b: 0.914)
-                // Frosted white cards over the palette's gradient; the displays sit on them, so `display` is the
-                // card as it reads there.
+                windowTop = RGB(r: 0.945, g: 0.948, b: 0.953)
+                windowBottom = RGB(r: 0.902, g: 0.907, b: 0.916)
+                // Frosted white panels over the palette's soft gradient; each plot on an opaque paper plate.
                 card = RGB(r: 0.996, g: 0.996, b: 0.996)
-                display = RGB(r: 0.984, g: 0.985, b: 0.987)
+                display = RGB(r: 0.992, g: 0.992, b: 0.993)
                 func deepen(_ rgb: RGB) -> RGB { rgb.legible(on: RGB(r: 1, g: 1, b: 1), ratio: 4.5) }
                 accent = deepen(swatch)
                 sand = deepen(hues.sand)
@@ -330,7 +334,7 @@ enum Theme {
                 slate = deepen(hues.slate)
                 // A wash of the swatch itself, so the summary keeps the accent's own hue under dark type.
                 banner = RGB(r: 1, g: 1, b: 1).mixed(with: swatch, amount: 0.5)
-                secondaryOpacity = 0.80
+                secondaryOpacity = 0.76
                 tertiaryOpacity = 0.64
             }
             // Fills under cream type (prominent buttons, switches, the selected segment) meet body-text contrast.
@@ -414,7 +418,11 @@ enum Theme {
     /// Type on a solid ink fill (the chosen segment's pill): near-black on dark, where ink is the palette's cream, and
     /// white on light.
     static var onInk: Color { style.dark ? style.windowBottom.color : .white }
+    /// Panel titles: the strongest label, a step under the readings themselves.
+    static var title: Color { ink.opacity(style.dark ? 0.94 : 0.90) }
     static var secondary: Color { ink.opacity(style.secondaryOpacity) }
+    /// Unavailable controls and silent channels: clearly receded, never mistaken for a scale label.
+    static var disabled: Color { ink.opacity(style.dark ? 0.36 : 0.34) }
     static var tertiary: Color { ink.opacity(style.tertiaryOpacity) }
     /// Micro-borders and tracks: ink at low opacity, so edges stay warm on dark and neutral on light.
     static var hairline: Color { ink }
@@ -426,8 +434,16 @@ enum Theme {
     static var wellFill: Color { style.display.color.opacity(style.dark ? 0.97 : 1) }
     /// Head of the summary, welcome and About banners; ink stays legible on it in both appearances.
     static var bannerAccent: Color { style.banner.color }
-    /// Flat cards on dark cast nothing; frosted cards on light float on a wide, faint shadow.
-    static var cardShadow: Color { style.dark ? .clear : Color.black.opacity(0.07) }
+    /// Panels float on a soft shadow: deep on dark, where it separates them from the backdrop, faint on light.
+    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.42 : 0.08) }
+    /// A panel's own fill: translucent graphite on dark, frosted white on light, so the backdrop's colour shows
+    /// through the frame but never through a plot.
+    static var panelFill: Color { style.dark ? style.card.color.opacity(0.80) : Color.white.opacity(0.66) }
+    /// A control's resting fill and its hover and pressed steps, on panels and on the toolbar alike.
+    static var controlFill: Color { ink.opacity(style.dark ? 0.07 : 0.055) }
+    static var controlHover: Color { ink.opacity(style.dark ? 0.12 : 0.09) }
+    /// The chosen segment: a raised plate, lighter than its track on dark and white on light.
+    static var raised: Color { style.dark ? Color.white.opacity(0.17) : Color.white }
     /// The window backdrop at its top edge (and the toolbar's in full screen): near-black on dark, the palette's
     /// wash on light.
     static var backdropTop: Color { style.dark ? style.windowTop.color : style.banner.color }
@@ -605,9 +621,12 @@ enum Theme {
         (0..<waterfallRampCount).map { exactRamp(position: Float($0) / Float(waterfallRampCount - 1), colors: colors).simd() }
     }
 
-    // Card and inner radii: generous and continuous, so the panels read as calm objects rather than boxes.
-    static let cardRadius: CGFloat = 24
-    static let wellRadius: CGFloat = 16
+    // One radius scale, each step nested inside the one before by its inset: panels, the plot plates inside them,
+    // controls on either, and tags over the plots.
+    static let cardRadius: CGFloat = 16
+    static let wellRadius: CGFloat = 10
+    static let controlRadius: CGFloat = 8
+    static let tagRadius: CGFloat = 5
 }
 
 extension AppearanceMode {
