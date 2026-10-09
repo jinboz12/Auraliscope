@@ -426,8 +426,6 @@ enum Theme {
     static var wellFill: Color { style.display.color.opacity(style.dark ? 0.97 : 1) }
     /// Head of the summary, welcome and About banners; ink stays legible on it in both appearances.
     static var bannerAccent: Color { style.banner.color }
-    /// Small labels set on a banner (LIVE, version) sit on this.
-    static var chipFill: Color { style.dark ? Color.black.opacity(0.22) : ink.opacity(0.07) }
     /// Flat cards on dark cast nothing; frosted cards on light float on a wide, faint shadow.
     static var cardShadow: Color { style.dark ? .clear : Color.black.opacity(0.07) }
     /// The window backdrop at its top edge (and the toolbar's in full screen): near-black on dark, the palette's

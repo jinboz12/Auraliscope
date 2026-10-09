@@ -727,8 +727,8 @@ final class MeterGPU {
         // Graticule in the interface ink. The trace edge leans toward the same ink (cream on dark, slate on
         // light), so it always stands out from its own fill; on light a denser body keeps the lane's hue.
         const float3 grid = \(Theme.inkRGB.metal);
-        const float body = \(Theme.dark ? "0.50" : "0.64");
-        const float edgeInk = \(Theme.dark ? "0.30" : "0.14");
+        const float body = \(Theme.dark ? "0.24" : "0.30");
+        const float edgeInk = \(Theme.dark ? "0.12" : "0.06");
         const float fadeFloor = \(Theme.dark ? "0.40" : "0.52");
         float3 ink = clip ? \(Theme.emberRGB.metal) : in.color.rgb;
         // Older columns fade like phosphor persistence; the newest sit at full strength.
@@ -741,9 +741,9 @@ final class MeterGPU {
         float edge = min(abs(y - lo), abs(y - hi));
         float depth = saturate(abs(y) / laneHalf);
         // Body fill, a one-pixel antialiasing skirt, then a crisp trace edge. No bloom: the edge carries it.
-        color = over(color, ink, coverage * (body + 0.30 * depth) * persistence);
-        color = over(color, ink, 0.16 * exp(-outside / 1.2) * (1.0 - coverage) * persistence);
-        color = over(color, mix(ink, grid, edgeInk), saturate(1.0 - 0.8 * edge) * 0.8 * persistence);
+        color = over(color, ink, coverage * (body + 0.16 * depth) * persistence);
+        color = over(color, ink, 0.12 * exp(-outside / 1.2) * (1.0 - coverage) * persistence);
+        color = over(color, mix(ink, grid, edgeInk), saturate(1.0 - 0.9 * edge) * 0.95 * persistence);
         return float4(color.rgb, color.a * mask * in.color.a);
     }
     """ }
@@ -1404,8 +1404,8 @@ final class SpectrumScene: CanvasScene {
         let tint = Theme.sageRGB
         for (p, q) in zip(curve, curve.dropFirst()) {
             let pb = CGPoint(x: layout.floorX, y: p.y), qb = CGPoint(x: layout.floorX, y: q.y)
-            b.triangle(p, q, qb, tint.simd(0.24), tint.simd(0.24), tint.simd(0.03))
-            b.triangle(p, qb, pb, tint.simd(0.24), tint.simd(0.03), tint.simd(0.03))
+            b.triangle(p, q, qb, tint.simd(0.14), tint.simd(0.14), tint.simd(0.02))
+            b.triangle(p, qb, pb, tint.simd(0.14), tint.simd(0.02), tint.simd(0.02))
         }
         // The waterfall's octave lines at every C continue faintly across the spectrum.
         for octave in 0...9 {
@@ -2572,8 +2572,8 @@ final class SoundstageScene: CanvasScene {
         return result
     }
 
-    /// Channel meters drawn like the loudness gauge on the summary, stood on end: a slim capsule track with a
-    /// hairline edge, one solid capsule fill whose colour follows the current level only (the accent, ochre while
+    /// Channel meters drawn like the loudness slider on the summary, stood on end: a hairline slot, one slim capsule
+    /// fill whose colour follows the current level only (the accent, ochre while
     /// the channel peaks within 3 dB of full scale), the peak as the same colour translucent behind it, and the peak
     /// hold as a thin ink mark across the bar, like the gauge's target mark. An over never recolours the bar: above
     /// 0 dB the track is tinted ember and fills to the highest true-peak over, and a dot over the bar stays lit
@@ -2601,9 +2601,9 @@ final class SoundstageScene: CanvasScene {
             guard bar.width > 1 else { continue }
             let active = frame.activeRoles[role]
             let radius = bar.width / 2
-            // Track: the gauge's faint fill and hairline edge, tinted ember above 0 dB.
-            b.roundedRect(bar, radius: radius, ink.simd((active ? 0.08 : 0.04) * v))
-            b.roundedOutline(bar, radius: radius, ink.simd(0.06 * v))
+            // Track: a hairline slot down the bar's centre, like the loudness slider's, tinted ember above 0 dB.
+            let slot = CGRect(x: bar.midX - 1, y: bar.minY, width: 2, height: bar.height)
+            b.roundedRect(slot, radius: 1, ink.simd((active ? 0.16 : 0.07) * v))
             let overTrack = layout.overTrack(index)
             b.roundedRect(overTrack, radius: min(radius, overTrack.height / 2), ember.simd(0.10 * v))
             if active {

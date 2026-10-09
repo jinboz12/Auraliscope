@@ -242,8 +242,6 @@
 "SPECTRUM" = "频谱";
 "SPECTROGRAM" = "声谱图";
 "WAVEFORM" = "波形";
-"linear" = "线性";
-"min/max" = "最小/最大";
 "Left side" = "左侧";
 "Right side" = "右侧";
 "Left" = "左声道";
@@ -419,3 +417,5 @@
 "Classic shows every row at its calibrated level. Enhanced moves each component's energy to the time and frequency its phase points to (reassignment): tones become thin lines and onsets sharp, while noise breaks into fine grain." = "经典模式按校准电平显示每一行。增强模式依据相位把每个成分的能量移到其所在的时间与频率（时频重分配）：音高成为细线，起音更清晰，噪声则呈细碎颗粒。";
 "How finely the correlation splits the spectrum: the full band, three bands or five." = "相关度划分频谱的精细程度：全频段、三个频段或五个频段。";
 "This plugin sends Classic columns. Install the plugins of this build for Enhanced." = "该插件发送的是经典模式数据。要使用增强模式，请安装本版本的插件。";
+"FREQUENCY" = "频率";
+"LEVEL" = "电平";

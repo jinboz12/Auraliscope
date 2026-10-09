@@ -98,10 +98,10 @@ final class PanelDividerView: NSView {
         CATransaction.setAnimationDuration(animated ? 0.15 : 0)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         CATransaction.setDisableActions(!animated)
-        // Barely there while metering, so the grips never compete with the panels; the pointer brings one up to
-        // its full resting strength, and a drag lights it in the accent.
+        // Hidden at rest, so the gutters between cards stay clean; the pointer brings a grip up, and a drag lights
+        // it in the accent.
         let rgb = dragging ? Theme.sageRGB : Theme.inkRGB
-        let alpha: CGFloat = dragging ? 1 : (hovering ? 0.22 : 0.07)
+        let alpha: CGFloat = dragging ? 1 : (hovering ? 0.22 : 0)
         grip.backgroundColor = rgb.cgColor(alpha)
         placeGrip()
         CATransaction.commit()

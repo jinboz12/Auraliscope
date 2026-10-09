@@ -676,7 +676,7 @@ struct WaveformLayout {
 /// area so it scales with the window, and both panels keep a minimum at which their contents stay legible.
 struct PanelLayout {
     /// A divider's hit strip, which is also the gap between the two panels.
-    static let divider: CGFloat = 14
+    static let divider: CGFloat = 10
     static let minSpectrum: CGFloat = 180
     static let minWaveform: CGFloat = 120
     static let defaultSpectrum: CGFloat = 0.64
@@ -936,8 +936,8 @@ struct SoundstageLayout {
     static let stereoPitch: CGFloat = 112
     static let monoPitch: CGFloat = 128
     /// Bar thickness limit: 10 pt in Spatial, up to 18 pt for the wide Stereo and Mono columns.
-    static let spatialBar: CGFloat = 10
-    static let pairBar: CGFloat = 18
+    static let spatialBar: CGFloat = 6
+    static let pairBar: CGFloat = 12
     /// Column pitch in Spatial: small layouts get wider columns (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14
     /// or more channels. A narrow well compresses every column alike.
     static func spatialPitch(channels: Int) -> CGFloat { max(30, min(42, 44 - CGFloat(channels))) }

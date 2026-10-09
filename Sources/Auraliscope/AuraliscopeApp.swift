@@ -723,8 +723,6 @@ private struct DashboardHero: View {
         .lineLimit(1)
         .fixedSize()
         .foregroundStyle(Theme.ink.opacity(0.95))
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Theme.chipFill, in: Capsule())
     }
 
     // Store the clamped result, so a drag held against a limit does not churn user defaults.
@@ -769,7 +767,7 @@ private struct HeroShortTerm: View {
         let main = LoudnessReading(rawValue: reading) ?? .shortTerm
         let shortTerm = main.value(readouts.values)
         VStack(alignment: .leading, spacing: 3 * scale) {
-            Eyebrow(main.heading, color: Theme.ink.opacity(0.82))
+            Eyebrow(main.heading, color: Theme.sage)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(MeterScale.tenths(shortTerm))
                     .font(.system(size: (compact ? 35 : 45) * (1 + (scale - 1) * 0.5), weight: .semibold).monospacedDigit())
@@ -979,11 +977,11 @@ private struct MeterView: View {
     var body: some View {
         GeometryReader { window in
             let tall = window.size.height >= 940
-            let gutter: CGFloat = tall ? 20 : 14
+            let gutter: CGFloat = tall ? 14 : 10
             let total = max(1, window.size.width - gutter * 2)
             let stage = ColumnLayout.stageWidth(CGFloat(stageWidth), total: total)
             let analyzers = max(1, total - PanelLayout.divider - stage)
-            let spacing: CGFloat = tall ? 10 : 8
+            let spacing: CGFloat = PanelLayout.divider
             let hero = HeroLayout.height(CGFloat(heroHeight), tall: tall, window: window.size.height)
             VStack(spacing: spacing) {
                 DashboardHero(model: model, readouts: model.readouts)

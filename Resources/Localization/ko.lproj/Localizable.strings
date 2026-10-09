@@ -242,8 +242,6 @@
 "SPECTRUM" = "스펙트럼";
 "SPECTROGRAM" = "스펙트로그램";
 "WAVEFORM" = "파형";
-"linear" = "선형";
-"min/max" = "최소/최대";
 "Left side" = "왼쪽";
 "Right side" = "오른쪽";
 "Left" = "왼쪽 채널";
@@ -419,3 +417,5 @@
 "Classic shows every row at its calibrated level. Enhanced moves each component's energy to the time and frequency its phase points to (reassignment): tones become thin lines and onsets sharp, while noise breaks into fine grain." = "클래식은 모든 행을 보정된 레벨로 보여 줍니다. 향상은 위상이 가리키는 시간과 주파수로 각 성분의 에너지를 옮깁니다(재배치). 음은 가는 선이 되고 어택은 선명해지며, 노이즈는 미세한 입자로 흩어집니다.";
 "How finely the correlation splits the spectrum: the full band, three bands or five." = "상관도를 스펙트럼에서 얼마나 세밀하게 나눌지 정합니다: 전 대역, 3개 대역 또는 5개 대역.";
 "This plugin sends Classic columns. Install the plugins of this build for Enhanced." = "이 플러그인은 클래식 열을 보냅니다. 향상 모드를 쓰려면 이 빌드의 플러그인을 설치하세요.";
+"FREQUENCY" = "주파수";
+"LEVEL" = "레벨";

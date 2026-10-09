@@ -122,6 +122,7 @@ private struct PanelSettingsForm: View {
                                       select: { waveSeconds = $0 })
                     }
                 }
+                if let model { WaveformKey(format: model.format, layout: model.speakerLayout) }
             case .soundstage:
                 group(L("SOUNDSTAGE")) {
                     row(L("Stereometer style"), note: L("How the Stereo stereometer draws each band. Dots shows every sample; Outlines traces where each band's samples reach; Filled tints each outline, laying the smaller shapes over the larger so every edge stays visible.")) {
@@ -135,6 +136,8 @@ private struct PanelSettingsForm: View {
                                       selection: levelBands, select: { levelBands = $0; model?.levelsBands = StereoBands.Resolution(rawValue: $0) ?? .five })
                     }
                 }
+                // The key to each bar, drawn with the bars' own shapes and colours.
+                MeterLegend()
             }
         }
     }
