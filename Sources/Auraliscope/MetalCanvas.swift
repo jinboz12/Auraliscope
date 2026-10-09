@@ -1249,6 +1249,11 @@ final class SpectrumScene: CanvasScene {
         for db in SpectrogramLayout.grid {
             let x = (layout.x(decibels: db) * 2).rounded() / 2
             b.rect(CGRect(x: max(strip.minX, min(strip.maxX - 0.5, x)), y: strip.minY, width: 0.5, height: strip.height), ink.simd(db == 0 ? 0.10 : 0.06))
+            // A fainter line halfway to the next labelled level, so a level reads to 12 dB at a glance.
+            let minor = (layout.x(decibels: db - 12) * 2).rounded() / 2
+            if db - 12 > MeterScale.spectrumFloor {
+                b.rect(CGRect(x: minor, y: strip.minY, width: 0.5, height: strip.height), ink.simd(0.03))
+            }
         }
         // A line under each frequency label, stronger at 100 Hz, 1 kHz and 10 kHz.
         for tick in SpectrogramLayout.frequencyTicks(layout, sampleRate: frame.sampleRate) {

@@ -1,6 +1,72 @@
 # Auraliscope Bridge / Auraliscope LABS 1.3dev: validation report
 
 
+## Build 71 — 2026-10-08
+
+Build 70 is the baseline. The spectrogram's analysis (FFT sizes, windows, zones, cadence, calibration) and the 64
+published spectrum bands are unchanged; this round changes how the waterfall and the live spectrum are drawn and
+adds 128 fine spectrum bands.
+
+### Findings and changes
+
+| Area | Finding (build 70) | Change (build 71) |
+|---|---|---|
+| Waterfall cells | A 1/30 s column is 8–12 device pixels wide in a typical window; one-pixel hard edges turned music into tiles and a sweep into a staircase | Cells ease into their neighbours (smoothstep over one cell, centre to centre, never below one device pixel); each centre keeps its exact level; minified pixels still take the loudest covered cell |
+| Colour | One-hue ramp: level steps differ only in brightness | Heat (default), Theme and Gray maps; light appearance runs paper → ink; shader reads 33 stops (each Heat stop exact) from a uniform buffer; legend, fill and export use the same map |
+| Live spectrum | 64 bands (about 1/6.4 octave) merge neighbouring notes in the low mids | 128 fine bands from the same 8192-point transform (RESULT tag 51), about 1/13 octave; curve, holds, average and hover use them |
+| Calibration choice | — | The fine bands are not taken from the waterfall column: its short treble windows read broadband sound ~3 dB higher per halving, which bent a pink-noise average flat above ~1.5 kHz in a trial. With the single transform pink noise averages to a straight −3 dB/octave line (rendered check) |
+| Ballistics | Fixed 22/s critically damped filter | Response setting: Fast 22/s (build 70), Medium 10/s (default), Slow 4/s; holds and average unaffected |
+| Silence | Curve collapsed onto the floor edge and outlined it | Segments on the floor are not drawn |
+| Export | 2 px per column: a 6 s image was 418 px wide and cut off its caption; no colour scale | At least 900 px plot, colour scale under the caption |
+
+### Validation
+
+- 48 core checks (new: fine bands read a sine within 0.1 dB at 55 Hz–12.3 kHz at 44.1/48/96 kHz and agree with the
+  64 bands within 0.1 dB), scalar/SIMD kernels and 368 localization keys passed; AddressSanitizer passed the 48
+  core checks and kernels.
+- Bridge analysis tests (new: tag 51 carried in full; a result without it shows each of the 64 bands across its two
+  halves) and transport tests passed. `--test-spectrum-average` passed with the fine bands.
+- `Bridge/Tools/SpectralRegression.swift` built from build 70 and build 71 sources: all **2,080,800 float
+  measurements bitwise identical** (64-band spectrum, 512-row spectrogram, peak frequency and level, 44.1–192 kHz).
+- `Bridge/Tools/CheckSpectrogramRendering.swift`: 9,519 GPU/CPU comparisons passed (footprints, ring wrap, borders,
+  tilt, hard and eased edges at 1–20 device pixels per cell, the plateau-free whole-cell easing).
+- Rendered checks (offscreen `--render-preview` with a real song, synthetic chords/vibrato/sweep at 48 and 96 kHz and
+  pink noise; window snapshots in dark and light, Stereo and Immersive, mirrored, inspector over waterfall and
+  spectrum; Settings ▸ Panels). No seams at the zone boundaries in pink noise.
+- VST3 validator: 537 passed, 0 failed. Plugin to receiver (`e2e-probe.sh`): 12/12 with bitwise passthrough
+  (VST3 and AU, mono/stereo, 44.1–192 kHz, three instances, controls, editor close). Plugin to Labs
+  (`e2e-app.sh`): 11/11 scenarios (reconnect, AU mono, multiple inserts, rate change, states, restart, duplicate,
+  hold, held, controls, plugin before Labs); Labs' self-test now also compares the fine bands with its own
+  analysis of the same signal: largest difference 0.001 dB.
+
+### Cost
+
+`refreshSpectrum` (one 8192-point transform with its bands, notes and peak), P-core micro-benchmark at 48 kHz:
+build 70 19.7 µs; build 71 21.2 µs with both band sets. The first build 71 version took 24.3 µs: the band loop's
+per-access runtime checks and estimator retains dominated, and reading through buffer pointers removed them (the
+64-band results stay bitwise identical).
+Plugin CPU, `Bridge/Tools/CompareResources.py`, three alternating 15-second pairs per case against the build 70
+VST3, same synthetic host, one Mac, percent of one logical core including host overhead; every run had bitwise
+passthrough. This Mac's run-to-run spread was large in this session (up to ±20 % within a pair), so these medians
+show no measurable change in either direction; the micro-benchmark above is the precise figure (1.5 µs per
+transform, 60 transforms a second: about 0.01 % of a core per insert).
+
+| Scenario | Build 70 median | Build 71 median | Relative change |
+|---|---:|---:|---:|
+| 8 mono, 48 kHz | 16.121% | 14.481% | −10.2% |
+| 32 stereo, 48 kHz | 33.267% | 33.695% | +1.3% |
+| 8 stereo, 96 kHz | 27.308% | 27.058% | −0.9% |
+| 8 stereo, 192 kHz | 33.151% | 31.413% | −5.2% |
+
+### Limits
+
+Bass resolution, the ~85 ms centre delay (93 ms at 44.1 kHz), broadband levels that depend on the zone's window in
+the waterfall, and sweep attenuation remain as in build 70. Eased cells are a display reconstruction between
+measured cells, not added resolution; a fast glide still shows one step per column. The fine bands share the
+64 bands' semantics (loudest bin, sine-calibrated), so noise reads per bin, not as a PSD. Heat is a hand-tuned
+inferno-like map, not a published colour standard. Installer and bundles are ad hoc signed or unsigned, not
+notarized; automated checks do not replace real DAW sessions, Intel hardware or older macOS.
+
 ## Build 70 — 2026-10-08
 
 Build 69 is the checked-in baseline for this round. The FFT sizes, windows, normalization, frequency zones,
