@@ -1312,7 +1312,11 @@ final class SpectrumScene: CanvasScene {
             b.dashed(Self.spline(points, clampX: strip.minX...strip.maxX, subdivisions: Self.subdivisions),
                      width: 1.5, dash: 5, gap: 3, Theme.sandRGB.simd(0.95))
         }
-        for (p, q) in zip(curve, curve.dropFirst()) { b.line(p, q, width: 1.5, Theme.sageRGB.simd()) }
+        // Segments resting on the floor are not drawn: silence leaves the strip empty instead of outlining its edge.
+        func onFloor(_ p: CGPoint) -> Bool { abs(p.x - layout.floorX) < 0.5 }
+        for (p, q) in zip(curve, curve.dropFirst()) where !(onFloor(p) && onFloor(q)) {
+            b.line(p, q, width: 1.5, Theme.sageRGB.simd())
+        }
         // Held while frozen, unless peak holds are switched off meanwhile.
         let holdDt = frame.options.peakHolds ? frame.signal(dt) : dt
         for index in 0..<count {
