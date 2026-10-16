@@ -1,0 +1,83 @@
+#!/bin/zsh
+# REAPER runtime checks with Auraliscope watching: for each format, the live script (play, plugin window open
+# and closed, FX bypass, stop, play, quit), then an offline render of the saved project, whose output is compared
+# with the source signal. Uses daw-reaper.sh (private REAPER profile, silent virtual output device).
+set -uo pipefail
+cd "${0:A:h:h:h}"
+source Bridge/scripts/release-version.sh
+app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
+logs=.build/bridge/validation
+failed=0
+# Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.
+if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v1.sock" ]] \
+    && ! .build/bridge/tools/ResultProbe --seconds 0 > /dev/null 2>&1; then
+    echo "Another Bridge receiver is running (Auraliscope?): quit it first" >&2; exit 1
+fi
+pgrep -xq REAPER && { echo "REAPER is running: quit it first" >&2; exit 1; }
+app_pid=0
+trap '(( app_pid )) && kill $app_pid 2>/dev/null' EXIT INT TERM
+watch_app() {  # watch_app <log> <self-test arguments…>: runs the app in the background, no DAW source chosen
+    app_log="$1"; shift
+    "$app" --diagnostic "$@" -inputDeviceUID daw.00 -showWelcomeOnLaunch NO > "$app_log.tmp" 2>&1 &
+    app_pid=$!
+    sleep 1
+}
+watch_saved() {  # watch_saved <log> <self-test arguments…>: as watch_app, with the DAW source the last run chose
+    app_log="$1"; shift
+    "$app" --diagnostic "$@" -showWelcomeOnLaunch NO > "$app_log.tmp" 2>&1 &
+    app_pid=$!
+    sleep 1
+}
+await_app() {  # waits up to 120 s for the app's verdict, then stops it by process ID
+    local waited=0
+    while kill -0 $app_pid 2>/dev/null && (( waited < 120 )); do sleep 1; (( ++waited )); done
+    kill $app_pid 2>/dev/null
+    wait $app_pid; local result=$?
+    { cat "$app_log.tmp"; echo "app exit $result"; } > "$app_log"; rm -f "$app_log.tmp"
+    (( result == 0 )) || failed=1
+}
+for format in vst3 au; do
+    track="REAPER $format track"
+    watch_app "$logs/app-reaper-$format-live.txt" --bridge-selftest "$track" --expect-peak-db -6.02,-12.04 --expect-rate 48000 \
+        --expect-channels 2 --watch 40 --expect-seen streaming,noAudio,disconnectedHeld
+    Bridge/scripts/daw-reaper.sh $format live > /dev/null 2>&1
+    await_app
+    echo "== REAPER $format live: $(tail -1 "$logs/app-reaper-$format-live.txt")"
+    grep -hE 'found|stream:|peak|conditions|FAIL' "$logs/app-reaper-$format-live.txt" | sed 's/^/   /'
+    grep -h 'inserted' "$logs/reaper-$format-live.txt" | sed 's/^/   /'
+
+    # Offline render, traced by the probe (Labs must not be running): the insert must report offline, measure
+    # nothing while it does (a bounce is not live audio), and the bounce must equal the source.
+    trace="$logs/probe-reaper-$format-render.txt"
+    .build/bridge/tools/ResultProbe --seconds 30 --trace > "$trace" 2>&1 &
+    probe_pid=$!
+    sleep 1
+    Bridge/scripts/daw-reaper.sh $format render > /dev/null 2>&1
+    wait $probe_pid
+    echo "== REAPER $format offline render"
+    grep -hE ' s  |offline render seen' "$trace" | sed 's/^/   /'
+    # Pass: the insert reported offline, and its analysis measured nothing while it did. (REAPER creates the insert
+    # live and flags offline before rendering; whatever it measured then is not the bounce.)
+    if grep -q 'offline render seen: yes; frames analysed while offline: 0' "$trace"; then
+        echo "   offline reported, nothing measured as live during the render: PASS"
+    else echo "   the render was measured as live audio, or never reported offline: FAIL"; failed=1; fi
+    python3 Bridge/Tools/check-render.py .build/bridge/reaper-profile/render/bridge-render.wav | sed 's/^/   /' || failed=1
+
+    # Identity and transport, then the project reopened: the analysed insert is duplicated (its copy turned down
+    # 6 dB), looped, seeked, taken to 44.1 kHz and back, unloaded and reloaded; Labs must stay on (or come back to)
+    # the original, and after the project is reopened find the original by itself, never the copy.
+    watch_app "$logs/app-reaper-$format-identity.txt" --bridge-selftest Vox --expect-peak-db -6.02,-12.04 --expect-channels 2 \
+        --expect-rate 48000 --watch 34 --log-sources --measure-at-end
+    Bridge/scripts/daw-reaper.sh $format identity > /dev/null 2>&1
+    await_app
+    echo "== REAPER $format identity and transport: $(tail -1 "$logs/app-reaper-$format-identity.txt")"
+    grep -hE 'status:|sources:|analysed (insert|format)|stream:|peak|FAIL' "$logs/app-reaper-$format-identity.txt" | sed 's/^/   /'
+    python3 Bridge/Tools/check-project-ids.py .build/bridge/reaper-profile/bridge-identity-$format.rpp | sed 's/^/   /' || failed=1
+    watch_saved "$logs/app-reaper-$format-reopen.txt" --bridge-selftest --restore --expect-peak-db -6.02,-12.04 --expect-rate 48000
+    Bridge/scripts/daw-reaper.sh $format reopen > /dev/null 2>&1
+    await_app
+    echo "== REAPER $format reopened: $(tail -1 "$logs/app-reaper-$format-reopen.txt")"
+    grep -hE 'restored:|listed:|peak|FAIL' "$logs/app-reaper-$format-reopen.txt" | sed 's/^/   /'
+done
+(( failed )) && echo "Some REAPER checks FAILED" || echo "All REAPER checks passed"
+exit $failed

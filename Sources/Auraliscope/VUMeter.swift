@@ -1,22 +1,25 @@
+import AnalysisCore
 import AppKit
 import QuartzCore
 import SwiftUI
 
-/// The analogue-style VU meter at the right end of the loudness summary: an ink scale on a display well,
+/// The analogue-style VU meter at the right end of the loudness summary: an ink scale on a card of its own,
 /// ember zone above 0 VU, and a needle driven at the display rate from the latest snapshot.
 ///
 /// The dial (arcs, ticks, labels) is a SwiftUI Canvas that only redraws when its size changes. The needle is
-/// a pair of Core Animation layers rotated once per display frame, so moving it costs no SwiftUI update, no
+/// a Core Animation layer rotated once per display frame under a fixed hub, so moving it costs no SwiftUI update, no
 /// text layout and no rasterisation. (Beta 3 redrew the whole dial every frame, about 40 % of the main thread.)
 /// 0 VU follows the loudness standard of the current monitoring mode.
 struct VUMeterPanel: View {
     @ObservedObject var model: MeterModel
     @ObservedObject var readouts: Readouts
     @ObservedObject private var l10n = Localizer.shared
+    /// 0 VU in dBFS; 0 follows the loudness target (`VUScale.referenceKey`).
+    @AppStorage(VUScale.referenceKey) private var fixedReference = 0.0
 
     var body: some View {
         let running = model.running
-        let reference = Float(model.loudnessTarget)
+        let reference = fixedReference < 0 ? Float(fixedReference) : Float(model.loudnessTarget)
         VUDial()
             .overlay {
                 VUNeedle(model: model, running: running, frozen: model.frozen, roles: model.routedRoles, reference: reference)
@@ -27,18 +30,16 @@ struct VUMeterPanel: View {
                 StableNumber(text: level > -100 ? MeterScale.tenths(vu, floor: -99) + " VU" : "— VU", template: "−88.8 VU",
                              font: .system(size: 10, weight: .semibold),
                              color: vu >= 0 && level > -100 ? Theme.ember : (level > -100 ? Theme.ink : Theme.tertiary))
-                    .padding(.trailing, 10).padding(.bottom, 7)
+                    .padding(.trailing, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
-            .overlay(alignment: .topLeading) {
-                Eyebrow("VU · " + L("ALL CHANNELS"), color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
-            }
+            .overlay(alignment: .top) { CardTitle(title: "VU · " + L("ALL CHANNELS"), model: model, panel: .vu, settings: .vu, short: "VU") }
             .overlay(alignment: .bottomLeading) {
                 Text(verbatim: "0 VU = \(MeterScale.signedInteger(reference)) dBFS")
                     .font(.axis).foregroundStyle(Theme.tertiary)
-                    .padding(.leading, 9).padding(.bottom, 7)
+                    .padding(.leading, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
-            .background { WellSurface() }
-            .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+            .background { PanelPlate() }
+            .background { CardSurface() }
             .help(L("VU: the whole programme on one needle, the power sum of every routed channel except LFE, with standard 300 ms VU ballistics. 0 VU sits at the loudness target of the current mode (%@ dBFS).",
                     MeterScale.signedInteger(reference)))
             .accessibilityElement(children: .ignore)
@@ -52,10 +53,10 @@ struct VUGeometry {
     let radius: CGFloat
 
     init(size: CGSize) {
-        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 12, dy: 0)
-        // Leave the top 26 pt to the title: labels sit 15 pt outside the arc.
-        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 66))
-        pivot = CGPoint(x: rect.midX, y: size.height - 20)
+        let rect = CGRect(origin: .zero, size: size).insetBy(dx: 26, dy: 0)
+        // Leave the title row and the plate's top margin: labels sit 15 pt outside the arc.
+        radius = max(20, min(rect.width / 2 / sin(VUScale.halfSweep) - 6, size.height - 104))
+        pivot = CGPoint(x: rect.midX, y: size.height - 34)
     }
 
     /// Needle angle from vertical, clockwise positive; `fraction` 0 is the rest stop, 1 is +3 VU.
@@ -68,47 +69,61 @@ struct VUGeometry {
     }
 }
 
-/// Scale and zones, drawn in one Canvas. It has no inputs besides its size, so SwiftUI draws it once.
+/// The face as a line drawing in one weight and one grey, like a tape machine sketched in outline: the scale is a
+/// single arc with short ticks (the marks a little longer), and two lines run from the hub out to the ends of the
+/// arc, so the face is one connected shape around the needle's sweep. The zone above 0 VU is the only colour, in
+/// the same weight. The hub (a ring with a pin) and the needle are layers above (`VUNeedleView`). It has no inputs
+/// besides its size, so SwiftUI draws it once.
 private struct VUDial: View {
+    /// The one line weight of the face, the needle and the hub.
+    static let stroke: CGFloat = 1.1
+    /// The hub ring's radius for a dial of `radius`.
+    static func hub(_ radius: CGFloat) -> CGFloat { max(4.5, min(7, radius * 0.09)) }
+
     var body: some View {
         Canvas { context, size in
             let dial = VUGeometry(size: size)
             let radius = dial.radius
-            func arc(from: Double, to: Double, radius r: CGFloat) -> Path {
+            let line = Theme.ink.opacity(0.62), ember = Theme.ember.opacity(0.9)
+            let style = StrokeStyle(lineWidth: Self.stroke, lineCap: .round, lineJoin: .round)
+            func arc(from: Double, to: Double, steps: Int = 48) -> Path {
                 Path { path in
-                    for step in 0...40 {
-                        let p = dial.point(from + (to - from) * Double(step) / 40, r)
+                    for step in 0...steps {
+                        let p = dial.point(from + (to - from) * Double(step) / Double(steps), radius)
                         if step == 0 { path.move(to: p) } else { path.addLine(to: p) }
                     }
                 }
             }
+            func spoke(_ f: Double, _ r0: CGFloat, _ r1: CGFloat) -> Path {
+                Path { path in path.move(to: dial.point(f, r0)); path.addLine(to: dial.point(f, r1)) }
+            }
             let zero = VUScale.fraction(vu: 0)
-            // Scale arc: ink to 0 VU, a heavier ember band above it.
-            context.stroke(arc(from: 0, to: zero, radius: radius), with: .color(Theme.ink.opacity(0.62)), lineWidth: 1)
-            context.stroke(arc(from: zero, to: 1, radius: radius - 2), with: .color(Theme.ember.opacity(0.9)), lineWidth: 5)
+            // The outline: from the hub out to the rest end, round the scale to +3 VU, and back to the hub.
+            let hub = Self.hub(radius) + 3
+            context.stroke(spoke(0, hub, radius), with: .color(line), style: style)
+            context.stroke(arc(from: 0, to: zero), with: .color(line), style: style)
+            context.stroke(arc(from: zero, to: 1, steps: 16), with: .color(ember), style: style)
+            context.stroke(spoke(1, hub, radius), with: .color(line), style: style)
+            // Ticks outward from the scale; the named marks a little longer.
             let dense = radius > 84
             for mark in VUScale.marks {
                 let f = VUScale.fraction(vu: mark)
                 let major = [-20, -10, -5, -3, 0, 3].contains(mark)
-                var tick = Path()
-                tick.move(to: dial.point(f, radius))
-                tick.addLine(to: dial.point(f, radius + (major ? 7 : 4)))
-                context.stroke(tick, with: .color((mark > 0 ? Theme.ember : Theme.ink).opacity(major ? 0.90 : 0.62)),
-                               lineWidth: major ? 1.2 : 0.8)
+                context.stroke(spoke(f, radius, radius + (major ? 6 : 3.5)), with: .color(mark > 0 ? ember : line), style: style)
                 guard major || dense else { continue }
                 let label = mark > 0 ? "+\(Int(mark))" : (mark == 0 ? "0" : "\(Int(-mark))")
                 context.draw(Text(label).font(.system(size: 8, weight: .semibold).monospacedDigit())
-                                .foregroundColor(mark > 0 ? Theme.ember : Theme.ink.opacity(0.85)),
+                                .foregroundColor(mark > 0 ? Theme.ember : Theme.ink.opacity(0.8)),
                              at: dial.point(f, radius + 15))
             }
             context.draw(Text(verbatim: "VU").font(.system(size: 13, weight: .semibold).width(.expanded))
-                            .foregroundColor(Theme.ink.opacity(0.42)),
+                            .foregroundColor(Theme.ink.opacity(0.24)),
                          at: CGPoint(x: dial.pivot.x, y: dial.pivot.y - radius * 0.46))
         }
     }
 }
 
-/// Needle, its shadow and the hub, as layers above the dial.
+/// Needle and hub, as layers above the dial.
 private struct VUNeedle: NSViewRepresentable {
     let model: MeterModel
     let running: Bool
@@ -138,27 +153,29 @@ final class VUNeedleView: NSView {
     private var frozen = false
 
     private let ballistics = VUBallistics()
-    private let needleShadow = CAShapeLayer()
     private let shaft = CAShapeLayer()
     private let hub = CAShapeLayer()
+    private let pin = CAShapeLayer()
     private var shownFraction = -1.0
     private var ticker: AnyObject?
     private var occlusionObserver: NSObjectProtocol?
+    private var rateObserver: NSObjectProtocol?
 
     init(model: MeterModel) {
         self.model = model
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = false
-        needleShadow.strokeColor = CGColor(srgbRed: 0, green: 0, blue: 0, alpha: Theme.dark ? 0.35 : 0.16)
-        needleShadow.lineWidth = 2
-        shaft.lineWidth = 1.6
+        // Flat line work like the face: no shadow, the dial's one weight (a touch firmer for the needle).
+        shaft.lineWidth = VUDial.stroke + 0.2
         shaft.lineCap = .round
-        hub.fillColor = Theme.cardRGB.cgColor()
-        hub.strokeColor = Theme.inkRGB.cgColor(0.55)
-        hub.lineWidth = 1
-        for sublayer in [needleShadow, shaft, hub] {
-            sublayer.fillColor = sublayer === hub ? sublayer.fillColor : nil
+        shaft.fillColor = nil
+        hub.fillColor = Theme.displayRGB.cgColor()
+        hub.strokeColor = Theme.inkRGB.cgColor(0.62)
+        hub.lineWidth = VUDial.stroke
+        pin.fillColor = Theme.inkRGB.cgColor(0.85)
+        pin.strokeColor = nil
+        for sublayer in [shaft, hub, pin] {
             sublayer.actions = ["transform": NSNull(), "position": NSNull(), "path": NSNull(), "strokeColor": NSNull()]
             layer?.addSublayer(sublayer)
         }
@@ -175,19 +192,22 @@ final class VUNeedleView: NSView {
         let dial = VUGeometry(size: bounds.size)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        // The needle is drawn pointing straight up from the pivot and rotated into place.
+        // The needle is drawn pointing straight up from the hub ring and rotated into place; its tip crosses the
+        // scale a little, like a playhead across its ruler.
+        let ring = VUDial.hub(dial.radius)
         let path = CGMutablePath()
-        path.move(to: CGPoint(x: 0, y: -dial.radius * 0.16))
-        path.addLine(to: CGPoint(x: 0, y: -(dial.radius + 3)))
-        for needle in [needleShadow, shaft] {
-            needle.bounds = .zero
-            needle.path = path
-        }
+        path.move(to: CGPoint(x: 0, y: -(ring + 2)))
+        path.addLine(to: CGPoint(x: 0, y: -(dial.radius + 5)))
+        shaft.bounds = .zero
+        shaft.path = path
         shaft.position = dial.pivot
-        needleShadow.position = CGPoint(x: dial.pivot.x, y: dial.pivot.y + 1.5)
-        hub.bounds = .zero
-        hub.position = dial.pivot
-        hub.path = CGPath(ellipseIn: CGRect(x: -5, y: -5, width: 10, height: 10), transform: nil)
+        // The hub: a ring with a pin, like a reel's.
+        for part in [hub, pin] {
+            part.bounds = .zero
+            part.position = dial.pivot
+        }
+        hub.path = CGPath(ellipseIn: CGRect(x: -ring, y: -ring, width: 2 * ring, height: 2 * ring), transform: nil)
+        pin.path = CGPath(ellipseIn: CGRect(x: -1.6, y: -1.6, width: 3.2, height: 3.2), transform: nil)
         CATransaction.commit()
         shownFraction = -1
         show(ballistics.position)
@@ -196,7 +216,7 @@ final class VUNeedleView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         let scale = window?.backingScaleFactor ?? 2
-        for sublayer in [needleShadow, shaft, hub] { sublayer.contentsScale = scale }
+        for sublayer in [shaft, hub, pin] { sublayer.contentsScale = scale }
     }
 
     override func viewDidMoveToWindow() {
@@ -217,6 +237,8 @@ final class VUNeedleView: NSView {
         stopTicker()
         if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
         occlusionObserver = nil
+        if let rateObserver { NotificationCenter.default.removeObserver(rateObserver) }
+        rateObserver = nil
     }
 
     /// Both at once, so pausing never passes through a stopped state that would drop the needle.
@@ -251,14 +273,25 @@ final class VUNeedleView: NSView {
 
     private func startTicker() {
         guard ticker == nil else { return }
+        if rateObserver == nil {
+            // A new display frame rate (Settings ▸ General) restarts the needle at it.
+            rateObserver = NotificationCenter.default.addObserver(forName: CanvasDriver.frameRateChanged, object: nil,
+                                                                  queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.stopTicker()
+                    self?.updateTicker()
+                }
+            }
+        }
+        // The canvases' rate (60 Hz, also on a 120 Hz display, or 30), so the needle moves with them.
+        let rate = Float(CanvasDriver.shared.frameRate)
         if #available(macOS 14, *) {
             let link = displayLink(target: self, selector: #selector(tick))
-            // 60 Hz like the canvases, also on a 120 Hz display.
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, rate), maximum: rate, preferred: rate)
             link.add(to: .main, forMode: .common)
             ticker = link
         } else {
-            let timer = Timer(timeInterval: 1 / 60, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: 1 / Double(rate), repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
             }
             RunLoop.main.add(timer, forMode: .common)
@@ -287,7 +320,6 @@ final class VUNeedleView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         shaft.transform = rotation
-        needleShadow.transform = rotation
         CATransaction.commit()
     }
 }

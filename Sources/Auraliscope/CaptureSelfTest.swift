@@ -1,3 +1,4 @@
+import AnalysisCore
 import AudioRing
 import AudioToolbox
 import CoreAudio

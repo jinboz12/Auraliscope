@@ -1,3 +1,4 @@
+import AnalysisCore
 import SwiftUI
 
 extension FormatMode {
@@ -27,11 +28,9 @@ extension ChannelFormat {
     static let selectorOrder: [ChannelFormat] = [.mono, .stereo, .spatial]
 }
 
-/// Top-bar monitoring mode: the system segmented control (Liquid Glass on macOS 26, with its own sliding
-/// selection) holding Mono | Stereo | Immersive, plus the AUTO switch. A system segment shows either a title or
-/// an image, so the modes are named rather than drawn. Choosing a segment
-/// pins that mode; AUTO hands control back to the detector. The system control sizes its segments to their
-/// labels in every language, so nothing is cropped. The control sits on a lightly accent-tinted glass capsule.
+/// Top-bar monitoring mode: Mono | Stereo | Immersive on a recessed track, the mode in use a raised plate that
+/// slides between them (`GlassSegments`), plus the AUTO switch. Choosing a segment pins that mode; AUTO hands
+/// control back to the detector. Each segment is sized to its label in every language, so nothing is cropped.
 struct ModeSelector: View {
     static let height: CGFloat = 28
 
@@ -43,23 +42,10 @@ struct ModeSelector: View {
     var body: some View {
         let formats = model.selectorFormats
         HStack(spacing: 8) {
-            Picker(L("Monitoring mode"), selection: Binding(get: { model.format }, set: { model.pin($0) })) {
-                ForEach(formats, id: \.self) { format in
-                    Text(format.shortTitle)
-                        .accessibilityLabel(format.localizedName)
-                    .tag(format)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.large)
-            .tint(Theme.sage)
-            .fixedSize()
-            // A light accent tint on its own glass, a step under AUTO's while it is on, so the mode stands out
-            // in the toolbar as the older selector's tinted thumb did.
-            .padding(2)
-            .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.12 : 0.08))
-            .help(help(for: model.format))
+            GlassSegments(label: L("Monitoring mode"),
+                          options: formats.map { ($0, $0.shortTitle, $0.localizedName) },
+                          selection: model.format, select: { model.pin($0) }, large: true)
+                .help(help(for: model.format))
             AutoToggle(auto: model.formatMode == .auto, detected: model.automaticFormat) {
                 model.toggleAuto()
             }
@@ -71,14 +57,17 @@ struct ModeSelector: View {
         switch format {
         case .mono: return L("Monitor in Mono: one channel, read from the input routed to L")
         case .stereo: return L("Monitor in Stereo: L and R lead; other channels recede")
-        case .spatial: return L("Monitor in Immersive: every channel of %@. Change the format in Settings ▸ Channels.", model.speakerLayout.name)
+        case .spatial:
+            if model.layoutFromPlugin { return L("Monitor in Immersive: every channel of the DAW plugin's %@ bus.", model.shownLayoutName) }
+            return L("Monitor in Immersive: every channel of %@. Change the format in Settings ▸ Channels.", model.speakerLayout.name)
         }
     }
 }
 
 /// AUTO: the system switch with its label, so it is the Liquid Glass switch on macOS 26 (the knob turns to glass
 /// while pressed or dragged) and the classic switch before it; clicking the label flips it, as beside any macOS
-/// switch. It sits on a glass capsule of its own, tinted with the accent while the detector drives the mode.
+/// switch. It sits on a track like the segments'; while the detector drives the mode it is lit as a chosen segment
+/// is (a glowing cream key on dark, a glowing white one on light), so AUTO reads as on at the same glance as Stereo | Immersive.
 private struct AutoToggle: View {
     let auto: Bool
     let detected: ChannelFormat
@@ -96,15 +85,25 @@ private struct AutoToggle: View {
             Text(L("AUTO"))
                 .font(.system(size: 9, weight: auto ? .bold : .semibold).width(.expanded))
                 .tracking(l10n.tracking(Tracking.eyebrow))
-                .foregroundStyle(auto ? Theme.ink : Theme.secondary)
+                .foregroundStyle(auto ? Theme.onLit : Theme.secondary)
                 .fixedSize()
                 .onTapGesture(perform: action)
                 .accessibilityHidden(true)
         }
-        .padding(.leading, 7)
-        .padding(.trailing, 11)
-        .frame(height: ModeSelector.height)
-        .glassSurface(Capsule(), tint: auto ? Theme.sage.opacity(Theme.dark ? 0.22 : 0.14) : nil)
+        .padding(.leading, 6)
+        .padding(.trailing, 10)
+        .frame(height: ModeSelector.height - 4)
+        .background {
+            // The chosen segment's lit plate (`GlassSegments`), inside the same track.
+            if auto {
+                Capsule(style: .continuous).fill(Theme.lit)
+                    .shadow(color: Theme.litHalo, radius: 6)
+                    .shadow(color: .black.opacity(Theme.dark ? 0.0 : 0.14), radius: 2, y: 1)
+                    .transition(.opacity)
+            }
+        }
+        .padding(2)
+        .background { DockTrack(radius: ModeSelector.height / 2) }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: auto)
         .accessibilityLabel(L("Auto mode"))
         .help(L("Auto: Mono when a single input is routed. Otherwise Immersive after 150 ms above −60 dBFS on any channel but L, R and LFE, and back to Stereo after 2.5 s of front-only programme. Silence holds the mode; LFE alone never switches it. Detected now: %@.", detected.localizedName))

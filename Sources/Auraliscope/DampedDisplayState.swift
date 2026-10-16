@@ -1,3 +1,4 @@
+import AnalysisCore
 import Foundation
 
 // Critically damped, time-based display filter. Raw DSP and LUFS measurements remain untouched.

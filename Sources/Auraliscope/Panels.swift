@@ -1,36 +1,124 @@
+import AnalysisCore
 import SwiftUI
 
 // MARK: - Surfaces
 
-/// A charcoal (or white) card groups each panel; a recessed well holds its live display.
+/// A panel: one surface carrying a module's title row, its controls and its plot.
 struct GlassCard<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
         content
-            .padding(12)
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background { CardSurface() }
     }
 }
 
+/// A panel's frame. The backdrop's colour shows faintly through it; light catches its top edge and fades down
+/// the sides, and a soft shadow lifts it off the window, so modules separate by depth rather than by heavy borders.
+/// Native material blurs the backdrop; tint and rim stay behind the measurement content.
 struct CardSurface: View {
     var radius: CGFloat = Theme.cardRadius
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        shape.fill(LinearGradient(colors: [Theme.cardTint, Theme.cardTint.opacity(0.94)],
-                                  startPoint: .topLeading, endPoint: .bottomTrailing))
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.09), lineWidth: 0.5) }
-            .shadow(color: Theme.cardShadow, radius: Theme.dark ? 11 : 9, y: Theme.dark ? 5 : 3)
+        let dark = Theme.dark
+        shape.fill(.ultraThinMaterial)
+            .overlay { shape.fill(Theme.panelFill) }
+            .overlay {
+                // A sheen in the top third, as light falls on frosted glass.
+                shape.fill(LinearGradient(colors: [Color.white.opacity(dark ? 0.095 : 0.30), .clear],
+                                          startPoint: .top, endPoint: UnitPoint(x: 0.5, y: 0.55)))
+            }
+            .overlay {
+                shape.strokeBorder(LinearGradient(colors: dark ? [Color.white.opacity(0.28), Color.white.opacity(0.055)]
+                                                               : [Color.white.opacity(0.95), Color.white.opacity(0.55)],
+                                                  startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            }
+            .overlay { if !dark { shape.strokeBorder(Theme.hairline.opacity(0.12), lineWidth: 0.5) } }
+            .shadow(color: Theme.cardShadow, radius: dark ? 14 : 18, y: dark ? 6 : 8)
     }
 }
 
-/// An obsidian (or paper) display set into the card, edged by a single hairline.
-struct WellSurface: View {
+/// A quiet recess on the same translucent card, without another rim or shadow.
+/// Only its background is tinted; measurement text and Metal geometry keep their full contrast.
+struct PlotPlate: View {
+    var radius: CGFloat = Theme.wellRadius
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous)
-        shape.fill(Theme.wellFill)
-            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.13 : 0.11), lineWidth: 0.5) }
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(Theme.plotWash)
+            .allowsHitTesting(false)
+    }
+}
+
+/// The title row of the summary's small panels (the 15 s history, the VU meter), at the panel's usual inset. A narrow
+/// panel gives up some of the inset before the title is cut.
+struct CardTitle: View {
+    let title: String
+    let model: MeterModel?
+    /// The panel this title heads, for its window button at the trailing end.
+    var panel: MeterPanel? = nil
+    /// Settings this panel shares with another (the VU meter's live with the loudness panel's).
+    var settings: PanelKind? = nil
+    /// A shorter title for a narrow panel, before the title is cut.
+    var short: String? = nil
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                Eyebrow(title, color: Theme.title).fixedSize().padding(.leading, 18)
+                Eyebrow(title, color: Theme.title).fixedSize().padding(.leading, 12)
+                if let short { Eyebrow(short, color: Theme.title).fixedSize().padding(.leading, 12) }
+                Eyebrow(short ?? title, color: Theme.title).padding(.leading, 10)
+            }
+            Spacer(minLength: 4)
+            if let settings { PanelSettingsButton(panel: settings, model: model, window: false) }
+            if let panel { PanelWindowButton(panel: panel) }
+        }
+        .padding(.trailing, panel == nil ? 0 : 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 22)
+        .padding(.top, 14)
+    }
+}
+
+/// The meter's one status reading: LIVE with an accent dot, PAUSED with a pause glyph on an outlined tag, STANDBY
+/// with an empty ring. Shape and word carry the state as well as colour.
+struct StatusReading: View {
+    @ObservedObject var model: MeterModel
+    var detail: String? = nil
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        let paused = !model.running && model.frozen
+        HStack(spacing: 6) {
+            if model.running {
+                Circle().fill(Theme.sage).frame(width: 6, height: 6)
+                    .background { Circle().fill(Theme.glow(Theme.sage, 0.5)).frame(width: 12, height: 12).blur(radius: 3) }
+            } else if paused {
+                Image(systemName: "pause.fill").font(.system(size: 7, weight: .black))
+            } else {
+                Circle().strokeBorder(Theme.tertiary, lineWidth: 1).frame(width: 7, height: 7)
+            }
+            Text(model.running ? L("LIVE") : (paused ? L("PAUSED") : L("STANDBY")))
+                .font(.system(size: 10, weight: .bold)).tracking(1)
+            if let detail {
+                Text(verbatim: "·").foregroundStyle(Theme.tertiary)
+                Text(verbatim: detail).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.secondary)
+            }
+        }
+        .foregroundStyle(model.running ? Theme.ink : (paused ? Theme.ink : Theme.tertiary))
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, paused ? 9 : 0)
+        .frame(height: 20)
+        .background {
+            if paused {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Theme.ink.opacity(0.45), lineWidth: 1)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: model.running)
     }
 }
 
@@ -55,23 +143,28 @@ struct StableNumber: View {
     }
 }
 
-/// Consistent title and metadata alignment; trailing legends keep their existing positions.
+/// A card's title row, as on a hardware panel: the title alone at the leading edge, and at the trailing edge only
+/// what acts on the card (its settings, a band switch) and its status light. Keys and readings live in the card.
 private struct PanelHeader<Trailing: View>: View {
     let title: String
-    let detail: String
+    /// What the panel shows, after the title in the quieter voice; dropped first when the row is tight.
+    var detail: String? = nil
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Eyebrow(title).layoutPriority(1)
-            Text(verbatim: detail)
-                .font(.system(size: 10)).monospacedDigit()
-                .foregroundStyle(Theme.tertiary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+        HStack(alignment: .center, spacing: 6) {
+            Eyebrow(title, color: Theme.title).fixedSize().layoutPriority(1)
+            if let detail {
+                ViewThatFits(in: .horizontal) {
+                    Text(verbatim: detail).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.tertiary)
+                        .lineLimit(1).fixedSize().padding(.leading, 6)
+                    Color.clear.frame(width: 0, height: 0)
+                }
+            }
             Spacer(minLength: 8)
             trailing
         }
+        .frame(height: 24)
         .padding(.horizontal, 4)
     }
 }
@@ -79,12 +172,12 @@ private struct PanelHeader<Trailing: View>: View {
 // MARK: - Spectrum and Spectrogram
 
 /// What the spectrum and waterfall analyse, for their headers: the input in Mono, L+R in Stereo, and the
-/// power sum of every routed channel in Spatial.
-func spectrumSource(format: ChannelFormat, layout: SpeakerLayout) -> String {
+/// power sum of every routed channel in Spatial, named as the format (`layoutName`: a DAW plugin's bus).
+func spectrumSource(format: ChannelFormat, layoutName: String) -> String {
     switch format {
     case .mono: return "M"
     case .stereo: return "L+R"
-    case .spatial: return "\(layout.name) · " + L("all channels")
+    case .spatial: return "\(layoutName) · " + L("all channels")
     }
 }
 
@@ -100,43 +193,54 @@ struct SpectrumPanel: View {
     @ObservedObject private var l10n = Localizer.shared
     /// Width of the live spectrum beside the waterfall, dragged by the divider between them; 0 is automatic.
     @AppStorage("layout.spectrumStrip") private var strip: Double = 0
-    /// The spectrum's side, chosen in Settings › Panels.
+    /// The spectrum's side, the spectrogram's analysis and its view, chosen in the panel's settings.
     @AppStorage(SpectrumSide.key) private var side = SpectrumSide.right.rawValue
+    @AppStorage(SpectrogramAnalysis.key) private var analysis = SpectrogramAnalysis.classic.rawValue
+    @AppStorage(SpectrogramView.key) private var view = SpectrogramView.flat.rawValue
 
     var body: some View {
         let strip = CGFloat(self.strip)
         let left = side == SpectrumSide.left.rawValue
+        let flat = view != SpectrogramView.surface.rawValue
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"),
-                            detail: "\(source) · FFT \(SpectrumAnalyzer.fftSize) · " + L("pitch")) {
-                    WaterfallLegend()
+                PanelHeader(title: L("SPECTROGRAM") + " · " + L("SPECTRUM"), detail: source) {
+                    SpectrogramLegend()
+                    PanelSettingsButton(panel: .spectrum, model: model)
                 }
                 GeometryReader { proxy in
                     let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .spectrogram, model: model)
                         MeterCanvas(kind: .spectrum, model: model)
-                        PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
-                        PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
-                        SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left)
+                        // The keyboard, its notes and the hover readings follow the flat image's rows; the 3D view
+                        // labels its own depth instead.
+                        if flat {
+                            PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
+                            PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
+                        } else {
+                            SurfaceLabels(sampleRate: sampleRate, strip: strip, left: left)
+                        }
+                        SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left, notes: flat)
+                        // In the waterfall's top corner, clear of the spectrum's frequency labels and of the keyboard,
+                        // in either orientation; under the hover readout, which must never be hidden.
+                        PeakBadge(readouts: model.readouts)
+                            .padding(.top, 6)
+                            .padding(.trailing, 6)
+                            .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
+                            .offset(x: layout.plot.minX, y: layout.plot.minY)
+                            .allowsHitTesting(false)
+                        SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, source: source, waterfall: flat)
                         // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
                         PanelDivider(axis: .horizontal, leading: layout.dividerLeading,
                                      onResize: { setStrip(layout.strip(forDivider: $0), size: proxy.size, left: left) },
                                      onReset: { setStrip(0, size: proxy.size, left: left) })
                             .frame(width: SpectrogramLayout.spectrumGap, height: layout.plot.height)
                             .offset(x: layout.dividerX, y: layout.plot.minY)
-                        // In the waterfall's top corner, clear of the spectrum's frequency labels (the top one
-                        // names the full range) and of the keyboard, in either orientation.
-                        PeakBadge(readouts: model.readouts)
-                            .padding(.top, 6)
-                            .padding(.trailing, 6)
-                            .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
-                            .offset(x: layout.plot.minX, y: layout.plot.minY)
                     }
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -149,61 +253,387 @@ struct SpectrumPanel: View {
     }
 }
 
-/// Dominant peak as pitch · frequency · level, e.g. "A4 (+2¢) • 440.0 Hz • −12.4 dBFS".
-/// Every field reserves its widest value so the capsule never changes size while values move.
+/// The three strongest peaks, one per row as pitch (cents) · frequency · level, e.g. "1  A4 (+2¢) • 440.0 Hz • −12.4 dBFS".
+/// Row 1 is the dominant peak of the whole spectrum (`PeakTracker`); rows 2 and 3 are the next loudest notes the analyzer
+/// finds sounding with it (`NoteHolds`: tonal peaks from 27 Hz to 4.2 kHz within 18 dB of the loudest, overtones left
+/// out), skipping any note within a semitone of the dominant peak. Every field reserves its widest value and an empty row keeps its place,
+/// so the tag never changes size while values move.
 private struct PeakBadge: View {
     @ObservedObject var readouts: Readouts
 
+    private struct Row {
+        let frequency: Float
+        let level: Float
+    }
+
     var body: some View {
-        let peak = readouts.values.peak
-        let pitch = peak.visible ? Pitch(frequency: Double(peak.frequency)) : nil
-        let font = Font.caption2.weight(.medium)
-        HStack(spacing: 6) {
-            StableNumber(text: pitch?.label ?? "--", template: "A#8", font: font.weight(.semibold),
-                         color: pitch == nil ? Theme.tertiary : Theme.sage)
-            StableNumber(text: pitch.map { "(\($0.centsLabel))" } ?? "", template: "(−50¢)", font: font, color: Theme.secondary)
-            separator
-            StableNumber(text: peak.visible ? Self.frequency(peak.frequency) : "-- Hz", template: "88.88 kHz", font: font,
-                         color: peak.visible ? Theme.ink : Theme.tertiary)
-            separator
-            StableNumber(text: peak.visible ? MeterScale.tenths(peak.level) + " dBFS" : "-- dBFS", template: "−88.8 dBFS",
-                         font: font, color: peak.visible ? Theme.ink : Theme.tertiary)
+        let values = readouts.values
+        let peak = values.peak
+        let first = peak.visible ? Row(frequency: peak.frequency, level: peak.level) : nil
+        // The dominant peak's estimate and a note's can differ by a few hertz for one partial, so any note within a
+        // semitone of it is that same peak.
+        let others = values.notes.notes
+            .filter { note in first.map { abs(1200 * log2(Double(note.frequency / $0.frequency))) >= 100 } ?? true }
+            .sorted { $0.level > $1.level }
+            .prefix(2)
+            .map { Row(frequency: $0.frequency, level: $0.level) }
+        let rows: [Row?] = [first, others.first, others.dropFirst().first]
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(0..<3, id: \.self) { rank in row(rank, rows[rank]) }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
         .background { BadgeSurface() }
         .accessibilityElement(children: .combine)
+    }
+
+    /// The dominant row reads strongest; the two below it a step quieter, so the ranking shows at a glance.
+    private func row(_ rank: Int, _ row: Row?) -> some View {
+        let pitch = row.flatMap { Pitch(frequency: Double($0.frequency)) }
+        let font = Font.caption2.weight(.medium)
+        let ink = rank == 0 ? Theme.ink : Theme.secondary
+        return HStack(spacing: 6) {
+            Text(verbatim: "\(rank + 1)").font(.system(size: 8, weight: .bold).monospacedDigit())
+                .foregroundStyle(Theme.tertiary).frame(width: 7, alignment: .leading)
+            StableNumber(text: pitch?.label ?? "—", template: "A#8", font: font.weight(.semibold),
+                         color: pitch == nil ? Theme.disabled : (rank == 0 ? Theme.sage : ink), alignment: .leading)
+            StableNumber(text: pitch.map { "(\($0.centsLabel))" } ?? "", template: "(−50¢)", font: font, color: Theme.tertiary,
+                         alignment: .leading)
+            separator
+            StableNumber(text: row.map { Self.frequency($0.frequency) } ?? "— Hz", template: "88.88 kHz", font: font,
+                         color: row == nil ? Theme.disabled : ink)
+            separator
+            StableNumber(text: row.map { MeterScale.tenths($0.level) + " dBFS" } ?? "— dBFS", template: "−88.8 dBFS",
+                         font: font, color: row == nil ? Theme.disabled : ink)
+        }
     }
 
     private var separator: some View {
         Text("•").font(.caption2).foregroundStyle(Theme.tertiary)
     }
 
-    private static func frequency(_ hertz: Float) -> String {
+    static func frequency(_ hertz: Float) -> String {
         hertz < 1_000 ? String(format: "%.1f Hz", hertz) : String(format: "%.2f kHz", hertz / 1_000)
     }
 }
 
 /// A solid chip over the plot. Glass here would re-sample the live spectrum under it on every frame.
-private struct BadgeSurface: View {
+struct BadgeSurface: View {
     var body: some View {
-        Capsule().fill(Theme.wellFill.opacity(0.88))
-            .overlay { Capsule().strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.16 : 0.12), lineWidth: 0.5) }
+        let shape = RoundedRectangle(cornerRadius: Theme.tagRadius, style: .continuous)
+        shape.fill(Theme.display)
+            .overlay { shape.strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.08), lineWidth: 0.5) }
+            .shadow(color: .black.opacity(Theme.dark ? 0.35 : 0.10), radius: 4, y: 2)
     }
 }
 
-private struct WaterfallLegend: View {
+/// The colour scale in the header: the range's floor and ceiling either side of a bar that runs the tone curve
+/// itself (`SpectrogramTone`), linear in dB, with a notch every 24 dB; and the display slope when one is set.
+private struct SpectrogramLegend: View {
+    @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
+    @AppStorage(SpectrogramColors.key) private var colorsKey = SpectrogramColors.heat.rawValue
+    @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
+    @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
+    @ObservedObject private var theme = ThemeSettings.shared
+    @ObservedObject private var l10n = Localizer.shared
+
     var body: some View {
+        let range = SpectrogramRange(rawValue: rangeKey) ?? .standard
+        let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(rawValue: tiltKey) ?? .flat)
+        // Narrow headers drop the average's key, then the tilt, before the scale itself.
+        ViewThatFits(in: .horizontal) {
+            legend(range, tilt: tilt, average: average)
+            legend(range, tilt: tilt, average: false)
+            legend(range, tilt: nil, average: false)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L("Color scale from %@ to %@ dBFS", MeterScale.signedInteger(range.floor), MeterScale.signedInteger(range.ceiling)))
+    }
+
+    static func tiltLabel(_ tilt: SpectrumTilt) -> String? { tilt == .flat ? nil : "+" + tilt.title }
+
+    private func legend(_ range: SpectrogramRange, tilt: String?, average: Bool) -> some View {
         HStack(spacing: 5) {
-            Text("−90").font(.axis).foregroundStyle(Theme.tertiary)
-            // Same stops and range as the waterfall shader's rampMap.
-            Capsule()
-                .fill(LinearGradient(colors: Theme.rampStops.map(\.color), startPoint: .leading, endPoint: .trailing))
-                .frame(width: 64, height: 5)
-                .overlay { Capsule().strokeBorder(Theme.hairline.opacity(0.10), lineWidth: 0.5) }
-            Text("−12 dB").font(.axis).foregroundStyle(Theme.tertiary)
+            Text(verbatim: MeterScale.signedInteger(range.floor)).font(.axis).foregroundStyle(Theme.tertiary)
+            Canvas { context, size in
+                let steps = 24
+                let span = range.ceiling - range.floor
+                let colors = SpectrogramColors(rawValue: colorsKey) ?? .heat
+                let stops = (0...steps).map { step -> Gradient.Stop in
+                    let fraction = Float(step) / Float(steps)
+                    let color = Theme.ramp(decibels: range.floor + span * fraction, range: range, colors: colors).color
+                    return Gradient.Stop(color: color, location: CGFloat(fraction))
+                }
+                let bar = Path(roundedRect: CGRect(x: 0, y: 0, width: size.width, height: 5), cornerRadius: 2.5)
+                context.fill(bar, with: .linearGradient(Gradient(stops: stops), startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)))
+                context.stroke(bar, with: .color(Theme.hairline.opacity(0.12)), lineWidth: 0.5)
+                var db = (range.floor / 24).rounded(.up) * 24
+                if db <= range.floor { db += 24 }
+                while db < range.ceiling {
+                    let x = CGFloat((db - range.floor) / span) * size.width
+                    context.fill(Path(CGRect(x: x - 0.25, y: 6, width: 0.5, height: 2)), with: .color(Theme.tertiary))
+                    db += 24
+                }
+            }
+            .frame(width: 64, height: 8)
+            .offset(y: 1.5)
+            Text(verbatim: MeterScale.signedInteger(range.ceiling) + " dB").font(.axis).foregroundStyle(Theme.tertiary)
+            if let tilt {
+                Text(verbatim: "· " + tilt).font(.axis).foregroundStyle(Theme.secondary)
+            }
+            if average {
+                Capsule().fill(Theme.sand).frame(width: 10, height: 1.5)
+                    .padding(.leading, 4)
+                Text(L("avg")).font(.axis).foregroundStyle(Theme.tertiary)
+            }
+        }
+        .lineLimit(1)
+        .fixedSize()
+    }
+}
+
+/// Hover over the Spectrum well to read it: over the waterfall, the level of the very cell on screen, with its
+/// row's pitch and centre frequency, how long ago its audio was, and the analysis behind it; over the live spectrum,
+/// the level of the band under the pointer. A crosshair marks the spot, with the harmonics of its frequency marked
+/// above it over the waterfall. Pause first to read a moment at leisure: the waterfall holds still and so do its
+/// values.
+private struct SpectrogramInspector: View {
+    let sampleRate: Double
+    let strip: CGFloat
+    let left: Bool
+    /// What is analysed, for an exported image's caption.
+    let source: String
+    /// Whether the plot shows the flat waterfall, whose cells the pointer reads (the 3D view has no such cells).
+    var waterfall = true
+    @State private var location: CGPoint? = Diagnostics.inspectPoint
+    @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        GeometryReader { proxy in
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        // A held diagnostic point (`--snapshot-inspect`) is not moved by the real pointer.
+                        guard Diagnostics.inspectPoint == nil else { return }
+                        switch phase {
+                        case .active(let point): location = point
+                        case .ended: location = nil
+                        }
+                    }
+                    .contextMenu {
+                        Button(L("Copy Spectrogram Image")) { if let image = image() { SpectrogramImage.copy(image) } }
+                        Button(L("Save Spectrogram Image…")) { if let image = image() { SpectrogramImage.save(image) } }
+                    }
+                if let location, let reading = reading(at: location, layout: layout) {
+                    TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
+                        overlay(self.reading(at: location, layout: layout) ?? reading, at: location, layout: layout, size: proxy.size)
+                    }
+                    .allowsHitTesting(false)
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// The columns on screen as an image (`SpectrogramImage`); nil before any column has arrived.
+    private func image() -> CGImage? {
+        guard let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene else { return nil }
+        let options = DisplayOptions.stored
+        return SpectrogramImage.make(history: scene.history, columns: Int(scene.span), sampleRate: sampleRate, options: options,
+                                     caption: SpectrogramImage.caption(source: source, sampleRate: sampleRate, options: options))
+    }
+
+    private struct Reading {
+        let frequency: Double
+        let level: Float?
+        /// How long ago the cell's audio was, over the waterfall; nil over the live spectrum.
+        let secondsAgo: Double?
+        /// The long-term average of the band, over the live spectrum while it is shown.
+        var average: Float? = nil
+        /// The analysis behind the cell (window, length, duration), over the waterfall.
+        var resolution: String? = nil
+    }
+
+    private func reading(at point: CGPoint, layout: SpectrogramLayout) -> Reading? {
+        guard point.y >= layout.plot.minY, point.y <= layout.plot.maxY else { return nil }
+        if waterfall && layout.plot.contains(point) {
+            // The cell under the pointer, as analysed: its row's centre frequency, its level, and the instant its
+            // column is centred on, which is half the analysis span (about 85 ms) before the column was made.
+            let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene
+            let rows = SpectrogramHistory.rows
+            let row = max(0, min(rows - 1, Int(layout.row(y: point.y, rows: rows).rounded())))
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
+            let delay = Double(SpectrumAnalyzer.historyLength(sampleRate: sampleRate)) / 2 / sampleRate
+            let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: Double(row))
+            return Reading(frequency: centre, level: cell?.level,
+                           secondsAgo: (cell?.secondsAgo ?? (1 - layout.timeFraction(x: point.x)) * layout.seconds) + delay,
+                           resolution: SpectrogramResolution.describe(row: row, sampleRate: sampleRate,
+                                                                      analysis: DisplayOptions.stored.spectrogramAnalysis))
+        }
+        if point.x >= layout.spectrum.minX, point.x <= layout.spectrum.maxX {
+            let scene = SceneStore.existing(.spectrum) as? SpectrumScene
+            let bands = scene?.shown ?? []
+            let count = SpectrumScene.pointCount
+            let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count).rounded())))
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            let low = 20 * pow(upper / 20, Double(band) / Double(count))
+            let high = 20 * pow(upper / 20, Double(band + 1) / Double(count))
+            let frequency = (low * high).squareRoot()
+            let bandwidth = high < 1000 ? String(format: "%.1f–%.1f Hz", low, high)
+                                       : String(format: "%.2f–%.2f kHz", low / 1000, high / 1000)
+            let average = DisplayOptions.stored.averageSpectrum ? scene?.average : nil
+            return Reading(frequency: frequency, level: bands.indices.contains(band) ? bands[band] : nil, secondsAgo: nil,
+                           average: average.flatMap { $0.indices.contains(band) ? $0[band] : nil }, resolution: bandwidth)
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func overlay(_ reading: Reading, at point: CGPoint, layout: SpectrogramLayout, size: CGSize) -> some View {
+        // A precise solid crosshair, a ring at the point read, and the readout on an opaque tag beside it.
+        let lineColor = Theme.ink.opacity(Theme.dark ? 0.55 : 0.5)
+        let dash = StrokeStyle(lineWidth: 0.5)
+        let span = layout.plot.union(layout.spectrum)
+        ZStack(alignment: .topLeading) {
+            Path { path in
+                path.move(to: CGPoint(x: span.minX, y: point.y))
+                path.addLine(to: CGPoint(x: span.maxX, y: point.y))
+                if reading.secondsAgo != nil {
+                    path.move(to: CGPoint(x: point.x, y: layout.plot.minY))
+                    path.addLine(to: CGPoint(x: point.x, y: layout.plot.maxY))
+                }
+            }
+            .stroke(lineColor, style: dash)
+            Circle().strokeBorder(Theme.ink, lineWidth: 1.25)
+                .background(Circle().fill(Theme.display.opacity(0.6)))
+                .frame(width: 9, height: 9)
+                .offset(x: point.x - 4.5, y: point.y - 4.5)
+            // The harmonic cursor: where the 2nd to 8th harmonics of the frequency under the pointer fall, so an
+            // overtone series (or a resonance's partials) can be checked at a glance.
+            if reading.secondsAgo != nil {
+                let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+                ForEach(Array(2...8).filter { Double($0) * reading.frequency < upper }, id: \.self) { harmonic in
+                    let y = layout.y(frequency: Double(harmonic) * reading.frequency, sampleRate: sampleRate)
+                    let opacity = (Theme.dark ? 0.75 : 0.65) * (1 - Double(harmonic - 2) * 0.08)
+                    Capsule().fill(Theme.ink.opacity(opacity)).frame(width: 12, height: 1.5)
+                        .offset(x: point.x - 6, y: y - 0.75)
+                    if harmonic <= 4 {
+                        Text(verbatim: "\(harmonic)×").font(.system(size: 8, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(Theme.ink.opacity(opacity)).fixedSize()
+                            .offset(x: point.x + 8, y: y - 6)
+                    }
+                }
+            }
+            let tag = InspectorTag(reading: reading)
+            let width = InspectorTag.width(reading)
+            let flip = point.x + 14 + width > span.maxX
+            let x = flip ? point.x - 14 - width : point.x + 14
+            let y = min(max(span.minY + 2, point.y - (reading.resolution == nil ? 30 : 40)), span.maxY - (reading.resolution == nil ? 24 : 36))
+            tag.frame(width: width, alignment: .leading).offset(x: max(span.minX + 2, x), y: y)
         }
     }
+
+    private struct InspectorTag: View {
+        let reading: Reading
+        @ObservedObject private var l10n = Localizer.shared
+
+        /// Fixed per kind, so the tag never changes size as the pointer moves.
+        static func width(_ reading: Reading) -> CGFloat { reading.secondsAgo != nil ? 246 : (reading.average == nil ? 200 : 268) }
+
+        var body: some View {
+            let pitch = Pitch(frequency: reading.frequency)
+            let font = Font.caption2.weight(.medium).monospacedDigit()
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 5) {
+                    Text(verbatim: pitch.map { "\($0.label) \($0.centsLabel)" } ?? "--").font(font.weight(.semibold)).foregroundStyle(Theme.sage)
+                    dot
+                    Text(verbatim: Self.frequency(reading.frequency)).font(font).foregroundStyle(Theme.ink)
+                    if let seconds = reading.secondsAgo {
+                        dot
+                        Text(verbatim: seconds < 0.02 ? L("now") : String(format: "−%.2f s", seconds)).font(font).foregroundStyle(Theme.secondary)
+                    }
+                    dot
+                    Text(verbatim: reading.level.map { MeterScale.tenths($0, floor: -119.9) + " dBFS" } ?? "-- dBFS")
+                        .font(font).foregroundStyle(reading.level == nil ? Theme.tertiary : Theme.ink)
+                    if reading.secondsAgo == nil {
+                        Text(L("live")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                    }
+                    if let average = reading.average {
+                        dot
+                        Text(verbatim: MeterScale.tenths(average, floor: -119.9)).font(font).foregroundStyle(Theme.sand)
+                        Text(L("avg")).font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tertiary)
+                    }
+                }
+                if let resolution = reading.resolution {
+                    Text(verbatim: resolution).font(.system(size: 9, weight: .medium).monospacedDigit()).foregroundStyle(Theme.tertiary)
+                }
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background { BadgeSurface() }
+        }
+
+        private var dot: some View { Text("•").font(.caption2).foregroundStyle(Theme.tertiary) }
+
+        static func frequency(_ hertz: Double) -> String {
+            hertz < 100 ? String(format: "%.1f Hz", hertz)
+                : hertz < 1_000 ? String(format: "%.0f Hz", hertz) : String(format: "%.2f kHz", hertz / 1_000)
+        }
+    }
+}
+
+/// The waterfall's analysis at a row, for the inspector: the window and its length and duration at the source's
+/// rate, as this build analyses it (in Labs and in the plugins).
+enum SpectrogramResolution {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cachedRate: Double = 0
+    nonisolated(unsafe) private static var cachedRows: [SpectrogramAnalyzer.Resolution] = []
+
+    private static func resolutions(_ sampleRate: Double) -> [SpectrogramAnalyzer.Resolution] {
+        lock.lock()
+        defer { lock.unlock() }
+        if cachedRate != sampleRate {
+            cachedRows = SpectrogramAnalyzer.rowResolutions(sampleRate: sampleRate,
+                span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
+            cachedRate = sampleRate
+        }
+        return cachedRows
+    }
+
+    static func range(sampleRate: Double) -> String {
+        let rows = resolutions(sampleRate)
+        let lengths = rows.flatMap { [$0.length, $0.previousLength ?? $0.length] }
+        guard let low = lengths.min(), let high = lengths.max() else { return "FFT \(SpectrumAnalyzer.fftSize)" }
+        return "FFT \(low)–\(high)"
+    }
+
+    static func describe(row: Int, sampleRate: Double, analysis: SpectrogramAnalysis = .classic) -> String? {
+        if analysis == .enhanced {
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(SpectrogramHistory.rows))
+            let length = ReassignedSpectrogram.length(frequency: centre, sampleRate: sampleRate,
+                                                      span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
+            return "FFT \(length) · Hann · " + L("reassigned")
+        }
+        let rows = resolutions(sampleRate)
+        guard rows.indices.contains(row) else { return nil }
+        let resolution = rows[row]
+        func name(_ window: SpectralWindow) -> String { window == .hann ? "Hann" : "Blackman–Harris" }
+        if let previousLength = resolution.previousLength, let previousWindow = resolution.previousWindow {
+            let length = previousLength == resolution.length ? "\(resolution.length)" : "\(resolution.length)–\(previousLength)"
+            let window = previousWindow == resolution.window ? name(resolution.window) : "Hann / Blackman–Harris"
+            return "FFT \(length) · \(window)"
+        }
+        return "FFT \(resolution.length) · \(name(resolution.window)) · " + String(format: "%.0f ms", Double(resolution.length) / sampleRate * 1_000)
+    }
+
 }
 
 /// Octave labels, the time axis under the waterfall, and the spectrum's level axis under it with its frequency
@@ -212,17 +642,21 @@ private struct SpectrogramLabels: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    /// The octave labels beside the keyboard (the flat view only).
+    var notes = true
+    @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
             let octave = abs(layout.y(midi: 60, sampleRate: sampleRate) - layout.y(midi: 72, sampleRate: sampleRate))
             let labelStep = max(1, Int(ceil(18 / max(1, octave))))
             let perSecond = layout.plot.width / CGFloat(layout.seconds)
             let timeStep = max(1, Int((36 / max(0.01, perSecond)).rounded(.up)))
             ZStack(alignment: .topLeading) {
-                ForEach((0...10).filter { ($0 - 4) % labelStep == 0 }, id: \.self) { number in
+                ForEach((0...10).filter { notes && ($0 - 4) % labelStep == 0 }, id: \.self) { number in
                     let y = layout.y(midi: Double(12 * (number + 1)), sampleRate: sampleRate)
                     if y > layout.plot.minY + 4 && y < layout.plot.maxY - 2 {
                         Text(verbatim: "C\(number)")
@@ -252,6 +686,32 @@ private struct SpectrogramLabels: View {
                         .position(x: layout.fullScaleX + (left ? 12 : -12),
                                   y: layout.y(frequency: tick.0, sampleRate: sampleRate)
                                       + (SpectrogramLayout.isTopEdge(tick.0, sampleRate: sampleRate) ? 7 : -6))
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// The 3D view's depth axis: 100 Hz, 1 kHz and 10 kHz beside the floor's left edge (right, mirrored), where the floor
+/// grid's lines start.
+private struct SurfaceLabels: View {
+    let sampleRate: Double
+    let strip: CGFloat
+    let left: Bool
+    @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
+
+    var body: some View {
+        GeometryReader { proxy in
+            let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
+            let projection = SurfaceProjection(plot: layout.plot)
+            let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
+            ZStack(alignment: .topLeading) {
+                ForEach([(100.0, "100"), (1_000, "1k"), (10_000, "10k")].filter { $0.0 < upper }, id: \.0) { frequency, label in
+                    let point = projection.point(u: layout.mirrored ? 1 : 0, d: SurfaceProjection.depth(frequency: frequency, upper: upper))
+                    Text(verbatim: label).font(.axis).foregroundStyle(Theme.tertiary).fixedSize()
+                        .position(x: point.x + (layout.mirrored ? 14 : -14), y: point.y)
                 }
             }
         }
@@ -368,7 +828,7 @@ private struct PianoKeyboard: View {
                                      cornerSize: CGSize(width: 1, height: 1))
             }
             // Black keys are the darkest thing on the keyboard in either appearance.
-            context.fill(black, with: .color(Theme.dark ? Theme.display.opacity(0.9 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
+            context.fill(black, with: .color(Theme.dark ? Color.black.opacity(0.6 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -377,36 +837,8 @@ private struct PianoKeyboard: View {
 
 // MARK: - Loudness
 
-/// Loudness delivery standards offered on the summary. A standard sets the short-term target (gauge, delta,
-/// history band), the VU alignment (0 VU = target, in dBFS) and its true-peak ceiling, which can still be
-/// changed on its own. Stereo (with Mono) and Spatial each keep their own standard.
-struct LoudnessStandard: Hashable {
-    let target: Double
-    let ceiling: Double
-    /// A published specification keeps its own name; a description of a use is a localization key.
-    let name: String
-
-    /// Menu label in the current language.
-    var title: String { L(name) }
-
-    static let all: [LoudnessStandard] = [
-        LoudnessStandard(target: -9, ceiling: -1, name: LKey("Loud master · club, EDM")),
-        LoudnessStandard(target: -14, ceiling: -1, name: LKey("Streaming · Spotify, YouTube, Tidal")),
-        LoudnessStandard(target: -16, ceiling: -1, name: LKey("Apple Music · podcasts")),
-        LoudnessStandard(target: -18, ceiling: -1, name: "Dolby Atmos Music"),
-        LoudnessStandard(target: -23, ceiling: -1, name: "EBU R128"),
-        LoudnessStandard(target: -24, ceiling: -2, name: "ATSC A/85"),
-        LoudnessStandard(target: -27, ceiling: -2, name: LKey("Netflix · film and series"))
-    ]
-    /// True-peak ceilings offered on the summary, in dBTP.
-    static let ceilings: [Double] = [-0.1, -0.5, -1, -2, -3]
-
-    static func standard(target: Double) -> LoudnessStandard? { all.first { $0.target == target } }
-}
-
-/// Where short-term loudness sits against the target, as a solid status chip: accent on target, ochre above,
-/// slate below. The fill carries the colour and the type contrasts with it, so the chip reads on the tinted
-/// summary in both appearances.
+/// Where the main reading sits against the target, as status text rather than a chip: a dot and the words in the
+/// status colour (the accent on target, ochre above, slate below), the way the panel's status lights speak.
 struct DeltaBadge: View {
     let value: Float
     let target: Float
@@ -414,15 +846,15 @@ struct DeltaBadge: View {
     var body: some View {
         let valid = value > -70
         let (text, color) = Self.describe(value - target, valid: valid)
-        Text(text)
-            .font(.system(size: 10, weight: .bold))
-            .tracking(Localizer.shared.tracking(0.4))
-            .monospacedDigit()
-            .foregroundStyle(valid ? Theme.onStatus : Theme.tertiary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background { Capsule().fill(valid ? color : Theme.chipFill) }
-            .fixedSize()
+        HStack(spacing: 6) {
+            Circle().fill(valid ? color : Theme.tertiary.opacity(0.6)).frame(width: 6, height: 6)
+            Text(text)
+                .font(.system(size: 10, weight: .bold))
+                .tracking(Localizer.shared.tracking(0.4))
+                .monospacedDigit()
+                .foregroundStyle(valid ? color : Theme.tertiary)
+        }
+        .fixedSize()
     }
 
     private static func describe(_ delta: Float, valid: Bool) -> (String, Color) {
@@ -432,71 +864,93 @@ struct DeltaBadge: View {
     }
 }
 
+/// The main reading on a transport-style slider: a hairline track ticked every 3 LU (longer every 12), the reading as
+/// a filled run ending in a knob, in the delta's colour, and the target as an upright ink mark.
 struct LoudnessGauge: View {
     let value: Float
     let target: Float
-    /// Grows the bar and target mark with a taller summary (`HeroLayout.contentScale`).
+    /// Grows the track, knob and target mark with a taller summary (`HeroLayout.contentScale`).
     var scale: CGFloat = 1
+    @AppStorage(LoudnessScale.key) private var rangeKey = LoudnessScale.full.rawValue
+    @AppStorage(LoudnessUnit.key) private var unitKey = LoudnessUnit.lufs.rawValue
 
     var body: some View {
-        VStack(spacing: 5) {
+        let gaugeScale = LoudnessScale(rawValue: rangeKey) ?? .full
+        let unit = LoudnessUnit(rawValue: unitKey) ?? .lufs
+        let range = gaugeScale.range(target: target)
+        let fraction: (Float) -> CGFloat = { lufs in
+            CGFloat(max(0, min(1, (lufs - range.lowerBound) / (range.upperBound - range.lowerBound))))
+        }
+        VStack(spacing: 3) {
             GeometryReader { proxy in
                 let width = proxy.size.width
-                let fraction = MeterScale.loudnessFraction(value)
                 let delta = value - target
                 let fill = abs(delta) <= 1 ? Theme.sage : (delta > 0 ? Theme.ochre : Theme.slate)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.hairline.opacity(0.08))
-                        .overlay { Capsule().strokeBorder(Theme.hairline.opacity(0.06), lineWidth: 0.5) }
-                    Capsule().fill(fill).frame(width: max(6, width * fraction))
-                        .opacity(value > MeterScale.loudnessFloor ? 1 : 0)
+                let lit = value > range.lowerBound
+                let x = width * fraction(value)
+                let mid = proxy.size.height / 2
+                let knob = 9 + 3 * (scale - 1)
+                ZStack(alignment: .topLeading) {
+                    Canvas { context, size in
+                        context.fill(Path(roundedRect: CGRect(x: 0, y: mid - 1, width: size.width, height: 2), cornerRadius: 1),
+                                     with: .color(Theme.hairline.opacity(0.14)))
+                        let steps = Int(((range.upperBound - range.lowerBound) / gaugeScale.step).rounded())
+                        for step in 0...steps {
+                            let lu = range.lowerBound + Float(step) * gaugeScale.step
+                            let major = (lu - range.lowerBound).truncatingRemainder(dividingBy: gaugeScale.labelStep) == 0
+                            let tx = min(size.width - 0.5, max(0, size.width * fraction(lu) - 0.5))
+                            context.fill(Path(CGRect(x: tx, y: mid + 5, width: 1, height: major ? 5 : 3)),
+                                         with: .color(Theme.hairline.opacity(major ? 0.32 : 0.18)))
+                        }
+                    }
+                    Capsule().fill(fill)
+                        .frame(width: max(3, x), height: 3)
+                        .offset(y: mid - 1.5)
+                        .opacity(lit ? 1 : 0)
+                    Circle().fill(fill)
+                        .overlay { Circle().strokeBorder(Theme.dark ? Color.black.opacity(0.35) : Color.white.opacity(0.9), lineWidth: 1.5) }
+                        .frame(width: knob, height: knob)
+                        .offset(x: min(width - knob, max(0, x - knob / 2)), y: mid - knob / 2)
+                        .opacity(lit ? 1 : 0)
                     Capsule().fill(Theme.ink)
-                        .frame(width: 2, height: 14 + 8 * (scale - 1))
-                        .offset(x: width * MeterScale.loudnessFraction(target) - 1)
+                        .frame(width: 2, height: 16 + 8 * (scale - 1))
+                        .offset(x: width * fraction(target) - 1, y: mid - 8 - 4 * (scale - 1))
                 }
-                .frame(height: 6 + 6 * (scale - 1))
-                .frame(maxHeight: .infinity)
             }
-            .frame(height: 14 + 8 * (scale - 1))
+            .frame(height: 16 + 8 * (scale - 1))
+            let labels = Array(stride(from: range.lowerBound, through: range.upperBound + 0.01, by: gaugeScale.labelStep))
             HStack {
-                ForEach([-36, -24, -12, 0], id: \.self) { tick in
-                    if tick != -36 { Spacer(minLength: 0) }
-                    Text(tick == 0 ? "0" : "−\(-tick)").font(.axis).foregroundStyle(Theme.tertiary)
+                ForEach(Array(labels.enumerated()), id: \.offset) { index, tick in
+                    if index > 0 { Spacer(minLength: 0) }
+                    Text(verbatim: unit.label(tick, target: target)).font(.axis).foregroundStyle(Theme.tertiary)
                 }
             }
         }
     }
 }
 
-/// One statistic on the loudness summary: the title with the reading flush left under it, centred as a group in
-/// whatever height the tile is given, and the unit after the reading. The template reserves the usual width of
-/// the reading, so the unit holds still while the digits change.
+/// One statistic on the loudness summary, set like a hardware panel's parameter: the title over the reading, with no
+/// tile behind, centred as a group in whatever height it is given, and the unit after the reading. The template
+/// reserves the usual width of the reading, so the unit holds still while the digits change.
 struct StatTile: View {
     let title: String
     let value: String
     let unit: String
     var color: Color = Theme.ink
     var template = "−88.8"
-    /// Grows the reading with a taller summary; the tile itself stretches to the height it is offered.
+    /// Grows the reading with a taller summary; the column itself stretches to the height it is offered.
     var scale: CGFloat = 1
-    /// A warning chip beside the title (OVER); it also tints the tile in ember.
+    /// A warning chip beside the title (OVER).
     var alert: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4 * scale) {
+        VStack(alignment: .leading, spacing: 5 * scale) {
             HStack(spacing: 6) {
                 Eyebrow(title, color: Theme.tertiary)
-                if let alert {
-                    Text(alert)
-                        .font(.system(size: 8, weight: .heavy)).tracking(Localizer.shared.tracking(0.6))
-                        .foregroundStyle(Theme.onStatus)
-                        .lineLimit(1).fixedSize()
-                        .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .background(Capsule().fill(Theme.ember))
-                }
+                if let alert { AlarmTag(text: alert) }
             }
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                StableNumber(text: value, template: template, font: .system(size: 17 * scale, weight: .medium),
+                StableNumber(text: value, template: template, font: .system(size: 19 * scale, weight: .medium),
                              color: color, alignment: .leading)
                 if !unit.isEmpty {
                     Text(verbatim: unit).font(.system(size: 9 * (1 + (scale - 1) * 0.5), weight: .medium)).foregroundStyle(Theme.tertiary)
@@ -504,66 +958,218 @@ struct StatTile: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Theme.tileFill)
-            if alert != nil {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Theme.ember.opacity(0.14))
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Theme.ember.opacity(0.55), lineWidth: 1)
-            }
+    }
+}
+
+/// Where the plot of the summary's small panels (the 15 s history and the VU meter) lies: under the title row, inset
+/// by the panel's margin.
+struct PanelPlate: View {
+    static let inset: CGFloat = 10
+    static let top: CGFloat = 46
+    static func rect(in size: CGSize) -> CGRect {
+        CGRect(x: inset, y: top, width: max(1, size.width - 2 * inset), height: max(1, size.height - top - inset))
+    }
+    var body: some View {
+        GeometryReader { proxy in
+            let rect = Self.rect(in: proxy.size)
+            PlotPlate().frame(width: rect.width, height: rect.height).offset(x: rect.minX, y: rect.minY)
         }
     }
 }
 
-/// Last 15 s of short-term (sage) over momentary (faint), with the ±1 LU target band and 5 s time marks.
+/// The chart line scale, shared by every SwiftUI plot: the zero or reference line, major and minor grid lines,
+/// and the short ticks the axis labels name. The Metal scenes use the same opacities (`MeterGrid`).
+enum ChartInk {
+    static var reference: Double { Theme.dark ? 0.28 : 0.28 }
+    static var major: Double { Theme.dark ? 0.14 : 0.14 }
+    static var minor: Double { Theme.dark ? 0.065 : 0.075 }
+    static var tick: Double { Theme.dark ? 0.38 : 0.40 }
+}
+
+/// An alarm: the only filled tag in the interface, ember with a warning glyph, so an over reads by shape and word as
+/// well as colour.
+struct AlarmTag: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 7, weight: .bold))
+            Text(text).font(.system(size: 8, weight: .heavy)).tracking(Localizer.shared.tracking(0.6))
+        }
+        .foregroundStyle(Theme.onStatus)
+        .lineLimit(1).fixedSize()
+        .padding(.horizontal, 5).padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.ember))
+    }
+}
+
+/// Short-term (accent) over momentary (faint) for the chosen span (the last 15 s by default, up to the whole
+/// session), with the ±1 LU target band and time marks, on a card of its own beside the summary.
 struct LoudnessHistory: View {
     let short: [Float]
     let momentary: [Float]
     let target: Float
+    var model: MeterModel?
+    var panel: MeterPanel? = nil
+    /// Seconds across the plot, and the share of its width (from the right, "now") the readings cover.
+    var seconds: Double = Readouts.historySeconds
+    var covered: Double? = nil
+    var title: String? = nil
     @ObservedObject private var l10n = Localizer.shared
+    @AppStorage(HistoryScale.momentaryKey) private var showsMomentary = true
+    @AppStorage(HistoryScale.bandKey) private var showsBand = true
+    @AppStorage(HistoryScale.key) private var scaleKey = HistoryScale.full.rawValue
+    @AppStorage(LoudnessUnit.key) private var unitKey = LoudnessUnit.lufs.rawValue
 
     var body: some View {
+        let scale = HistoryScale(rawValue: scaleKey) ?? .full
+        let unit = LoudnessUnit(rawValue: unitKey) ?? .lufs
+        let showsMomentary = showsMomentary, showsBand = showsBand
         Canvas { context, size in
-            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 22)
-            func y(_ lufs: Float) -> CGFloat { rect.maxY - MeterScale.loudnessFraction(lufs) * rect.height }
+            let plate = PanelPlate.rect(in: size)
+            let rect = CGRect(x: plate.minX + 8, y: plate.minY + 10, width: max(1, plate.width - 16), height: max(1, plate.height - 30))
+            let levels = scale.span(target: target)
+            func y(_ lufs: Float) -> CGFloat {
+                rect.maxY - CGFloat(max(0, min(1, (lufs - levels.lowerBound) / (levels.upperBound - levels.lowerBound)))) * rect.height
+            }
             let band = CGRect(x: rect.minX, y: y(target + 1), width: rect.width, height: max(1, y(target - 1) - y(target + 1)))
-            context.fill(Path(band), with: .color(Theme.sage.opacity(Theme.dark ? 0.10 : 0.12)))
-            for lufs: Float in [-12, -24] {
-                context.fill(Path(CGRect(x: rect.minX, y: y(lufs), width: rect.width, height: 0.5)), with: .color(Theme.hairline.opacity(0.08)))
+            if showsBand { context.fill(Path(band), with: .color(Theme.sage.opacity(Theme.dark ? 0.12 : 0.12))) }
+            // In LU the grid sits on whole steps from the target, so its labels read −6, −12…
+            let grid = unit == .lu && scale == .full
+                ? [target - 6, target - 12, target - 18].filter { levels.contains($0) } : scale.grid(target: target)
+            for lufs: Float in grid {
+                context.fill(Path(CGRect(x: rect.minX, y: y(lufs), width: rect.width, height: 0.5)), with: .color(Theme.hairline.opacity(ChartInk.major)))
             }
-            for seconds in stride(from: 5.0, to: Readouts.historySeconds, by: 5) {
-                let x = rect.maxX - CGFloat(seconds / Readouts.historySeconds) * rect.width
-                context.fill(Path(CGRect(x: x, y: rect.minY, width: 0.5, height: rect.height)), with: .color(Theme.hairline.opacity(0.07)))
+            let span = max(1, seconds)
+            let marks = HistorySpan.marks(seconds: span)
+            for mark in marks {
+                let x = rect.maxX - CGFloat(mark / span) * rect.width
+                context.fill(Path(CGRect(x: x, y: rect.minY, width: 0.5, height: rect.height)), with: .color(Theme.hairline.opacity(ChartInk.minor)))
+                context.fill(Path(CGRect(x: x, y: rect.maxY, width: 0.5, height: 4)), with: .color(Theme.hairline.opacity(ChartInk.tick)))
             }
-            let step = rect.width / CGFloat(max(1, Readouts.historyLength - 1))
+            let share = CGFloat(covered ?? Double(short.count) / Double(Readouts.historyLength))
+            let step = rect.width * min(1, share) / CGFloat(max(1, short.count - 1))
             func path(_ values: [Float]) -> Path {
                 var path = Path()
                 let start = rect.maxX - CGFloat(values.count - 1) * step
                 var drawing = false
                 for (index, value) in values.enumerated() {
-                    guard value > MeterScale.loudnessFloor - 12 else { drawing = false; continue }
+                    guard value > min(MeterScale.loudnessFloor, levels.lowerBound) - 12 else { drawing = false; continue }
                     let point = CGPoint(x: start + CGFloat(index) * step, y: min(rect.maxY, y(value)))
                     if drawing { path.addLine(to: point) } else { path.move(to: point) }
                     drawing = true
                 }
                 return path
             }
-            context.stroke(path(momentary), with: .color(Theme.ink.opacity(Theme.dark ? 0.28 : 0.30)), lineWidth: 1)
+            if showsMomentary {
+                context.stroke(path(momentary), with: .color(Theme.ink.opacity(Theme.dark ? 0.28 : 0.30)), lineWidth: 1)
+            }
             context.stroke(path(short), with: .color(Theme.sage), style: StrokeStyle(lineWidth: 1.8, lineJoin: .round))
+            // The scale in place: the two grid lines' LUFS at the left, the target at the right of its band, and the
+            // 5 s marks under the plot ("now" is the overlay at the right).
+            guard rect.height >= 40 else { return }
+            for lufs: Float in grid where abs(lufs - target) > 2.5 && rect.height >= 72 {
+                context.draw(Text(verbatim: unit.label(lufs, target: target)).font(.axis).foregroundColor(Theme.tertiary),
+                             at: CGPoint(x: rect.minX + 2, y: y(lufs) - 7), anchor: .leading)
+            }
+            context.draw(Text(verbatim: unit == .lu ? "0" : MeterScale.signedInteger(target)).font(.axis).foregroundColor(Theme.sage),
+                         at: CGPoint(x: rect.minX + 2, y: y(target + 1) - 7), anchor: .leading)
+            if rect.width >= 150 {
+                for mark in marks {
+                    let x = rect.maxX - CGFloat(mark / span) * rect.width
+                    guard x > rect.minX + 24 else { continue }
+                    context.draw(Text(verbatim: "−" + HistorySpan.label(mark)).font(.axis).foregroundColor(Theme.tertiary),
+                                 at: CGPoint(x: x, y: rect.maxY + 11), anchor: .center)
+                }
+            }
         }
-        .overlay(alignment: .topLeading) {
-            Eyebrow(L("LAST 15 S"), color: Theme.tertiary).padding(.top, 7).padding(.leading, 9)
+        .overlay(alignment: .top) {
+            CardTitle(title: title ?? L("LAST 15 S"), model: model, panel: panel, settings: panel == nil ? nil : .history)
         }
         .overlay(alignment: .bottomTrailing) {
-            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary).padding(.bottom, 5).padding(.trailing, 8)
+            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary)
+                .padding(.bottom, PanelPlate.inset + 6).padding(.trailing, PanelPlate.inset + 8)
         }
-        .background { WellSurface() }
-        .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+        .background { PanelPlate() }
+        .background { CardSurface() }
+    }
+}
+
+/// How much time the history plot spans: the last 15 s, 1 or 5 minutes, or the whole measurement since the last reset.
+enum HistorySpan: String, CaseIterable {
+    case fifteen, minute, five, session
+
+    static let key = "history.span"
+
+    var seconds: Double? {
+        switch self {
+        case .fifteen: return 15
+        case .minute: return 60
+        case .five: return 300
+        case .session: return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .fifteen: return L("15 s")
+        case .minute: return L("1 min")
+        case .five: return L("5 min")
+        case .session: return L("Session")
+        }
+    }
+
+    /// The panel's title.
+    var heading: String {
+        switch self {
+        case .fifteen: return L("LAST 15 S")
+        case .minute: return L("LAST 1 MIN")
+        case .five: return L("LAST 5 MIN")
+        case .session: return L("SESSION")
+        }
+    }
+
+    /// Time marks back from now, about three to five across the span.
+    static func marks(seconds: Double) -> [Double] {
+        let steps: [Double] = [5, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200]
+        let step = steps.first { seconds / $0 <= 5 } ?? 7200
+        return Array(stride(from: step, to: seconds, by: step))
+    }
+
+    static func label(_ seconds: Double) -> String {
+        seconds < 60 ? L("%d s", Int(seconds))
+            : seconds < 3600 ? L("%d min", Int(seconds / 60)) : L("%d h", Int(seconds / 3600))
+    }
+}
+
+/// The LAST 15 S plot's loudness scale: the summary's full −36…0 LUFS, or 18 LU around the target.
+enum HistoryScale: String, CaseIterable {
+    case full, close
+
+    static let key = "history.scale"
+    static let momentaryKey = "history.momentary"
+    static let bandKey = "history.targetBand"
+
+    var title: String {
+        switch self {
+        case .full: return L("Full")
+        case .close: return L("Close")
+        }
+    }
+
+    func span(target: Float) -> ClosedRange<Float> {
+        switch self {
+        case .full: return MeterScale.loudnessFloor...0
+        case .close: return (target - 12)...(target + 6)
+        }
+    }
+
+    /// Grid lines: −12 and −24 LUFS on the full scale; every 6 LU from the target on the close one.
+    func grid(target: Float) -> [Float] {
+        switch self {
+        case .full: return [-12, -24]
+        case .close: return [target + 6, target - 6, target - 12]
+        }
     }
 }
 
@@ -605,21 +1211,39 @@ struct WaveformPanel: View {
     let layout: SpeakerLayout
     let format: ChannelFormat
     let activeRoles: [Bool]
+    @AppStorage(DisplayOptions.waveSecondsKey) private var waveSeconds = 4
+    @AppStorage(WaveScale.key) private var scaleKey = WaveScale.linear.rawValue
+    @State private var pointer: CGPoint? = Diagnostics.waveProbePoint
 
     var body: some View {
+        let seconds = DisplayOptions.waveChoices.contains(waveSeconds) ? waveSeconds : 4
+        let scale = WaveScale(rawValue: scaleKey) ?? .linear
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                WaveHeader(layout: layout, format: format)
+                WaveHeader(model: model, format: format, layout: layout)
                 GeometryReader { proxy in
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .waveform, model: model)
                         WaveformLabels(size: proxy.size, speakers: layout.speakers, mix: FormatMix(format),
-                                       activeRoles: activeRoles)
+                                       activeRoles: activeRoles, scale: scale, seconds: seconds)
+                        if let pointer {
+                            WaveformCursor(size: proxy.size, point: pointer, speakers: layout.speakers, mix: FormatMix(format),
+                                           activeRoles: activeRoles, seconds: seconds)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        // A held diagnostic point is not moved by the real pointer.
+                        guard Diagnostics.waveProbePoint == nil else { return }
+                        switch phase {
+                        case .active(let point): pointer = point
+                        case .ended: pointer = nil
+                        }
                     }
                     .animation(.formatShift, value: format)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -627,6 +1251,7 @@ struct WaveformPanel: View {
 
 /// The Soundstage card: the top-down room of the current format, with its own header and well.
 struct SoundstagePanel: View {
+    @ObservedObject private var l10n = Localizer.shared
     let model: MeterModel
     let activeRoles: [Bool]
     let format: ChannelFormat
@@ -636,20 +1261,42 @@ struct SoundstagePanel: View {
     /// The room's band markers in Immersive; hidden with the BANDS menu's Off.
     @AppStorage(DisplayOptions.bandMarkersKey) private var markers = true
 
+    @AppStorage(DisplayOptions.domeBandsKey) private var domeBands = DisplayOptions.storedDomeBands.rawValue
+    @AppStorage(DisplayOptions.domeCentroidKey) private var domeCentroid = true
+    /// While a drag or pinch turns or zooms the dome, which hides the pointer's reading (the camera itself lives with
+    /// `DomeCamera`, so a drag does not re-render this panel).
+    @State private var dragging = false
+    @State private var probeLocation: CGPoint? = Diagnostics.domeProbePoint
+
+    private var domeOptions: DisplayOptions {
+        var options = model.displayOptions
+        options.domeBands = domeChoice
+        options.domeCentroid = domeCentroid
+        return options
+    }
+
+    private var domeChoice: BandChoice { BandChoice(rawValue: domeBands) ?? BandChoice(.overall) }
+    private var stageChoice: BandChoice { BandChoice(rawValue: bands) ?? BandChoice(.five) }
+
     var body: some View {
-        let resolution = StereoBands.Resolution(rawValue: bands) ?? .five
+        let resolution = stageChoice.resolution
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                StageHeader(format: format, layout: layout) {
-                    // Mono has neither the stereometer nor the band map.
-                    if format != .mono {
-                        BandSwitch(selection: resolution, select: {
-                            bands = $0.rawValue
-                            model.stageBands = $0
-                        }, markers: format == .spatial ? markers : nil, setMarkers: {
-                            markers = $0
-                            model.displayOptions.bandMarkers = $0
-                        })
+                StageHeader(model: model) {
+                    // One BANDS capsule in every mode: the split and each band of it alone. In Immersive its menu also
+                    // switches the dome's view, which otherwise lives in the panel's settings.
+                    if format == .spatial {
+                        BandChoiceMenu(choice: domeChoice, select: { choice in
+                            domeBands = choice.rawValue; model.displayOptions.domeBands = choice
+                        }, help: L("Show the full band, 3 or 5 bands in their colours, or one band alone in the dome.")) {
+                            DomeViewPicker(choice: DomeCamera.shared.choice)
+                        }
+                    } else {
+                        BandChoiceMenu(choice: stageChoice, select: { choice in
+                            bands = choice.rawValue
+                            model.stageBands = choice.resolution
+                            model.displayOptions.stageSolo = choice.solo
+                        }, help: L("Stereo readings for the full band, 3 or 5 frequency bands, or one band alone")) { EmptyView() }
                     }
                 }
                 GeometryReader { proxy in
@@ -657,13 +1304,60 @@ struct SoundstagePanel: View {
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .soundstage, model: model)
                         SoundstageStaticLabels(size: proxy.size, mix: FormatMix(format), layout: layout,
-                                               activeRoles: activeRoles, part: .room, resolution: resolution, markers: markers)
+                                               activeRoles: activeRoles, part: .room, resolution: resolution, solo: stageChoice.solo,
+                                               markers: markers, domeOptions: domeOptions)
+                        if format != .spatial {
+                            StageReadings(readouts: model.readouts, mono: format == .mono, choice: stageChoice, running: model.running || model.frozen)
+                                .padding(.horizontal, 14).padding(.bottom, 10)
+                                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .bottom)
+                                .transition(.opacity)
+                        }
+                        if format == .spatial, !dragging, let location = probeLocation {
+                            TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
+                                if let probe = (SceneStore.existing(.soundstage) as? SoundstageScene)?
+                                    .domeProbe(at: location, layout: layout) {
+                                    DomeProbeTag(probe: probe)
+                                        .position(x: min(max(location.x, 120), proxy.size.width - 120),
+                                                  y: location.y > 40 ? location.y - 22 : location.y + 24)
+                                }
+                            }
+                            .allowsHitTesting(false)
+                        }
                     }
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        // A held diagnostic point is not moved by the real pointer.
+                        guard Diagnostics.domeProbePoint == nil else { return }
+                        switch phase {
+                        case .active(let point): probeLocation = point
+                        case .ended: probeLocation = nil
+                        }
+                    }
+                    // Drag across to orbit, up and down to raise or lower the camera; in the Front and Isometric views
+                    // the drag carries on in the Dome view from that camera, the Top view turns, the Side view stays.
+                    // Scroll or pinch to zoom; a double-click returns to the default view.
+                    .gesture(DragGesture(minimumDistance: 4).onChanged { value in
+                        guard format == .spatial else { return }
+                        if !dragging { dragging = true }
+                        DomeCamera.shared.drag(translation: value.translation)
+                    }.onEnded { _ in
+                        dragging = false
+                        DomeCamera.shared.endDrag()
+                    })
+                    .simultaneousGesture(MagnificationGesture().onChanged { scale in
+                        guard format == .spatial else { return }
+                        DomeCamera.shared.pinch(scale: scale)
+                    }.onEnded { _ in DomeCamera.shared.endPinch() })
+                    // A double-click glides back to the default view.
+                    .simultaneousGesture(TapGesture(count: 2).onEnded {
+                        guard format == .spatial else { return }
+                        DomeCamera.shared.reset()
+                    })
                     .animation(.formatShift, value: format)
                     .animation(.formatShift, value: resolution)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -721,7 +1415,11 @@ struct ChannelLevelsPanel: View {
         let resolution = StereoBands.Resolution(rawValue: bands) ?? .five
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
-                PanelHeader(title: L("CHANNEL LEVELS"), detail: "dBFS") { MeterLegend() }
+                PanelHeader(title: L("CHANNEL LEVELS")) {
+                    // The key to the bars, while the title row has room for it.
+                    ViewThatFits(in: .horizontal) { MeterLegend(); Color.clear.frame(width: 0, height: 0) }
+                    PanelSettingsButton(panel: .levels, model: model)
+                        }
                 GeometryReader { proxy in
                     let mix = FormatMix(format)
                     ZStack(alignment: .topLeading) {
@@ -733,9 +1431,10 @@ struct ChannelLevelsPanel: View {
                         ClipLightTargets(readouts: readouts, size: proxy.size, mix: mix, layout: layout,
                                          lanes: CGFloat(resolution.count), clear: model.resetTruePeak)
                         // The correlation section's own switcher, in its title row (Stereo only, like the section).
-                        if format == .stereo {
-                            let area = SoundstageLayout(size: proxy.size, presence: 0, mono: 0, layout: layout, part: .levels,
-                                                        lanes: CGFloat(resolution.count)).correlationArea
+                        // A narrow section (the strip's side-by-side well) leaves the choice to the panel's settings.
+                        let area = SoundstageLayout(size: proxy.size, presence: 0, mono: 0, layout: layout, part: .levels,
+                                                    lanes: CGFloat(resolution.count)).correlationArea
+                        if format == .stereo, area.width >= 380 {
                             BandSwitch(selection: resolution) {
                                 bands = $0.rawValue
                                 model.levelsBands = $0
@@ -749,8 +1448,8 @@ struct ChannelLevelsPanel: View {
                     .animation(.formatShift, value: format)
                     .animation(.formatShift, value: resolution)
                 }
-                .background { WellSurface() }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
+                .background { PlotPlate() }
             }
         }
     }
@@ -797,6 +1496,34 @@ struct BandSwitch: View {
     }
 }
 
+/// The Soundstage's BANDS capsule (`BandChoice`): the split, then each band of it alone, checked when chosen;
+/// `extra` adds further sections (Immersive's view).
+struct BandChoiceMenu<Extra: View>: View {
+    let choice: BandChoice
+    let select: (BandChoice) -> Void
+    let help: String
+    @ViewBuilder var extra: () -> Extra
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        SummaryMenu(title: L("BANDS"), value: choice.title, help: help) {
+            Picker(L("Frequency bands"), selection: Binding<StereoBands.Resolution?>(
+                get: { choice.solo == nil ? choice.resolution : nil },
+                set: { resolution in if let resolution { withAnimation(.formatShift) { select(BandChoice(resolution)) } } })) {
+                ForEach(StereoBands.Resolution.allCases, id: \.self) { Text(verbatim: $0.title).tag(Optional($0)) }
+            }
+            Picker(L("Single band"), selection: Binding<BandChoice?>(
+                get: { choice.solo == nil ? nil : choice },
+                set: { single in if let single { withAnimation(.formatShift) { select(single) } } })) {
+                ForEach(choice.singles, id: \.self) { single in
+                    Text(verbatim: BandChoice.range(single.resolution, single.solo ?? 0)).tag(Optional(single))
+                }
+            }
+            extra()
+        }
+    }
+}
+
 /// Where the live spectrum sits beside the spectrogram. On the left the whole pair mirrors: the waterfall's
 /// newest column meets the spectrum at the waterfall's left edge, and the spectrum's levels rise toward the keys.
 enum SpectrumSide: String, CaseIterable {
@@ -832,6 +1559,14 @@ enum LoudnessReading: String, CaseIterable {
         case .integrated: return L("INTEGRATED LOUDNESS")
         }
     }
+    /// The standard abbreviation (EBU Tech 3341): M, S, I.
+    var abbreviation: String {
+        switch self {
+        case .momentary: return "M"
+        case .shortTerm: return "S"
+        case .integrated: return "I"
+        }
+    }
     /// On a tile.
     var tileTitle: String {
         switch self {
@@ -854,14 +1589,68 @@ struct DisplayOptions: Equatable {
     var spectrumSide = SpectrumSide.right
     /// The live spectrum's per-band peak dashes.
     var peakHolds = true
-    /// Seconds across the Waveform lanes.
+    /// Seconds across the Waveform lanes, and their vertical scale.
     var waveSeconds = 4
+    var waveScale = WaveScale.linear
     /// The Immersive room's band markers (the BANDS menu's Off hides them).
     var bandMarkers = true
+    /// The levels the spectrogram's colors span, and the display slope of the spectrum and spectrogram.
+    var spectrogramRange = SpectrogramRange.standard
+    var spectrogramColors = SpectrogramColors.heat
+    var tilt = SpectrumTilt.flat
+    /// The live spectrum's long-term average since the last reset.
+    var averageSpectrum = true
+    /// How quickly the live spectrum follows the sound.
+    var spectrumResponse = SpectrumResponse.medium
+    /// Seconds across the spectrogram.
+    var spectrogramSpan = SpectrogramSpan.auto
+    /// Smoothing of the live spectrum across frequency.
+    var spectrumSmoothing = SpectrumSmoothing.sixth
+    /// Classic or reassigned spectrogram, drawn flat or in 3D.
+    var spectrogramAnalysis = SpectrogramAnalysis.classic
+    var spectrogramView = SpectrogramView.flat
+    var domeView = DomeView.perspective
+    /// The Immersive dome's bands, and the Stereo/Mono stereometer's single band (nil: every band of its split).
+    var domeBands = BandChoice(.overall)
+    var stageSolo: Int?
+    /// The programme's energy centre in the dome, as the stereometer's focal dot; on unless turned off.
+    var domeCentroid = true
+    var domeYaw = 0.0
+    var domePitch = DomeGeometry.defaultPitch
+    var domeZoom = 1.0
+    /// The pose the window's camera shows (`DomeCamera`), its turn continuous; nil derives it from the fields above.
+    var domePose: DomePose?
+    /// Counts the camera's glides, so the canvas glides with the labels (`DomePoseSpring`).
+    var domeGlides = 0
+    /// The pose to draw: the window's, or the one the fields stand for.
+    var cameraPose: DomePose { domePose ?? DomePose(view: domeView, yaw: domeYaw, pitch: domePitch, zoom: domeZoom) }
+    /// The Immersive nebula's display settings.
+    var nebula = NebulaSettings()
+    /// Channel Levels' peak-hold marks: seconds held (0: until reset) and the release after it.
+    var levelsHold = PeakHoldTime.standard
+    var levelsRelease = PeakRelease.normal
+
+    static let domeBandsKey = "soundstage.domeBands"
+    /// Build 76's dome band (−1 full, −2 all five, 0…4 one band), read once when the new key is unset.
+    static let legacyDomeBandKey = "soundstage.domeBand"
+    static let stageBandsKey = "soundstage.bands"
+
+    static var storedDomeBands: BandChoice {
+        let defaults = UserDefaults.standard
+        if let choice = defaults.string(forKey: domeBandsKey).flatMap(BandChoice.init(rawValue:)) { return choice }
+        guard defaults.object(forKey: legacyDomeBandKey) != nil else { return BandChoice(.overall) }
+        let band = defaults.integer(forKey: legacyDomeBandKey)
+        return band == -1 ? BandChoice(.overall) : (band == -2 ? BandChoice(.five) : BandChoice(.five, solo: band))
+    }
+    static let domeCentroidKey = "soundstage.domeCentroid"
+    static let domeYawKey = "soundstage.domeYaw"
+    static let domePitchKey = "soundstage.domePitch"
+    static let domeZoomKey = "soundstage.domeZoom"
 
     static let peakHoldsKey = "spectrum.peakHolds"
     static let waveSecondsKey = "waveform.seconds"
     static let bandMarkersKey = "soundstage.bandMarkers"
+    static let averageSpectrumKey = "spectrum.average"
     static let waveChoices = [2, 4, 8]
 
     static var stored: DisplayOptions {
@@ -870,12 +1659,78 @@ struct DisplayOptions: Equatable {
         return DisplayOptions(spectrumSide: .stored,
                               peakHolds: defaults.object(forKey: peakHoldsKey) == nil ? true : defaults.bool(forKey: peakHoldsKey),
                               waveSeconds: waveChoices.contains(seconds) ? seconds : 4,
-                              bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey))
+                              waveScale: .stored,
+                              bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
+                              spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored,
+                              averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
+                              spectrumResponse: .stored, spectrogramSpan: .stored, spectrumSmoothing: .stored,
+                              spectrogramAnalysis: .stored, spectrogramView: .stored,
+                              domeView: DomeView(rawValue: defaults.string(forKey: DomeView.key) ?? "") ?? .perspective,
+                              domeBands: storedDomeBands,
+                              stageSolo: defaults.string(forKey: stageBandsKey).flatMap(BandChoice.init(rawValue:))?.solo,
+                              domeCentroid: defaults.object(forKey: domeCentroidKey) == nil ? true : defaults.bool(forKey: domeCentroidKey),
+                              domeYaw: defaults.double(forKey: domeYawKey),
+                              domePitch: defaults.object(forKey: domePitchKey) == nil ? DomeGeometry.defaultPitch : defaults.double(forKey: domePitchKey),
+                              domeZoom: defaults.object(forKey: domeZoomKey) == nil ? 1
+                                  : min(DomeGeometry.zoomRange.upperBound, max(DomeGeometry.zoomRange.lowerBound, defaults.double(forKey: domeZoomKey))),
+                              nebula: .stored, levelsHold: .stored, levelsRelease: .stored)
+    }
+}
+
+/// How long Channel Levels holds each channel's peak mark before it falls.
+enum PeakHoldTime: String, CaseIterable {
+    case short, standard, long, infinite
+
+    static let key = "levels.hold"
+    static var stored: PeakHoldTime { PeakHoldTime(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .standard }
+
+    /// Seconds; nil holds until a reset.
+    var seconds: Float? {
+        switch self {
+        case .short: return 0.5
+        case .standard: return 1.5
+        case .long: return 3
+        case .infinite: return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .short: return L("%@ s", "0.5")
+        case .standard: return L("%@ s", "1.5")
+        case .long: return L("%@ s", "3")
+        case .infinite: return "∞"
+        }
+    }
+}
+
+/// How fast a held peak mark falls once its hold has passed: fast, the meter's own 20 dB/s, or a PPM's slow return
+/// (24 dB in 2.8 s, IEC 60268-10 Type II).
+enum PeakRelease: String, CaseIterable {
+    case fast, normal, ppm
+
+    static let key = "levels.release"
+    static var stored: PeakRelease { PeakRelease(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .normal }
+
+    var decibelsPerSecond: Float {
+        switch self {
+        case .fast: return 40
+        case .normal: return 20
+        case .ppm: return 24 / 2.8
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .fast: return L("Fast")
+        case .normal: return L("Normal")
+        case .ppm: return "PPM"
+        }
     }
 }
 
 /// How the Stereo stereometer draws each band: the sample cloud, the outline of where the band's samples reach,
-/// or that outline over a tinted fill. Chosen in Settings › Metering.
+/// or that outline over a tinted fill. Chosen in the panel's settings.
 enum StageStyle: String, CaseIterable {
     case dots, outline, filled
 
@@ -891,40 +1746,134 @@ enum StageStyle: String, CaseIterable {
     }
 }
 
-/// A segmented switch for the panels, built and behaving exactly like the toolbar's Stereo | Immersive switch:
-/// the system segmented control (Liquid Glass on macOS 26, with its own sliding selection) on a glass capsule
-/// lightly tinted with the accent, the selection in the app's accent. Each segment carries its full name for
-/// VoiceOver.
+/// A row of choices on a glass capsule, the chosen one a solid ink pill that slides between them: the toolbar's
+/// Stereo | Immersive switch (`large`) and every choice in the panels' settings. Each segment is a plain button
+/// sized to its label, so nothing is cropped in any language, and carries its full name for VoiceOver.
 struct GlassSegments<Value: Hashable>: View {
     let label: String
     /// Value, the title shown, and the full name for accessibility.
     let options: [(Value, String, String)]
     let selection: Value
     let select: (Value) -> Void
+    var large = false
+    @Namespace private var thumb
+    @State private var hovered: Value?
 
+    /// A recessed capsule track holding the choices; the chosen one is a lit plate (cream on dark, white on light, with
+    /// a halo in both) that slides to it, the others lift under the pointer. The same shape as the toolbar's docks.
     var body: some View {
-        Picker(label, selection: Binding(get: { selection }, set: { choice in
-            withAnimation(.formatShift) { select(choice) }
-        })) {
+        let height: CGFloat = large ? 24 : 20
+        let inner = height / 2
+        let outer = inner + 2
+        HStack(spacing: 1) {
             ForEach(options, id: \.0) { value, title, name in
-                Text(verbatim: title).accessibilityLabel(name).tag(value)
+                let chosen = value == selection
+                Button {
+                    guard !chosen else { return }
+                    withAnimation(.formatShift) { select(value) }
+                } label: {
+                    Text(verbatim: title)
+                        .font(.system(size: large ? 13 : 11, weight: chosen ? .semibold : .medium))
+                        .foregroundStyle(chosen ? Theme.onLit : (hovered == value ? Theme.ink : Theme.secondary))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, large ? 13 : 10)
+                        .frame(height: height)
+                        .background {
+                            let shape = RoundedRectangle(cornerRadius: inner, style: .continuous)
+                            if chosen {
+                                shape.fill(Theme.lit)
+                                    .shadow(color: Theme.litHalo, radius: 6)
+                                    .shadow(color: .black.opacity(Theme.dark ? 0.0 : 0.16), radius: 2, y: 1)
+                                    .matchedGeometryEffect(id: "thumb", in: thumb)
+                            } else if hovered == value {
+                                shape.fill(Theme.controlHover)
+                            }
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: inner, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .onHover { inside in hovered = inside ? value : (hovered == value ? nil : hovered) }
+                .accessibilityLabel(name)
+                .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.small)
-        // Inside a panel the selected segment is filled with the tint; left to the system it would take the
-        // macOS accent (blue by default) instead of the app's.
-        .tint(Theme.sage)
-        .fixedSize()
         .padding(2)
-        .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.12 : 0.08))
+        .fixedSize()
+        .background { DockTrack(radius: outer) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+    }
+}
+
+/// The recessed capsule a group of controls sits in: the segments' track and the toolbar's docks. A hairline of
+/// shadow at its top edge and of light at its bottom edge set it into the surface.
+struct DockTrack: View {
+    var radius: CGFloat
+    var tint: Color? = nil
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let dark = Theme.dark
+        shape.fill(tint ?? Theme.trackFill)
+            .overlay {
+                shape.strokeBorder(LinearGradient(colors: [Theme.hairline.opacity(dark ? 0.0 : 0.08),
+                                                           Color.white.opacity(dark ? 0.10 : 0.9)],
+                                                  startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
+            }
+    }
+}
+
+/// A round button: an icon on a disc that fills under the pointer and lights (`Theme.lit`) when its state is on, with
+/// a halo on dark. The toolbar's transport and window buttons and the panels' settings buttons are all this one shape.
+struct DiscButton: View {
+    let symbol: String
+    let help: String
+    var diameter: CGFloat = Theme.dockButton
+    /// The state the button shows: lit while on.
+    var on = false
+    /// A solid fill in a meaning colour instead of the lit plate (the resume button in the accent); nil otherwise.
+    var fill: Color? = nil
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: diameter * 0.42, weight: .semibold))
+                .foregroundStyle(fill != nil ? Theme.onAction : (on ? Theme.onLit : (hovering ? Theme.ink : Theme.secondary)))
+                .frame(width: diameter, height: diameter)
+                .background {
+                    if let fill {
+                        Circle().fill(fill)
+                            .shadow(color: Theme.glow(fill, 0.6), radius: 10)
+                            .shadow(color: .black.opacity(Theme.dark ? 0 : 0.18), radius: 2, y: 1)
+                    } else if on {
+                        Circle().fill(Theme.lit)
+                            .shadow(color: Theme.litHalo, radius: 11)
+                            .shadow(color: .black.opacity(Theme.dark ? 0 : 0.18), radius: 2, y: 1)
+                    } else {
+                        Circle().fill(hovering ? Theme.controlHover : Theme.controlFill)
+                            .overlay {
+                                Circle().strokeBorder(LinearGradient(colors: [Color.white.opacity(Theme.dark ? 0.12 : 0.9),
+                                                                              Color.white.opacity(Theme.dark ? 0.0 : 0.2)],
+                                                                     startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
+                            }
+                    }
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.15), value: on)
+        .animation(.easeOut(duration: 0.15), value: fill == nil)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
 /// Key to the Channel Levels bars, drawn with the same shapes and colours: the solid RMS fill, the translucent
 /// peak behind it and the ink peak-hold mark.
-private struct MeterLegend: View {
+struct MeterLegend: View {
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
@@ -935,6 +1884,7 @@ private struct MeterLegend: View {
         }
         .font(.system(size: 10)).foregroundStyle(Theme.secondary)
         .lineLimit(1)
+        .fixedSize()
     }
 
     private func item<Mark: View>(_ label: Text, @ViewBuilder mark: () -> Mark) -> some View {
@@ -943,47 +1893,52 @@ private struct MeterLegend: View {
 }
 
 private struct WaveHeader: View {
-    let layout: SpeakerLayout
+    let model: MeterModel
     let format: ChannelFormat
+    let layout: SpeakerLayout
     @ObservedObject private var l10n = Localizer.shared
-    @AppStorage(DisplayOptions.waveSecondsKey) private var seconds = 4
+
+    var body: some View {
+        // Each lane names its channel, so the title stands alone.
+        PanelHeader(title: L("WAVEFORM")) {
+            ViewThatFits(in: .horizontal) { WaveformKey(format: format, layout: layout); Color.clear.frame(width: 0, height: 0) }
+            PanelSettingsButton(panel: .waveform, model: model)
+        }
+    }
+}
+
+private struct StageHeader<Trailing: View>: View {
+    let model: MeterModel
+    @ViewBuilder var trailing: Trailing
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        // The title never truncates; the band switch drops to its short labels first.
+        PanelHeader(title: L("SOUNDSTAGE")) {
+            trailing.layoutPriority(1)
+            PanelSettingsButton(panel: .soundstage)
+        }
+    }
+}
+
+/// The key to the waveform's lane colours: left-side channels in the accent, right-side in sand, the upper layer and
+/// LFE in their own hues, and the clip colour.
+struct WaveformKey: View {
+    let format: ChannelFormat
+    let layout: SpeakerLayout
+    @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         let spatial = format == .spatial
-        PanelHeader(title: L("WAVEFORM"), detail: "\(spatial ? layout.name : (format == .mono ? "M" : "L/R")) · \(DisplayOptions.waveChoices.contains(seconds) ? seconds : 4) s · " + L("linear") + " · " + L("min/max")) {
+        HStack(spacing: 10) {
             LegendDot(color: Theme.sage, text: spatial ? L("Left side") : (format == .mono ? L("Mono") : L("Left")))
             if format != .mono { LegendDot(color: Theme.sand, text: spatial ? L("Right side") : L("Right")) }
-            // Left out, not faded, outside Immersive: hidden entries kept their width and pushed the legend off
-            // the trailing edge.
             if spatial {
                 if layout.heightCount > 0 { LegendDot(color: Theme.heather, text: L("Height")) }
                 if layout.hasLFE { LegendDot(color: Theme.clay, text: "LFE") }
             }
             LegendDot(color: Theme.ember, text: L("Clip"))
         }
-    }
-}
-
-private struct StageHeader<Trailing: View>: View {
-    let format: ChannelFormat
-    let layout: SpeakerLayout
-    @ViewBuilder var trailing: Trailing
-    @ObservedObject private var l10n = Localizer.shared
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            // The title and format never truncate; the band switch drops to its short labels first.
-            Eyebrow(L("SOUNDSTAGE")).fixedSize()
-            Text(verbatim: format == .spatial ? layout.name : format.title)
-                .font(.system(size: 10, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(Theme.sage)
-                .padding(.horizontal, 6).padding(.vertical, 1)
-                .background(Capsule().fill(Theme.sage.opacity(0.13)))
-                .fixedSize()
-            Spacer(minLength: 4)
-            trailing.layoutPriority(1)
-        }
-        .padding(.horizontal, 4)
     }
 }
 
@@ -1001,10 +1956,13 @@ private struct LegendDot: View {
 
 /// Channel names beside each lane and −6 dBFS marks at its half-deflection lines, animated with `presence`.
 private struct WaveformLabels: View, Animatable {
+    @ObservedObject private var l10n = Localizer.shared
     let size: CGSize
     let speakers: [Speaker]
     var mix: FormatMix
     let activeRoles: [Bool]
+    let scale: WaveScale
+    let seconds: Int
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
         get { mix.animatableData }
@@ -1031,17 +1989,119 @@ private struct WaveformLabels: View, Animatable {
                     .opacity(dissolve(weight) * (lane.height >= 6 ? 1 : 0))
                     .position(x: scope.minX - 4 - (WaveformLayout.gutter - 8) / 2, y: lane.midY)
                 if lane.height >= WaveformLayout.labelledLane {
-                    ForEach([CGFloat(0.5), -0.5], id: \.self) { amplitude in
-                        Text("−6")
-                            .font(.axis)
-                            .foregroundStyle(Theme.tertiary)
-                            .opacity(dissolve(weight))
-                            .position(x: scope.maxX + WaveformLayout.scaleColumn / 2, y: layout.laneY(index, amplitude: amplitude))
+                    // The lane's level scale in dBFS: full scale at the top edge, the marks on both halves.
+                    ForEach(scale.labelled(laneHeight: lane.height), id: \.self) { db in
+                        let at = CGFloat(scale.deflection(decibels: db))
+                        ForEach(db == 0 ? [CGFloat(1)] : [1, -1], id: \.self) { side in
+                            Text(verbatim: db == 0 ? "0" : "−\(Int(-db))")
+                                .font(.axis)
+                                .foregroundStyle(db == 0 ? Theme.secondary : Theme.tertiary)
+                                .opacity(dissolve(weight))
+                                .position(x: scope.maxX + WaveformLayout.scaleColumn / 2,
+                                          y: layout.laneY(index, amplitude: at * side) + (db == 0 ? 5 : 0))
+                        }
+                    }
+                }
+            }
+            // The time ruler: whole seconds back from now, every other one on the 8 s span.
+            let step = seconds > 4 ? 2 : 1
+            ForEach(Array(Swift.stride(from: step, to: seconds, by: step)), id: \.self) { second in
+                Text(verbatim: "−\(second)s").font(.axis).foregroundStyle(Theme.tertiary).fixedSize()
+                    .position(x: layout.x(secondsAgo: Double(second), seconds: Double(seconds)),
+                              y: scope.maxY + WaveformLayout.ruler / 2 + 1)
+            }
+            Text(L("now")).font(.axis).foregroundStyle(Theme.tertiary).fixedSize()
+                .position(x: scope.maxX - 10, y: scope.maxY + WaveformLayout.ruler / 2 + 1)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// The pointer over the Waveform: a cursor through every lane at that moment, and a tag with how long ago it was
+/// and the sample peak there in dBFS, read from the columns the lanes draw: every lane in Stereo and Mono, the
+/// lane under the pointer when there are more. Pause to read a moment at leisure.
+private struct WaveformCursor: View {
+    let size: CGSize
+    let point: CGPoint
+    let speakers: [Speaker]
+    let mix: FormatMix
+    let activeRoles: [Bool]
+    let seconds: Int
+
+    var body: some View {
+        let layout = WaveformLayout(size: size, speakers: speakers, presence: mix.presence, mono: mix.mono)
+        let scope = layout.waveform
+        if scope.insetBy(dx: -1, dy: -1).contains(point) {
+            let x = min(max(point.x, scope.minX), scope.maxX)
+            let ago = max(0, layout.secondsAgo(x: x, seconds: Double(seconds)))
+            // About one point of history, the window the lanes draw a pixel from.
+            let window = Double(seconds) / Double(max(1, scope.width))
+            let hovered = layout.lane(at: point.y)
+            let shown = layout.lanes.indices.filter { layout.lanes[$0].height >= 6 && activeRoles[speakers[$0].role] }
+            let read = shown.count <= 2 ? shown : (hovered.map { [$0] } ?? [])
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(Theme.ink.opacity(0.45)).frame(width: 1, height: scope.height)
+                    .position(x: x, y: scope.midY)
+                TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
+                    let scene = SceneStore.existing(.waveform) as? WaveformScene
+                    let readings: [WaveformProbeTag.Reading] = read.map { index in
+                        let speaker = speakers[index]
+                        return WaveformProbeTag.Reading(name: speaker.displayName(mono: mix.mono), hue: Theme.laneRGB(speaker),
+                                                        peak: scene?.peak(role: speaker.role, secondsAgo: ago, window: window))
+                    }
+                    WaveformProbeTag(secondsAgo: ago, readings: readings)
+                        .position(x: min(max(x, scope.minX + 100), scope.maxX - 100), y: scope.minY + 12)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// The Waveform cursor's readout: time before now, then each read lane's name and sample peak (OVER past full scale).
+private struct WaveformProbeTag: View {
+    struct Reading {
+        let name: String
+        let hue: Theme.RGB
+        let peak: Float?
+    }
+    let secondsAgo: Double
+    let readings: [Reading]
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        let font = Font.caption2.weight(.medium).monospacedDigit()
+        HStack(spacing: 7) {
+            Text(verbatim: secondsAgo < 0.005 ? L("now") : String(format: "−%.2f s", secondsAgo))
+                .font(font).foregroundStyle(Theme.secondary)
+            ForEach(Array(readings.enumerated()), id: \.offset) { _, reading in
+                HStack(spacing: 3) {
+                    Text(verbatim: reading.name).font(font.weight(.semibold)).foregroundStyle(reading.hue.color)
+                    if let peak = reading.peak, peak >= 1 {
+                        Text(L("OVER")).font(font.weight(.bold)).foregroundStyle(Theme.ember)
+                    } else if let peak = reading.peak, peak > 0.000_001 {
+                        Text(verbatim: MeterScale.tenths(20 * log10(peak), floor: -120) + " dBFS").font(font).foregroundStyle(Theme.ink)
+                    } else {
+                        Text(verbatim: "−∞").font(font).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
         }
-        .allowsHitTesting(false)
+        .lineLimit(1).fixedSize()
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background { BadgeSurface() }
+    }
+}
+
+/// The dome's views in the BANDS menu, checked at the current one; picking one glides there (`DomeCamera`).
+private struct DomeViewPicker: View {
+    @ObservedObject var choice: DomeViewChoice
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        Picker(L("View"), selection: Binding(get: { choice.view }, set: { DomeCamera.shared.select($0) })) {
+            ForEach(DomeView.allCases, id: \.self) { Text(verbatim: $0.title).tag($0) }
+        }
     }
 }
 
@@ -1055,8 +2115,11 @@ private struct SoundstageStaticLabels: View, Animatable {
     let activeRoles: [Bool]
     let part: SoundstageLayout.Part
     var resolution = StereoBands.Resolution.five
+    /// The stereometer's single band, if one is chosen: the legend names only it.
+    var solo: Int? = nil
     /// The room's band markers show (Immersive); the legend follows them there.
     var markers = true
+    var domeOptions = DisplayOptions()
     /// The correlation bar's lane count, animated with a band switch so labels follow the gliding bar.
     var lanes = CGFloat(StereoBands.count)
 
@@ -1071,34 +2134,22 @@ private struct SoundstageStaticLabels: View, Animatable {
         ZStack(alignment: .topLeading) {
             switch part {
             case .room:
-                roomLabels(stage)
-                    .opacity(dissolve(1 - (1 - mix.presence) * (1 - mix.mono)))
+                if mix.presence > 0.001 {
+                    DomeLabelsHost(size: size, layout: layout, options: domeOptions).opacity(dissolve(mix.presence))
+                }
                 scopeLabels(stage)
-                bandLegend(stage)
+                bandLegend(stage).opacity(dissolve(1 - mix.presence))
             case .levels: levelLabels(stage)
             }
         }
         .allowsHitTesting(false)
     }
 
-    @ViewBuilder
-    private func roomLabels(_ stage: SoundstageLayout) -> some View {
-        ForEach(Array(stage.speakers.enumerated()), id: \.offset) { index, speaker in
-            let weight = stage.weight(index)
-            Text(speaker.displayName(mono: mix.mono))
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(activeRoles[speaker.role] ? Theme.groupColor(speaker.group).opacity(0.95) : Theme.tertiary)
-                .fixedSize()
-                .blur(radius: (1 - weight) * 3)
-                .opacity(stage.showsRoomLabel(speaker) ? dissolve(weight) : 0)
-                .position(stage.label(speaker))
-        }
-    }
-
-    /// The stereometer's labels, in Stereo: L, M and R beyond the rims and the level of the arcs along the horizon.
+    /// The stereometer's labels, in Stereo and Mono: L, M and R beyond the rims (Mono keeps M alone) and the level of
+    /// the arcs along the horizon.
     @ViewBuilder
     private func scopeLabels(_ stage: SoundstageLayout) -> some View {
-        let weight = (1 - mix.presence) * (1 - mix.mono)
+        let weight = 1 - mix.presence
         if weight > 0.001 {
             Group {
                 ForEach([(-45.0, "L"), (0, "M"), (45, "R")], id: \.0) { angle, name in
@@ -1106,6 +2157,7 @@ private struct SoundstageStaticLabels: View, Animatable {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Theme.secondary)
                         .fixedSize()
+                        .opacity(angle == 0 ? 1 : dissolve(1 - mix.mono))
                         .position(stage.scopeLabel(angle: angle))
                 }
                 // The marks sit 0.4 radius apart; a small plot (a short room) keeps the ones that stay clear.
@@ -1122,17 +2174,18 @@ private struct SoundstageStaticLabels: View, Animatable {
     }
 
     /// The band legend under the plot, shared by the stereometer (Stereo) and the room's band image (Immersive):
-    /// each band named by its lower edge, in its colour. Mono has neither, so it folds away there.
+    /// each band named by its lower edge, in its colour; a single band chosen alone is named by its range.
     @ViewBuilder
     private func bandLegend(_ stage: SoundstageLayout) -> some View {
-        let weight = (1 - mix.mono) * (markers ? 1 : 1 - mix.presence)
+        let weight = markers ? 1 : 1 - mix.presence
         if weight > 0.001, stage.showsScopeLegend {
             let legend = stage.scopeLegend
+            let groups = solo.map { $0 < resolution.count ? [$0] : [] } ?? Array(0..<resolution.count)
             HStack(spacing: 0) {
-                ForEach(0..<resolution.count, id: \.self) { group in
+                ForEach(groups, id: \.self) { group in
                     HStack(spacing: 4) {
                         Circle().fill(Theme.bandColor(resolution, group)).frame(width: 6, height: 6)
-                        Text(verbatim: resolution.label(group))
+                        Text(verbatim: solo == nil ? resolution.label(group) : BandChoice.range(resolution, group))
                             .font(.system(size: 9, weight: .medium).monospacedDigit())
                             .foregroundStyle(Theme.secondary)
                             .lineLimit(1)
@@ -1142,8 +2195,8 @@ private struct SoundstageStaticLabels: View, Animatable {
                 }
             }
             .frame(width: legend.width, height: legend.height)
-            // Keyed by resolution, so a band switch cross-fades the old legend into the new one.
-            .id(resolution)
+            // Keyed by the choice, so a band switch cross-fades the old legend into the new one.
+            .id(BandChoice(resolution, solo: solo))
             .transition(.opacity)
             .position(x: legend.midX, y: legend.midY)
             .opacity(dissolve(weight))
@@ -1230,6 +2283,56 @@ private struct SoundstageStaticLabels: View, Animatable {
     }
 }
 
+/// The stereometer's readings, set quietly in the well's lower corners, name over value: in Stereo the balance
+/// (R against L, in dB) and the width (the side channel's share of the energy), in Mono the level, each for the
+/// whole programme or for the band shown alone. Smoothed at 10 Hz (`Readouts`).
+private struct StageReadings: View {
+    @ObservedObject var readouts: Readouts
+    @ObservedObject private var l10n = Localizer.shared
+    let mono: Bool
+    let choice: BandChoice
+    let running: Bool
+
+    var body: some View {
+        let group = choice.solo.map { choice.resolution.offset + $0 } ?? StereoBands.Resolution.overall.offset
+        let values = readouts.values
+        let level = values.bandLevel[group]
+        let live = running && level > -100
+        HStack(alignment: .bottom) {
+            if mono {
+                reading(L("LEVEL"), live ? MeterScale.tenths(level, floor: -99) : "—", unit: "dBFS", alignment: .leading)
+                Spacer(minLength: 0)
+            } else {
+                let balance = live ? Self.balance(values.bandBalance[group]) : "—"
+                reading(L("BALANCE"), balance, unit: balance == "C" || balance == "—" ? "" : "dB", alignment: .leading)
+                Spacer(minLength: 0)
+                reading(L("WIDTH"), live ? "\(Int((values.bandWidth[group] * 100).rounded()))" : "—", unit: "%", alignment: .trailing)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func reading(_ name: String, _ value: String, unit: String, alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 3) {
+            Text(name).font(.system(size: 8, weight: .semibold).width(.expanded)).tracking(l10n.tracking(Tracking.eyebrow))
+                .foregroundStyle(Theme.tertiary).lineLimit(1).fixedSize()
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(verbatim: value).font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundStyle(Theme.ink)
+                if !unit.isEmpty { Text(verbatim: unit).font(.axis).foregroundStyle(Theme.tertiary) }
+            }
+            .lineLimit(1).fixedSize()
+        }
+    }
+
+    /// The energy balance as a level difference: "C" below 0.05 dB, else the louder side and by how much.
+    static func balance(_ b: Float) -> String {
+        let clamped = max(-0.999, min(0.999, b))
+        let db = 10 * log10((1 + clamped) / (1 - clamped))
+        guard abs(db) >= 0.05 else { return "C" }
+        return (db < 0 ? "L " : "R ") + String(format: "%.1f", abs(db))
+    }
+}
+
 /// Held peak over each column (the true-peak over, in ember, once a channel has gone above 0 dBTP) and the
 /// correlation section's live parts: the reading, the zone captions, what the zone means for the listener, and
 /// the level change in mono. Published at 10 Hz and animated with the columns.
@@ -1289,7 +2392,7 @@ private struct SoundstageReadouts: View, Animatable {
             text = width >= 30 ? MeterScale.tenths(peak, floor: -119) : MeterScale.signedInteger(peak)
         }
         let overs = active && over > 0
-        // An over reads as a status pill, like ON TARGET and OVER on the loudness summary.
+        // An over reads as an alarm tag, like OVER on the loudness summary: the only filled tags in the interface.
         return Text(verbatim: text)
             .font(.system(size: width >= 30 ? 10 : (width >= 20 ? 9 : 7.5), weight: overs ? .bold : .medium).monospacedDigit())
             .foregroundStyle(!active ? Theme.tertiary : (overs ? Theme.onStatus : (peak >= -3 ? Theme.ochre : Theme.ink)))
@@ -1297,7 +2400,7 @@ private struct SoundstageReadouts: View, Animatable {
             .minimumScaleFactor(0.6)
             .padding(.horizontal, overs ? 4 : 0)
             .padding(.vertical, overs ? 1 : 0)
-            .background { if overs { Capsule().fill(Theme.ember) } }
+            .background { if overs { RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Theme.ember) } }
     }
 
     private func correlation(stage: SoundstageLayout, values: Readouts.Values) -> some View {
@@ -1378,13 +2481,16 @@ private struct SoundstageReadouts: View, Animatable {
         }
     }
 
+    /// The zone as status text, like the loudness delta: a dot and the name in the zone's colour. Filled chips are
+    /// kept for alarms (overs).
     private func zoneChip(_ zone: CorrelationZone) -> some View {
-        Text(zone.title)
-            .font(.system(size: 9, weight: .bold)).tracking(l10n.tracking(0.6))
-            .foregroundStyle(Theme.onStatus)
-            .lineLimit(1).fixedSize()
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(Capsule().fill(Theme.correlationColor(zone)))
+        HStack(spacing: 5) {
+            Circle().fill(Theme.correlationColor(zone)).frame(width: 6, height: 6)
+            Text(zone.title)
+                .font(.system(size: 9, weight: .bold)).tracking(l10n.tracking(0.6))
+                .foregroundStyle(Theme.correlationColor(zone))
+                .lineLimit(1).fixedSize()
+        }
     }
 
     private var monoLabel: some View {

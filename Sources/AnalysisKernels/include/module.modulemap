@@ -1,0 +1,4 @@
+module AnalysisKernels {
+    header "AnalysisKernels.h"
+    export *
+}

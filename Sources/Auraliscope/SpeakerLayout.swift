@@ -1,21 +1,5 @@
+import AnalysisCore
 import Foundation
-
-/// Speaker roles carried by every `ChannelFrame`, in its field order. Indices 0–7 are the original 5.1.2
-/// roles, so routing saved by earlier versions keeps its meaning; 8–15 extend the layouts up to 9.1.6.
-enum Role {
-    static let count = 16
-    static let left = 0, right = 1, center = 2, lfe = 3, leftSurround = 4, rightSurround = 5
-    static let leftTopFront = 6, rightTopFront = 7, leftRearSurround = 8, rightRearSurround = 9
-    static let leftWide = 10, rightWide = 11, leftTopMiddle = 12, rightTopMiddle = 13
-    static let leftTopRear = 14, rightTopRear = 15
-
-    /// BS.1770-5 channel weights: 1.41 for ear-level channels between 60° and 120° azimuth (side
-    /// surrounds and wides), 0 for LFE, 1 elsewhere (front, rear surrounds and the whole upper layer).
-    static let loudnessWeights: [Double] = [1, 1, 1, 0, 1.41, 1.41, 1, 1, 1, 1, 1.41, 1.41, 1, 1, 1, 1]
-
-    /// Positional channels that count as spatial evidence: everything except L, R and LFE.
-    static let evidence = [2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-}
 
 enum SpeakerGroup { case front, surround, lfe, height }
 
@@ -71,6 +55,12 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
 
     func contains(_ role: Int) -> Bool { roles.contains(role) }
 
+    /// The layout with the fewest channels that holds every one of `roles` (9.1.6 holds all 16), the first in
+    /// `allCases` order among equals; nil only for roles outside `Role`.
+    static func containing(_ roles: [Int]) -> SpeakerLayout? {
+        allCases.filter { layout in roles.allSatisfy(layout.contains) }.min { $0.channelCount < $1.channelCount }
+    }
+
     /// Display order for meters and waveform lanes: front (with wides), LFE, surrounds, then heights.
     var speakers: [Speaker] { Self.speakerTable[self]! }
 
@@ -91,26 +81,32 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
         [SpeakerGroup.front, .lfe, .surround, .height].filter { group in speakers.contains { $0.group == group } }
     }
 
+    /// Positions come from the analysis' own table (`SpeakerGeometry`), so the spatial field and the speakers drawn
+    /// around it agree.
     private static func speaker(_ role: Int, side: Double) -> Speaker {
+        let azimuth = SpeakerGeometry.azimuth(role: role, sidesAtNinety: side == 90)
         switch role {
-        case Role.left: return Speaker(role: role, name: "L", group: .front, azimuth: -30)
-        case Role.right: return Speaker(role: role, name: "R", group: .front, azimuth: 30)
-        case Role.center: return Speaker(role: role, name: "C", group: .front, azimuth: 0)
+        case Role.left: return Speaker(role: role, name: "L", group: .front, azimuth: azimuth)
+        case Role.right: return Speaker(role: role, name: "R", group: .front, azimuth: azimuth)
+        case Role.center: return Speaker(role: role, name: "C", group: .front, azimuth: azimuth)
         case Role.lfe: return Speaker(role: role, name: "LFE", group: .lfe, azimuth: nil)
-        case Role.leftSurround: return Speaker(role: role, name: side == 90 ? "Lss" : "Ls", group: .surround, azimuth: -side)
-        case Role.rightSurround: return Speaker(role: role, name: side == 90 ? "Rss" : "Rs", group: .surround, azimuth: side)
-        case Role.leftTopFront: return Speaker(role: role, name: "Ltf", group: .height, azimuth: -45)
-        case Role.rightTopFront: return Speaker(role: role, name: "Rtf", group: .height, azimuth: 45)
-        case Role.leftRearSurround: return Speaker(role: role, name: "Lrs", group: .surround, azimuth: -150)
-        case Role.rightRearSurround: return Speaker(role: role, name: "Rrs", group: .surround, azimuth: 150)
-        case Role.leftWide: return Speaker(role: role, name: "Lw", group: .front, azimuth: -60)
-        case Role.rightWide: return Speaker(role: role, name: "Rw", group: .front, azimuth: 60)
-        case Role.leftTopMiddle: return Speaker(role: role, name: "Ltm", group: .height, azimuth: -90)
-        case Role.rightTopMiddle: return Speaker(role: role, name: "Rtm", group: .height, azimuth: 90)
-        case Role.leftTopRear: return Speaker(role: role, name: "Ltr", group: .height, azimuth: -135)
-        default: return Speaker(role: role, name: "Rtr", group: .height, azimuth: 135)
+        case Role.leftSurround: return Speaker(role: role, name: side == 90 ? "Lss" : "Ls", group: .surround, azimuth: azimuth)
+        case Role.rightSurround: return Speaker(role: role, name: side == 90 ? "Rss" : "Rs", group: .surround, azimuth: azimuth)
+        case Role.leftTopFront: return Speaker(role: role, name: "Ltf", group: .height, azimuth: azimuth)
+        case Role.rightTopFront: return Speaker(role: role, name: "Rtf", group: .height, azimuth: azimuth)
+        case Role.leftRearSurround: return Speaker(role: role, name: "Lrs", group: .surround, azimuth: azimuth)
+        case Role.rightRearSurround: return Speaker(role: role, name: "Rrs", group: .surround, azimuth: azimuth)
+        case Role.leftWide: return Speaker(role: role, name: "Lw", group: .front, azimuth: azimuth)
+        case Role.rightWide: return Speaker(role: role, name: "Rw", group: .front, azimuth: azimuth)
+        case Role.leftTopMiddle: return Speaker(role: role, name: "Ltm", group: .height, azimuth: azimuth)
+        case Role.rightTopMiddle: return Speaker(role: role, name: "Rtm", group: .height, azimuth: azimuth)
+        case Role.leftTopRear: return Speaker(role: role, name: "Ltr", group: .height, azimuth: azimuth)
+        default: return Speaker(role: role, name: "Rtr", group: .height, azimuth: azimuth)
         }
     }
+
+    /// Whether this layout's side surrounds sit at ±90° (`SpeakerGeometry`).
+    var sidesAtNinety: Bool { sideAzimuth == 90 }
 
     /// Name of a role inside this layout (used by routing and labels).
     func name(of role: Int) -> String { Self.speaker(role, side: sideAzimuth).name }

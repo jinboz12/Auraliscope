@@ -1,22 +1,22 @@
 import Accelerate
-import AudioRing
+import AnalysisKernels
 import Foundation
 
 /// Role-mapped audio de-interleaved once per DSP delivery: role r's `count` samples start at `base + r * stride`.
 /// Every analysis reads contiguous channels from it instead of each gathering its own copy out of the frames.
-struct PlanarBlock {
-    let base: UnsafePointer<Float>
-    let stride: Int
-    let count: Int
+package struct PlanarBlock {
+    package let base: UnsafePointer<Float>
+    package let stride: Int
+    package let count: Int
 
-    func channel(_ role: Int) -> UnsafePointer<Float> { base + role * stride }
+    package func channel(_ role: Int) -> UnsafePointer<Float> { base + role * stride }
 
     /// The `length` samples from `offset` on, with the same layout.
-    func slice(_ offset: Int, _ length: Int) -> PlanarBlock { PlanarBlock(base: base + offset, stride: stride, count: length) }
+    package func slice(_ offset: Int, _ length: Int) -> PlanarBlock { PlanarBlock(base: base + offset, stride: stride, count: length) }
 
     /// De-interleaves `roles` of `frames` into `storage` (`Role.count × capacity` floats), `capacity` frames at a
     /// time, and hands each chunk to `body`. Roles left out keep whatever `storage` held.
-    static func deinterleave(_ frames: UnsafeBufferPointer<ChannelFrame>, roles: [Int], into storage: UnsafeMutablePointer<Float>,
+    package static func deinterleave(_ frames: UnsafeBufferPointer<ChannelFrame>, roles: [Int], into storage: UnsafeMutablePointer<Float>,
                              capacity: Int, _ body: (PlanarBlock) -> Void) {
         guard let source = frames.baseAddress, !frames.isEmpty else { return }
         source.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) { samples in
@@ -34,22 +34,22 @@ struct PlanarBlock {
     }
 }
 
-struct MultichannelLevels {
-    var peak = [Float](repeating: 0, count: Role.count)
-    var rms = [Float](repeating: 0, count: Role.count)
+package struct MultichannelLevels {
+    package var peak = [Float](repeating: 0, count: Role.count)
+    package var rms = [Float](repeating: 0, count: Role.count)
     /// Highest oversampled (true) peak per role this tick, linear.
-    var truePeak = [Float](repeating: 0, count: Role.count)
-    var momentary: Float = -100
-    var shortTerm: Float = -100
-    var integrated: Float = -100
+    package var truePeak = [Float](repeating: 0, count: Role.count)
+    package var momentary: Float = -100
+    package var shortTerm: Float = -100
+    package var integrated: Float = -100
     /// EBU Tech 3342 loudness range in LU; negative until a short-term value has passed the gates.
-    var range: Float = -1
+    package var range: Float = -1
 }
 
 // ITU-R BS.1770-5 Annex 1 and Annex 3 for every role up to 9.1.6, plus the Annex 2 true-peak meter and
 // the EBU Tech 3342 loudness range. Input is mapped to roles before entering this class; roles that are
 // not routed skip all work.
-final class LoudnessAnalyzer {
+package final class LoudnessAnalyzer {
     private static let capacity = 4096
     private let segmentLength: Int
     private let active: [Bool]
@@ -84,7 +84,7 @@ final class LoudnessAnalyzer {
     private var range = LoudnessRange()
 
     /// `activeRoles` marks routed roles; the default analyses all sixteen.
-    init?(sampleRate: Double, activeRoles: [Bool] = [Bool](repeating: true, count: Role.count)) {
+    package init?(sampleRate: Double, activeRoles: [Bool] = [Bool](repeating: true, count: Role.count)) {
         guard sampleRate.isFinite, sampleRate >= 8_000, sampleRate <= 384_000, activeRoles.count == Role.count else { return nil }
         segmentLength = max(1, Int((sampleRate * 0.1).rounded()))
         active = activeRoles
@@ -125,7 +125,7 @@ final class LoudnessAnalyzer {
         return [b.0 / a.0, b.1 / a.0, b.2 / a.0, a.1 / a.0, a.2 / a.0]
     }
 
-    func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
+    package func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         // De-interleave only the routed roles.
         input.withUnsafeMutableBufferPointer { buffer in
             PlanarBlock.deinterleave(frames, roles: activeRoles, into: buffer.baseAddress!, capacity: Self.capacity) { analyze($0) }
@@ -133,7 +133,7 @@ final class LoudnessAnalyzer {
     }
 
     /// Already de-interleaved audio (see `MeterPipeline`); every routed role must be present.
-    func consume(_ block: PlanarBlock) {
+    package func consume(_ block: PlanarBlock) {
         var offset = 0
         while offset < block.count {
             let count = min(Self.capacity, block.count - offset)
@@ -197,7 +197,7 @@ final class LoudnessAnalyzer {
         }
     }
 
-    static func loudness(_ energy: Double) -> Float {
+    package static func loudness(_ energy: Double) -> Float {
         guard energy > 0, energy.isFinite else { return -100 }
         return Float(-0.691 + 10 * log10(energy))
     }
@@ -222,9 +222,24 @@ final class LoudnessAnalyzer {
         }
     }
 
+    /// A break in the audio (see `MeterPipeline`): the K-weighting filters start from rest, the unfinished 100 ms
+    /// segment is dropped, and momentary and short-term start over (reading no value until 400 ms and 3 s of new
+    /// audio are in), so no block spans the break. Integrated loudness and loudness range keep every block
+    /// completed so far and go on adding new ones. The true-peak interpolator does not reach across the break.
+    package func interrupt() {
+        filterState.update(repeating: 0, count: Role.count * 4)
+        for role in filterSettled.indices { filterSettled[role] = true }
+        segmentFrames = 0
+        segmentSum = 0
+        recent.removeAll(keepingCapacity: true)
+        momentary = -100
+        shortTerm = -100
+        truePeak.interrupt()
+    }
+
     /// Moves the per-role peak, energy and true peak gathered since the previous call into `slice` and restarts
     /// them. Roles that are not routed read zero.
-    func take(into slice: inout LevelSlice) {
+    package func take(into slice: inout LevelSlice) {
         slice.clear()
         slice.frames = levelFrames
         for role in activeRoles {
@@ -238,11 +253,11 @@ final class LoudnessAnalyzer {
     }
 
     /// Momentary, short-term, integrated (LUFS) and loudness range (LU) as of the last completed 100 ms segment.
-    func loudnessValues() -> (momentary: Float, shortTerm: Float, integrated: Float, range: Float) {
+    package func loudnessValues() -> (momentary: Float, shortTerm: Float, integrated: Float, range: Float) {
         (momentary, shortTerm, integrated, range.value)
     }
 
-    func snapshot() -> MultichannelLevels {
+    package func snapshot() -> MultichannelLevels {
         var slice = LevelSlice()
         take(into: &slice)
         var result = MultichannelLevels()
@@ -261,26 +276,26 @@ final class LoudnessAnalyzer {
 /// BS.1770 gated integration over every 400 ms block since the start. Energy bins and their actual extrema
 /// skip whole ranges of history. Only a bin whose actual values straddle the relative gate needs a block scan;
 /// worst-case work in that boundary bin can still grow with programme duration.
-struct GatedIntegration {
-    static let floor = -70.0
-    static let resolution = 0.1
-    static let bins = 1300  // −70 … +60 LUFS; louder blocks share the top bin, which is scanned if it holds the gate
+package struct GatedIntegration {
+    package static let floor = -70.0
+    package static let resolution = 0.1
+    package static let bins = 1300  // −70 … +60 LUFS; louder blocks share the top bin, which is scanned if it holds the gate
     private var energies = [[Double]](repeating: [], count: bins)
     private var sums = [Double](repeating: 0, count: bins)
     private var minima = [Double](repeating: .infinity, count: bins)
     private var maxima = [Double](repeating: 0, count: bins)
     private var highestBin = 0
     private var total = 0.0
-    private(set) var count = 0
+    package private(set) var count = 0
 
-    static func bin(_ energy: Double) -> Int {
+    package static func bin(_ energy: Double) -> Int {
         let lufs = -0.691 + 10 * log10(energy)
         guard lufs.isFinite else { return 0 }
         return max(0, min(bins - 1, Int(((lufs - floor) / resolution).rounded(.down))))
     }
 
     /// `energy` is a block's mean-square energy that passed the absolute gate.
-    mutating func add(_ energy: Double) {
+    package mutating func add(_ energy: Double) {
         guard energy > 0, energy.isFinite else { return }
         let b = Self.bin(energy)
         energies[b].append(energy)
@@ -293,7 +308,7 @@ struct GatedIntegration {
     }
 
     /// Mean energy of the blocks above the relative gate, in LUFS; −100 before any block.
-    func integrated() -> Float {
+    package func integrated() -> Float {
         guard count > 0 else { return -100 }
         let absoluteMean = total / Double(count)
         // Applying −10 LU in linear energy avoids a Float dB round trip shifting a boundary block's gate.
@@ -326,16 +341,16 @@ struct GatedIntegration {
 
 /// Levels of every role over one DSP tick: sample peak, energy and true peak, plus the L/R sums the phase
 /// correlation needs. The pipeline keeps the last few so a published window always spans the newest 1/30 s.
-struct LevelSlice {
-    var frames = 0
-    var peak = [Float](repeating: 0, count: Role.count)
-    var sumSquares = [Double](repeating: 0, count: Role.count)
-    var truePeak = [Float](repeating: 0, count: Role.count)
-    var left = 0.0
-    var right = 0.0
-    var product = 0.0
+package struct LevelSlice {
+    package var frames = 0
+    package var peak = [Float](repeating: 0, count: Role.count)
+    package var sumSquares = [Double](repeating: 0, count: Role.count)
+    package var truePeak = [Float](repeating: 0, count: Role.count)
+    package var left = 0.0
+    package var right = 0.0
+    package var product = 0.0
 
-    mutating func clear() {
+    package mutating func clear() {
         frames = 0
         for role in 0..<Role.count {
             peak[role] = 0
@@ -353,10 +368,10 @@ struct LevelSlice {
 /// does from the n sorted values: index round((n − 1) · p), counting from 0. Every value is kept, sorted within
 /// 0.1 LU bins: the bin counts locate the relative gate and each percentile, and a binary search finishes each
 /// inside its bin, so the result is exact while a long programme costs little more than a short one.
-struct LoudnessRange {
-    static let floor = -70.0
-    static let resolution = 0.1
-    static let bins = 900  // −70 … +20 LUFS; louder values share the top bin
+package struct LoudnessRange {
+    package static let floor = -70.0
+    package static let resolution = 0.1
+    package static let bins = 900  // −70 … +20 LUFS; louder values share the top bin
     private static let absoluteGate = pow(10, (floor + 0.691) / 10)
     private var energies = [[Double]](repeating: [], count: bins)
     private var count = 0
@@ -364,7 +379,7 @@ struct LoudnessRange {
     private var dirty = false
     private var cached: Float = -1
 
-    mutating func add(_ energy: Double) {
+    package mutating func add(_ energy: Double) {
         guard energy > Self.absoluteGate, energy.isFinite else { return }
         let b = Self.bin(energy)
         energies[b].insert(energy, at: Self.lowerBound(energy, in: energies[b]))
@@ -383,13 +398,13 @@ struct LoudnessRange {
         return low
     }
 
-    static func bin(_ energy: Double) -> Int {
+    package static func bin(_ energy: Double) -> Int {
         let lufs = -0.691 + 10 * log10(energy)
         guard lufs.isFinite else { return 0 }
         return max(0, min(bins - 1, Int(((lufs - floor) / resolution).rounded(.down))))
     }
 
-    var value: Float {
+    package var value: Float {
         mutating get {
             guard dirty else { return cached }
             dirty = false
@@ -434,20 +449,20 @@ struct LoudnessRange {
 /// from 44.1 kHz, and dense 20-tone mixtures within 0.001 dB of their analytic crest.
 /// Segments are counted in absolute samples, and a point is judged once both neighbours are known, so the
 /// reading does not depend on how the audio is split into buffers.
-final class TruePeakDetector {
+package final class TruePeakDetector {
     /// Taps per phase of the 4× (or 2×) stage that chooses candidates.
-    static let tapsPerPhase = 16
-    static let coarseBeta = 6.0
+    package static let tapsPerPhase = 16
+    package static let coarseBeta = 6.0
     /// Taps per fine step of the interpolator that measures them.
-    static let fineTaps = 64
-    static let fineBeta = 10.0
+    package static let fineTaps = 64
+    package static let fineBeta = 10.0
     /// Fine steps per coarse step.
-    static let refinement = 4
+    package static let refinement = 4
     /// Samples per refinement segment.
-    static let segmentLength = 64
+    package static let segmentLength = 64
     /// A segment's second-loudest coarse crest is refined too when it is within this many dB of the loudest.
-    static let runnerUp = 1.0
-    let factor: Int
+    package static let runnerUp = 1.0
+    package let factor: Int
     /// Input kept from one block to the next: the fine window and one sample either side, less one.
     private let history = TruePeakDetector.fineTaps + 1
     private let capacity: Int
@@ -462,11 +477,14 @@ final class TruePeakDetector {
     private var pending = [Int](repeating: 0, count: Role.count)
     /// Samples received per role, silent ones included: the clock the segments are counted on.
     private var received = [Int](repeating: 0, count: Role.count)
+    /// Unknown history at startup/reset is treated like a break, not fabricated silence.
+    /// Sample peaks remain measured while the interpolation window fills.
+    private var priming = [Int](repeating: TruePeakDetector.fineTaps + 1, count: Role.count)
     /// Each role's refinement state (see `true_peak_scan`).
     private var segments = [TruePeakSegment](repeating: TruePeakSegment(), count: Role.count)
     private var kernel: TruePeakKernel
 
-    init(sampleRate: Double, capacity: Int) {
+    package init(sampleRate: Double, capacity: Int) {
         factor = sampleRate < 96_000 ? 4 : 2
         self.capacity = capacity
         phases = Array(Self.design(factor: factor).dropFirst())
@@ -486,7 +504,7 @@ final class TruePeakDetector {
 
     /// Low-pass at the original Nyquist frequency, centred on a tap so phase 0 reproduces the input samples:
     /// `factor` phases of `taps` coefficients each, reversed, every phase scaled to unity DC gain.
-    static func design(factor: Int, taps: Int = tapsPerPhase, beta: Double = coarseBeta) -> [[Float]] {
+    package static func design(factor: Int, taps: Int = tapsPerPhase, beta: Double = coarseBeta) -> [[Float]] {
         guard factor > 1 else { return [] }
         let length = taps * factor
         let centre = Double(length) / 2
@@ -511,7 +529,39 @@ final class TruePeakDetector {
         }
     }
 
-    func process(role: Int, signal: UnsafePointer<Float>, count: Int, samplePeak: Float) {
+    /// A break in the audio. Interpolating across it would join two unrelated signals, and padding either side
+    /// with silence would invent an overshoot at a cut that never reached a converter, so neither is measured:
+    /// what was found before the break is refined now; the last half window before it, whose interpolation needs
+    /// samples that never come, is left out; and the first window after it only refills the filter. About 2 ms
+    /// around each break is measured by sample peak alone.
+    package func interrupt() {
+        for role in 0..<Role.count {
+            true_peak_finish(&segments[role], &kernel, -1, &held[role])
+            pending[role] = 0
+            priming[role] = history
+        }
+    }
+
+    package func process(role: Int, signal: UnsafePointer<Float>, count: Int, samplePeak: Float) {
+        var signal = signal, count = count
+        if priming[role] > 0 {
+            // After a break: these samples fill the filter window and are not measured themselves.
+            let fill = min(count, priming[role])
+            scratch.withUnsafeMutableBufferPointer { buffer in
+                let base = buffer.baseAddress! + role * (capacity + Self.fineTaps + 2)
+                memmove(base, base + fill, (history - fill) * MemoryLayout<Float>.stride)
+                (base + history - fill).update(from: signal, count: fill)
+            }
+            // A nonzero sample in the priming window still has a real tail. Drain it even if
+            // the following buffers are silent (including when priming ends exactly at a split).
+            pending[role] = samplePeak > 0 ? history : max(0, pending[role] - fill)
+            priming[role] -= fill
+            received[role] += fill
+            signal += fill
+            count -= fill
+            held[role] = max(held[role], samplePeak)
+            guard count > 0 else { return }
+        }
         var peak = samplePeak
         // A burst can reach its interpolated maximum after its last nonzero input sample. Process the tail,
         // including across several short silent buffers, before taking the settled-silence fast path.
@@ -553,7 +603,7 @@ final class TruePeakDetector {
         held[role] = max(held[role], peak)
     }
 
-    func take(role: Int) -> Float {
+    package func take(role: Int) -> Float {
         defer { held[role] = 0 }
         return held[role]
     }

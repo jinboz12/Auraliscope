@@ -1,3 +1,4 @@
+import AnalysisCore
 import AudioRing
 import CoreAudio
 import Darwin
@@ -29,6 +30,17 @@ enum Diagnostics {
     /// With `--snapshot`: enters full screen first, then captures the whole screen area of this app's windows
     /// (the full-screen toolbar is a window of its own), to review the full-screen arrangement.
     static let snapshotFullScreen = CommandLine.arguments.contains("--snapshot-full-screen")
+    /// With `--snapshot`: opens a panel's settings popover (`--snapshot-panel-settings [soundstage]`, the Spectrum
+    /// panel's by default) and captures the window's screen area with it.
+    static let snapshotPanelSettings = CommandLine.arguments.contains("--snapshot-panel-settings")
+    static var snapshotPanelSettingsPanel: String {
+        let value = argument("--snapshot-panel-settings") ?? ""
+        return value.hasPrefix("-") || value.isEmpty ? "spectrum" : value
+    }
+    /// With `--snapshot`: pauses 1.5 s before the capture, to review the paused state.
+    static let snapshotPaused = CommandLine.arguments.contains("--snapshot-paused")
+    /// With `--snapshot`: drives the demo 10 dB hot, so true-peak overs and the loudness warnings show.
+    static let snapshotHot = CommandLine.arguments.contains("--snapshot-hot")
     static var snapshotSize: CGSize? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--snapshot-size"), index + 1 < arguments.count else { return nil }
@@ -43,6 +55,40 @@ enum Diagnostics {
         guard let index = arguments.firstIndex(of: "--preview-layout"), index + 1 < arguments.count else { return .s916 }
         return SpeakerLayout(rawValue: arguments[index + 1]) ?? .s916
     }
+    /// `--preview-audio <file>` fills `--render-preview`'s spectrum and waterfall from an audio file run through the
+    /// real analysis (`PreviewAudio`) instead of the synthetic demo, drawn in Stereo; `--preview-output <png>` names
+    /// the image (the temporary directory's Auraliscope-preview.png otherwise).
+    static var previewAudio: URL? { argument("--preview-audio").map { URL(fileURLWithPath: $0) } }
+    static var previewOutput: URL? { argument("--preview-output").map { URL(fileURLWithPath: $0) } }
+    /// `--preview-stage-size WxH`: `--render-preview` draws only the Soundstage, at that size in points (2× pixels),
+    /// following the demo or `--preview-audio` as it would live; for checking the Immersive nebula.
+    static var previewStageSize: CGSize? {
+        let parts = argument("--preview-stage-size")?.split(separator: "x").compactMap { Double($0) } ?? []
+        return parts.count == 2 && parts[0] >= 100 && parts[1] >= 100 ? CGSize(width: parts[0], height: parts[1]) : nil
+    }
+    /// `--preview-image <png>`: also writes the spectrogram's exported image (`SpectrogramImage`).
+    static var previewImage: URL? { argument("--preview-image").map { URL(fileURLWithPath: $0) } }
+    private static func argument(_ name: String) -> String? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
+    }
+    /// `--snapshot-inspect x,y` holds the Spectrum well's inspector at that point of the well (points), so a
+    /// snapshot shows its crosshair and readout without a pointer.
+    static var inspectPoint: CGPoint? {
+        let parts = argument("--snapshot-inspect")?.split(separator: ",").compactMap { Double($0) } ?? []
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }
+    /// `--snapshot-dome-probe x,y` holds the Immersive dome's pointer readout at that point of the well (points).
+    static var domeProbePoint: CGPoint? {
+        let parts = argument("--snapshot-dome-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }
+    /// `--snapshot-wave-probe x,y` holds the Waveform's pointer cursor and readout at that point of the well.
+    static var waveProbePoint: CGPoint? {
+        let parts = argument("--snapshot-wave-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }
     static var requestedDeviceID: UInt32? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--input-device"), index + 1 < arguments.count else { return nil }
@@ -56,12 +102,21 @@ enum Diagnostics {
     }
 
     static func runIfRequested() {
+        if CommandLine.arguments.contains("--test-nebula-gpu") {
+            exit(NebulaScene.checkGPUTransitions() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--test-nebula") {
+            exit(NebulaScene.checkLifecycle() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--test-spectrum-average") {
+            exit(SpectrumScene.checkAverageLifecycle() ? 0 : 1)
+        }
         if CommandLine.arguments.contains("--test-peak-reset") {
             exit(SoundstageScene.checkPeakReset() ? 0 : 1)
         }
         if CommandLine.arguments.contains("--render-preview") {
             do {
-                let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")
+                let destination = previewOutput ?? FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")
                 try CanvasRenderer.writePreview(to: destination)
                 print(destination.path)
                 exit(0)
@@ -151,6 +206,68 @@ enum Diagnostics {
         }
     }
 
+    /// `--test-dome-orbit`: from 4 s after launch, turns and tilts the Immersive dome for 5 s the way a drag does (one
+    /// camera change per display frame, `DomeOrbit.step`), then prints the process CPU over those seconds, the canvases'
+    /// frame rate and the longest gap between frames, and quits.
+    @MainActor
+    static func testDomeOrbitIfRequested(model: MeterModel) {
+        guard CommandLine.arguments.contains("--test-dome-orbit") else { return }
+        func processCPU() -> Double {
+            var usage = rusage()
+            getrusage(RUSAGE_SELF, &usage)
+            return Double(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) + Double(usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+            let cpu = processCPU(), wall = CACurrentMediaTime(), ticks = CanvasDriver.shared.ticks
+            var step = 0, last = CACurrentMediaTime(), longest = 0.0
+            let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { timer in
+                MainActor.assumeIsolated {
+                    let now = CACurrentMediaTime()
+                    longest = max(longest, now - last)
+                    last = now
+                    step += 1
+                    DomeOrbit.step(model: model, yaw: Double(step) * 1.2, pitch: 40 + 20 * sin(Double(step) / 40))
+                    guard step >= 300 else { return }
+                    timer.invalidate()
+                    let seconds = CACurrentMediaTime() - wall
+                    print(String(format: "[orbit] CPU %.1f%% of one core over %.1f s, canvases %.1f fps, longest timer gap %.1f ms",
+                                 (processCPU() - cpu) / seconds * 100, seconds,
+                                 Double(CanvasDriver.shared.ticks - ticks) / seconds, longest * 1000))
+                    fflush(stdout)
+                    exit(0)
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+        }
+    }
+
+    /// `--test-mode-switch` (with `--diagnostic`): from 4 s after launch, switches Stereo ↔ Immersive every 1.5 s, six
+    /// times, and after each switch prints the longest wait between display refreshes during its transition and the
+    /// slowest refresh's own work; restores the saved mode, then quits.
+    @MainActor
+    static func testModeSwitchIfRequested(model: MeterModel) {
+        guard CommandLine.arguments.contains("--test-mode-switch") else { return }
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["formatMode"]
+        func step(_ index: Int) {
+            guard index < 6 else {
+                if let saved { UserDefaults.standard.set(saved, forKey: "formatMode") } else { UserDefaults.standard.removeObject(forKey: "formatMode") }
+                UserDefaults.standard.synchronize()
+                exit(0)
+            }
+            CanvasDriver.shared.resetGap()
+            let target: ChannelFormat = index % 2 == 0 ? .stereo : .spatial
+            model.pin(target)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                print(String(format: "[mode] to %@: longest refresh gap %.1f ms, slowest refresh %.1f ms",
+                             target == .spatial ? "Immersive" : "Stereo",
+                             CanvasDriver.shared.longestGap * 1000, CanvasDriver.shared.slowestTick * 1000))
+                fflush(stdout)
+                step(index + 1)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { step(0) }
+    }
+
     private static var themeSwitchStarted = false
 
     /// `--test-theme-switch`: moves the meter window, switches Light/Dark twice and prints the window frame after
@@ -191,6 +308,36 @@ enum Diagnostics {
             if let size = snapshotSize { window.setContentSize(size) }
             if snapshotFullScreen { MainWindow.toggleFullScreen() }
         }
+        // `--snapshot-enlarge <panel>` enlarges a panel, `--snapshot-strip` turns the window into the strip,
+        // `--snapshot-detach <panel>` opens a panel in a window of its own; `-layout.hiddenPanels a,b` hides panels for
+        // the run only (the argument domain), so none of these touch the stored layout.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            if let panel = argument("--snapshot-enlarge").flatMap(MeterPanel.init(rawValue:)) { PanelPlacement.shared.toggleEnlarged(panel) }
+            if CommandLine.arguments.contains("--snapshot-strip") || CommandLine.arguments.contains("--snapshot-strip-return") {
+                PanelPlacement.shared.enterStrip()
+            }
+            // `--snapshot-strip-return`: into the strip and back out before the capture.
+            if CommandLine.arguments.contains("--snapshot-strip-return") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { PanelPlacement.shared.leaveStrip() }
+            }
+            if let panel = argument("--snapshot-detach").flatMap(MeterPanel.init(rawValue:)) { PanelPlacement.shared.requestWindow(panel) }
+        }
+        // `--snapshot-report <path.pdf|path.csv>`: writes the loudness report just before the capture.
+        if let path = argument("--snapshot-report") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) {
+                guard let model = MeterModel.diagnosticInstance else { return }
+                let data = LoudnessReportData.gather(model: model)
+                let url = URL(fileURLWithPath: path)
+                if path.hasSuffix(".csv") { try? data.csv.write(to: url, atomically: true, encoding: .utf8) }
+                else { try? LoudnessReportExport.writePDF(data, to: url) }
+                print("report: \(path)")
+            }
+        }
+        // `--snapshot-view-switch <view>`: glides the Immersive dome to that view 0.2 s before the capture, to catch the
+        // labels and the picture mid-glide.
+        if let view = argument("--snapshot-view-switch").flatMap(DomeView.init(rawValue:)) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (snapshotFullScreen ? 7.8 : 5.8)) { DomeCamera.shared.select(view) }
+        }
         // `--snapshot-band-switch`: switches both band settings 0.25 s before the capture, to catch the morph.
         if CommandLine.arguments.contains("--snapshot-band-switch") {
             DispatchQueue.main.asyncAfter(deadline: .now() + (snapshotFullScreen ? 7.75 : 5.75)) {
@@ -204,7 +351,7 @@ enum Diagnostics {
             let destination = FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-window.png")
             // The welcome sheet has its own window; capture the screen area of the meter window to include it.
             let image: CGImage?
-            if showWelcome || snapshotFullScreen, let screen = NSScreen.screens.first {
+            if showWelcome || snapshotFullScreen || snapshotPanelSettings, let screen = NSScreen.screens.first {
                 let frame = window.frame
                 let rect = CGRect(x: frame.minX, y: screen.frame.maxY - frame.maxY, width: frame.width, height: frame.height)
                 image = CGWindowListCreateImage(rect, .optionOnScreenOnly, kCGNullWindowID, [.bestResolution])
@@ -289,6 +436,9 @@ enum Diagnostics {
     /// `--demo` it runs on the selected source (silence is fine).
     @MainActor
     static func testPauseResumeIfRequested(model: MeterModel) {
+        if snapshotRequested && snapshotPaused {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { MainActor.assumeIsolated { model.toggleCapture() } }
+        }
         guard CommandLine.arguments.contains("--test-pause-resume"), !pauseResumeStarted else { return }
         pauseResumeStarted = true
         let driver = CanvasDriver.shared
@@ -722,16 +872,20 @@ enum Diagnostics {
     }
 
     private static func runDSPBenchmark() {
-        for spatial in [false, true] { runDSPBenchmark(spatialSpectrum: spatial) }
+        runDSPBenchmark(spatialSpectrum: false)
+        runDSPBenchmark(spatialSpectrum: true, field: false)
+        runDSPBenchmark(spatialSpectrum: true)
         print("This excludes CoreAudio, Metal, SwiftUI, WindowServer and audio driver CPU.")
     }
 
-    private static func runDSPBenchmark(spatialSpectrum: Bool) {
+    /// `field`: whether Spatial analysis also builds the Immersive nebula's spatial field (it does in the app).
+    private static func runDSPBenchmark(spatialSpectrum: Bool, field: Bool = true) {
         let layout = SpeakerLayout.s916
         let active = (0..<Role.count).map(layout.contains)
         let tickFrames = Int(48_000 / MeterPipeline.tickRate)
         guard let pipeline = MeterPipeline(sampleRate: 48_000, activeRoles: active, detector: FormatDetector(), streamID: 1) else { exit(1) }
         pipeline.spatialSpectrum = spatialSpectrum
+        pipeline.spectrum.buildsSpatialField = spatialSpectrum && field
         let multichannel = (0..<tickFrames).map { index -> ChannelFrame in
             let value = Float(sin(2 * Double.pi * 997 * Double(index) / 48_000)) * 0.4
             var result = ChannelFrame()
@@ -757,7 +911,15 @@ enum Diagnostics {
         for _ in 0..<ticks { checksum += update() }
         let elapsed = cpuTime() - start
         print(String(format: "Full 9.1.6 DSP pipeline, %@ spectrum (16 roles, 4× true peak, loudness range, waveform envelope, format detector, snapshot packing): 100 simulated audio seconds, 48 kHz, %d FFT, %.0f snapshots/s, %.0f waterfall columns/s\nCPU time: %.4f s\nEquivalent one-core CPU: %.3f%%\nChecksum: %.3f",
-                     spatialSpectrum ? "Spatial (16-channel)" : "Stereo (L/R)", SpectrumAnalyzer.fftSize, MeterPipeline.tickRate,
+                     spatialSpectrum ? (field ? "Spatial (16-channel, spatial field built)" : "Spatial (16-channel, no spatial field)") : "Stereo (L/R)",
+                     SpectrumAnalyzer.historyLength(sampleRate: 48_000), MeterPipeline.tickRate,
                      MeterPipeline.tickRate / Double(MeterPipeline.windowTicks), elapsed, elapsed, checksum))
     }
+}
+
+/// The camera changes `--test-dome-orbit` makes, as the Soundstage's drag makes them (never saved: the test leaves the
+/// person's camera as it was).
+@MainActor
+enum DomeOrbit {
+    static func step(model: MeterModel, yaw: Double, pitch: Double) { DomeCamera.shared.orbit(yaw: yaw, pitch: pitch) }
 }

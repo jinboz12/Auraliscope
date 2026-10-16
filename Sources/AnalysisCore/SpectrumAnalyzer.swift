@@ -1,65 +1,60 @@
 import Accelerate
-import AudioRing
+import AnalysisKernels
 import Foundation
 
 /// The five frequency bands of the multiband stereo readings: the correlation bar's lanes in Channel Levels, the
 /// stereometer and the Immersive band map. Edges in Hz; the top band runs to the display ceiling. Each view shows
 /// them at a `Resolution` of its own: the five bands, three (merged from the five) or one overall reading.
-enum StereoBands {
-    static let count = 5
-    static let edges: [Double] = [20, 120, 500, 2_000, 8_000]
+package enum StereoBands {
+    package static let count = 5
+    package static let edges: [Double] = [20, 120, 500, 2_000, 8_000]
 
     /// How finely a view splits the spectrum: one full-band reading (the whole spectrum, as a conventional meter
     /// reads it), three bands (below 120 Hz, 120 Hz–2 kHz, above 2 kHz) or the five.
-    enum Resolution: String, CaseIterable {
+    package enum Resolution: String, CaseIterable {
         case overall, three, five
 
         /// The five bands each group merges, low to high.
-        var groups: [[Int]] {
+        package var groups: [[Int]] {
             switch self {
             case .overall: return [[0, 1, 2, 3, 4]]
             case .three: return [[0], [1, 2], [3, 4]]
             case .five: return [[0], [1], [2], [3], [4]]
             }
         }
-        var count: Int { groups.count }
+        package var count: Int { groups.count }
         /// Index of this resolution's first group among `StereoBands.groups` (the published readings).
-        var offset: Int {
+        package var offset: Int {
             switch self {
             case .five: return 0
             case .three: return 5
             case .overall: return 8
             }
         }
-        /// A group's label: its lower edge, or "Full band".
-        func label(_ group: Int) -> String { self == .overall ? L("Full band") : StereoBands.label(groups[group][0]) }
-        /// The switcher's segment: "Full band", "3 bands", "5 bands" (multiband meters name their split by the
-        /// number of bands, and a meter that does not split reads full band).
-        var title: String { self == .overall ? L("Full band") : L("%d bands", count) }
     }
 
     /// Every group any resolution shows, in `Resolution.offset` order: the five bands, the three, then overall.
-    static let groups = Resolution.five.groups + Resolution.three.groups + Resolution.overall.groups
+    package static let groups = Resolution.five.groups + Resolution.three.groups + Resolution.overall.groups
     /// Values published per group: correlation, width, balance and level (see `MeterSnapshot`).
-    static let publishedFloats = 4 * groups.count
+    package static let publishedFloats = 4 * groups.count
 
     /// Values published for the Immersive room's band image: each role's mean square in each band.
-    static let roleFloats = Role.count * count
+    package static let roleFloats = Role.count * count
 
     /// Points per band in the stereometer's cloud, taken evenly across the newest 1/30 s.
-    static let scopePoints = 128
+    package static let scopePoints = 128
     /// Floats of the stereometer's cloud: per band, `scopePoints` (L, R) pairs.
-    static let scopeFloats = count * scopePoints * 2
+    package static let scopeFloats = count * scopePoints * 2
 
     /// A band's label: its lower edge, "20 Hz", "120 Hz", "500 Hz", "2 kHz", "8 kHz"; each band reaches up to the
     /// next one's.
-    static func label(_ band: Int) -> String {
+    package static func label(_ band: Int) -> String {
         let edge = edges[band]
         return edge >= 1_000 ? "\(Int(edge / 1_000)) kHz" : "\(Int(edge)) Hz"
     }
 
     /// Band of each FFT bin from 1 to `fftSize / 2 − 1`, or −1 outside 20 Hz…the display ceiling.
-    static func binBands(sampleRate: Double, fftSize: Int) -> [Int8] {
+    package static func binBands(sampleRate: Double, fftSize: Int) -> [Int8] {
         let binWidth = sampleRate / Double(fftSize)
         let upper = min(20_000, sampleRate / 2)
         return (0..<(fftSize / 2)).map { bin in
@@ -74,9 +69,9 @@ enum StereoBands {
 /// Butterworth sections at each edge, from the RBJ cookbook) and keeps the newest samples of every band, for the
 /// stereometer's multiband cloud. All ten cascades (band × side) run together in `band_filter`, padded to four
 /// sections with pass-through ones. Owned by the DSP queue.
-final class StereoBandSplitter {
-    static let historyLength = 4096
-    let sampleRate: Double
+package final class StereoBandSplitter {
+    package static let historyLength = 4096
+    package let sampleRate: Double
     /// `band_filter` coefficients: lane 2 × band + side, four sections each; a band above Nyquist outputs zero.
     private static let sections = Int(BAND_SECTIONS)
     private static let groups = Int(BAND_LANES) / 4
@@ -88,7 +83,7 @@ final class StereoBandSplitter {
     private var left: [Float] = []
     private var right: [Float] = []
 
-    init?(sampleRate: Double) {
+    package init?(sampleRate: Double) {
         guard sampleRate.isFinite, sampleRate > 100 else { return nil }
         self.sampleRate = sampleRate
         history = [Float](repeating: 0, count: StereoBands.count * 2 * Self.historyLength)
@@ -129,7 +124,7 @@ final class StereoBandSplitter {
     }
 
     /// Filters `count` frames of L and R, read from `samples` with `stride` floats per frame.
-    func consume(_ samples: UnsafePointer<Float>, stride: Int, count: Int, leftOffset: Int = 0, rightOffset: Int = 1) {
+    package func consume(_ samples: UnsafePointer<Float>, stride: Int, count: Int, leftOffset: Int = 0, rightOffset: Int = 1) {
         guard count > 0 else { return }
         if left.count < count {
             left = [Float](repeating: 0, count: count)
@@ -142,8 +137,15 @@ final class StereoBandSplitter {
         }
     }
 
+    /// A break in the audio: the band filters and their history start from silence.
+    package func interrupt() {
+        state.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        history.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        cursor = 0
+    }
+
     /// Filters `count` contiguous samples of L and R straight into the band rings.
-    func consume(left: UnsafePointer<Float>, right: UnsafePointer<Float>, count: Int) {
+    package func consume(left: UnsafePointer<Float>, right: UnsafePointer<Float>, count: Int) {
         let length = Self.historyLength
         let lanes = 2 * StereoBands.count
         history.withUnsafeMutableBufferPointer { ring in
@@ -167,7 +169,7 @@ final class StereoBandSplitter {
 
     /// Writes `StereoBands.scopeFloats`: per band, `scopePoints` (L, R) pairs spread evenly over the newest
     /// 1/30 s, oldest first. `silent` writes zeros.
-    func writePoints(into v: UnsafeMutablePointer<Float>, silent: Bool) {
+    package func writePoints(into v: UnsafeMutablePointer<Float>, silent: Bool) {
         let points = StereoBands.scopePoints
         guard !silent else {
             for i in 0..<StereoBands.scopeFloats { v[i] = 0 }
@@ -186,112 +188,159 @@ final class StereoBandSplitter {
     }
 }
 
-struct MeterSnapshot: Equatable {
-    static let bandCount = 64
+package struct MeterSnapshot: Equatable {
+    package static let bandCount = 64
+    /// The live spectrum's finer bands: each of the 64 split in two (about 1/13 octave), from the same transform, so
+    /// a curve drawn from them keeps the 64 bands' single-resolution calibration with twice the detail and lines up
+    /// with every fourth waterfall row.
+    package static let fineBandCount = 128
     /// Log-spaced rows for the waterfall: at least one row per device pixel on a typical Retina panel, so the
     /// shader never stretches a row across several pixels and harmonics stay crisp.
-    static let spectrogramBandCount = 512
+    package static let spectrogramBandCount = 512
     /// Published when L and R carry no signal, so the correlation meter can rest instead of reading 0.
-    static let noCorrelation: Float = -2
-    var spectrum: [Float] = Array(repeating: -120, count: bandCount)
-    var spectrogram: [Float] = Array(repeating: -120, count: spectrogramBandCount)
-    var sequence: Float = 0
+    package static let noCorrelation: Float = -2
+    package init() {}
+    package var spectrum: [Float] = Array(repeating: -120, count: bandCount)
+    package var spectrumFine: [Float] = Array(repeating: -120, count: fineBandCount)
+    package var spectrogram: [Float] = Array(repeating: -120, count: spectrogramBandCount)
+    package var sequence: Float = 0
     /// Advances once per waterfall column (30 per second), independent of the snapshot rate.
-    var spectrogramSerial: Float = 0
-    var streamID: Float = 0
-    var leftPeak: Float = 0
-    var rightPeak: Float = 0
-    var leftRMS: Float = 0
-    var rightRMS: Float = 0
+    package var spectrogramSerial: Float = 0
+    /// `SpectrogramMode` of the newest column (a plugin before build 72 sends only Classic).
+    package var spectrogramMode: Float = 0
+    package var streamID: Float = 0
+    package var leftPeak: Float = 0
+    package var rightPeak: Float = 0
+    package var leftRMS: Float = 0
+    package var rightRMS: Float = 0
     /// Per role (see `Role`), linear.
-    var channelPeaks = [Float](repeating: 0, count: Role.count)
-    var channelRMS = [Float](repeating: 0, count: Role.count)
-    var channelTruePeaks = [Float](repeating: 0, count: Role.count)
+    package var channelPeaks = [Float](repeating: 0, count: Role.count)
+    package var channelRMS = [Float](repeating: 0, count: Role.count)
+    package var channelTruePeaks = [Float](repeating: 0, count: Role.count)
     /// Highest sample and true peak per role since the stream started, linear. Kept on the DSP side so a
     /// readout that samples snapshots at 10 Hz still sees every overshoot.
-    var heldPeaks = [Float](repeating: 0, count: Role.count)
-    var heldTruePeaks = [Float](repeating: 0, count: Role.count)
-    var momentaryLUFS: Float = -100
-    var shortLUFS: Float = -100
-    var integratedLUFS: Float = -100
+    package var heldPeaks = [Float](repeating: 0, count: Role.count)
+    package var heldTruePeaks = [Float](repeating: 0, count: Role.count)
+    package var momentaryLUFS: Float = -100
+    package var shortLUFS: Float = -100
+    package var integratedLUFS: Float = -100
     /// EBU Tech 3342 loudness range in LU; negative until measurable.
-    var loudnessRange: Float = -1
+    package var loudnessRange: Float = -1
     /// Loudest spectral peak between 20 Hz and the display ceiling (display power: L+R, or every routed role in
     /// Spatial), in Hz and dBFS.
-    var peakFrequency: Float = 0
-    var peakLevel: Float = -120
+    package var peakFrequency: Float = 0
+    package var peakLevel: Float = -120
     /// The notes sounding together (`SpectrumAnalyzer.tonalPeaks`): up to `maxNotes` (Hz, dBFS) pairs, loudest
     /// first; an unused pair has frequency 0.
-    var notes = [Float](repeating: 0, count: 2 * SpectrumAnalyzer.maxNotes)
+    package var notes = [Float](repeating: 0, count: 2 * SpectrumAnalyzer.maxNotes)
     /// `ChannelFormat` raw value from the DSP-side detector.
-    var detectedFormat: Float = 0
+    package var detectedFormat: Float = 0
     /// L/R phase correlation over the last tick, −1…+1, or `noCorrelation` in silence.
-    var correlation: Float = MeterSnapshot.noCorrelation
+    package var correlation: Float = MeterSnapshot.noCorrelation
     /// Per `StereoBands.groups` entry (five bands, three, overall), integrated like `correlation`: the L/R
     /// correlation (`noCorrelation` while the group is silent), the width (side share of the energy: 0 mono,
     /// ½ unrelated sides, 1 out of phase), the balance (−1 all left … +1 all right) and the level (RMS of L and R,
     /// dBFS).
-    var bandCorrelation = [Float](repeating: MeterSnapshot.noCorrelation, count: StereoBands.groups.count)
-    var bandWidth = [Float](repeating: 0, count: StereoBands.groups.count)
-    var bandBalance = [Float](repeating: 0, count: StereoBands.groups.count)
-    var bandLevel = [Float](repeating: -120, count: StereoBands.groups.count)
+    package var bandCorrelation = [Float](repeating: MeterSnapshot.noCorrelation, count: StereoBands.groups.count)
+    package var bandWidth = [Float](repeating: 0, count: StereoBands.groups.count)
+    package var bandBalance = [Float](repeating: 0, count: StereoBands.groups.count)
+    package var bandLevel = [Float](repeating: -120, count: StereoBands.groups.count)
     /// The stereometer's cloud: per band, `StereoBands.scopePoints` (L, R) sample pairs from the newest 1/30 s.
-    var bandPoints = [Float](repeating: 0, count: StereoBands.scopeFloats)
+    package var bandPoints = [Float](repeating: 0, count: StereoBands.scopeFloats)
     /// Mean square of every role in every band (role-major), integrated like the band correlation: where each
     /// band's energy sits in the Immersive room. Only L and R carry values outside Spatial analysis.
-    var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
-    var waveSerial: Float = 0
-    var waveform: [Float] = Array(repeating: 0, count: WaveformEnvelope.publishedFloats)
+    package var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
+    package var waveSerial: Float = 0
+    package var waveform: [Float] = Array(repeating: 0, count: WaveformEnvelope.publishedFloats)
+    /// Breaks in the analysed audio since the analysis started (`MeterPipeline.interrupt`), and the seconds of
+    /// audio known to be missing at them: integrated loudness, loudness range and the held peaks span them.
+    package var breaks: Float = 0
+    package var missingSeconds: Float = 0
+    /// Per role: DC offset (linear, signed) and infrasonic mean square (linear), from `SignalHealthMeter`; status 1
+    /// settled, 0.5 settling, 0 not measured.
+    package var dcOffset = [Float](repeating: 0, count: Role.count)
+    package var infrasonic = [Float](repeating: 0, count: Role.count)
+    package var healthStatus: Float = 0
+    /// The Immersive soundstage's spatial field (`SpatialField` layout); status 0 while there is none.
+    package var spatialField = [Float](repeating: 0, count: SpatialField.floats)
+    /// The same transform's bins at their centres of gravity (`SpatialPoints` layout); status 0 while there are none
+    /// (also from a Bridge plugin before build 87).
+    package var spatialPoints = [Float](repeating: 0, count: SpatialPoints.floats)
 }
 
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
-final class SpectrumAnalyzer {
-    // 8192 points: 5.9 Hz bins at 48 kHz, so the bottom octaves get real detail. At 30 columns/s the
-    // windows overlap by ~80 %, which keeps the waterfall continuous. Channels share complex transforms in
+package final class SpectrumAnalyzer {
+    // 8192 points at 44.1 and 48 kHz: 5.9 Hz bins, so the bottom octaves get real detail. At higher rates the
+    // transform grows with the rate (`historyLength`: 16384 at 96 kHz, 32768 at 192 kHz), so the spectrum, its peaks
+    // and notes resolve the same Hz over the same ~170 ms at every rate. The waterfall reads the same history rings at
+    // several resolutions of its own (`SpectrogramAnalyzer`). Channels share complex transforms in
     // pairs (one real, one imaginary) and are separated by conjugate symmetry, which halves the FFT cost without
     // giving up any resolution; that is cheaper than dropping to 4096 points and keeps the 5.9 Hz bins.
-    static let fftSize = 8192
-    let sampleRate: Double
+    package static let fftSize = 8192
+    package let sampleRate: Double
+    /// Samples each role's ring keeps, and the spectrum's transform length: `fftSize` at 44.1 and 48 kHz, doubled
+    /// with each doubling of the rate, so the spectrum and the waterfall analyse the same ~170 ms (and resolve the
+    /// same Hz) at every rate.
+    package let historyLength: Int
     private let setup: OpaquePointer
-    private var window = [Float](repeating: 0, count: fftSize)
+    private var window: [Float]
     /// `window` halved: the conjugate-symmetric split's ¼ rides on the window (a power of two, so exact).
-    private var fftWindow = [Float](repeating: 0, count: fftSize)
-    /// Newest `fftSize` samples of each recorded role: one ring per role, all sharing `cursor`.
-    private var history = [Float](repeating: 0, count: Role.count * fftSize)
+    private var fftWindow: [Float]
+    /// Newest `historyLength` samples of each recorded role: one ring per role, all sharing `cursor`.
+    private var history: [Float]
     /// L, R and every other routed role: what a Spatial spectrum sums.
     private let recordedRoles: [Int]
     /// The other roles are recorded only while Spatial analysis is wanted (it costs a strided copy per role).
     /// Turning it on starts their history afresh; they join the spectrum once a full window has been captured.
-    var recordsSpatial = false {
+    package var recordsSpatial = false {
         didSet { if recordsSpatial != oldValue { spatialHistoryCount = 0 } }
     }
     private var spatialHistoryCount = 0
-    private var inputReal = [Float](repeating: 0, count: fftSize)
-    private var inputImaginary = [Float](repeating: 0, count: fftSize)
-    /// Newest frames of each role's ring that are all digital silence (`fftSize`: the whole ring).
-    private var silentFrames = [Int](repeating: fftSize, count: Role.count)
-    private var outputReal = [Float](repeating: 0, count: fftSize)
-    private var outputImaginary = [Float](repeating: 0, count: fftSize)
-    private var leftPower = [Float](repeating: 0, count: fftSize / 2)
-    private var rightPower = [Float](repeating: 0, count: fftSize / 2)
+    private var inputReal: [Float]
+    private var inputImaginary: [Float]
+    /// Newest frames of each role's ring that are all digital silence (`historyLength`: the whole ring).
+    private var silentFrames: [Int]
+    private var outputReal: [Float]
+    private var outputImaginary: [Float]
+    private var leftPower: [Float]
+    private var rightPower: [Float]
     /// Display power per bin: the sum over the analysed roles, halved so it is referenced to a stereo pair.
     /// For L and R alone that is their mean, exactly as before; stereo content reads the same in both modes.
-    private var power = [Float](repeating: 0, count: fftSize / 2)
+    private var power: [Float]
     private var bands: [BandMap] = []
-    private var spectrogramBands: [BandMap] = []
-    /// dB of the low bins that interpolated rows read (one vectorised log per tick instead of three per row).
+    private var fineBands: [BandMap] = []
+    /// The newest transform's `MeterSnapshot.fineBandCount` bands (dBFS), filled with the 64 by `refreshSpectrum`.
+    package private(set) var fineSpectrum = [Float](repeating: -120, count: MeterSnapshot.fineBandCount)
+    /// The waterfall's own multi-resolution analysis of the same history rings; tests and comparisons may substitute
+    /// one of another window or resolving power.
+    package var spectrogramAnalyzer: SpectrogramAnalyzer
+    /// Which analysis the waterfall's columns use; Enhanced builds its analyser the first time it is asked for.
+    package var spectrogramMode = SpectrogramMode.classic
+    private var reassigned: ReassignedSpectrogram?
+    /// Roles the newest transform was asked for, which the waterfall column follows (L and R, or every Spatial role).
+    private var requestedRoles = [Role.left, Role.right]
+    /// Roles the newest transform analysed: L and R, and the requested roles that were sounding.
+    private var analysedRoles = [Role.left, Role.right]
+    /// dB of the low bins that interpolated bands read (one vectorised log per tick instead of three per band).
     private var lowDecibels: [Float] = []
-    /// Scratch for one pass of row powers, converted to dB together.
-    private var rowPower = [Float](repeating: 0, count: max(MeterSnapshot.bandCount, MeterSnapshot.spectrogramBandCount))
+    /// Scratch for one pass of band powers, converted to dB together.
+    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.fineBandCount)
+    /// The loudest bin of each wide band in the newest pass, refined in dB afterwards.
+    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.fineBandCount)
     private var amplitudeScale: Float = 0
     /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
     private var binBands: [Int8] = []
-    private(set) var bandSums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
+    package private(set) var bandSums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
     /// Mean square of the windowed signal per unit of one-sided |X|² (Parseval): 2 / (N · Σw²).
-    private(set) var bandPowerScale: Double = 0
+    package private(set) var bandPowerScale: Double = 0
     /// First and last bin of each band, and every transformed role's mean square per band (role-major).
     private var bandBins: [Range<Int>] = []
-    private(set) var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
+    package private(set) var roleBandPower = [Float](repeating: 0, count: StereoBands.roleFloats)
+    /// The routed roles' spatial field (the Immersive soundstage), built from each Spatial transform while
+    /// `buildsSpatialField` is on; `spatialFieldBuilt` says whether the newest transform built it.
+    package let spatialField: SpatialFieldAnalyzer
+    package var buildsSpatialField = false
+    package private(set) var spatialFieldBuilt = false
     private var cursor = 0
     private var historyCount = 0
     private var peakLeft: Float = 0
@@ -302,37 +351,61 @@ final class SpectrumAnalyzer {
     private var levelFrames = 0
 
     /// `recording` marks the routed roles whose history is kept for Spatial analysis (L and R always are).
-    init?(sampleRate: Double, recording roles: [Bool] = []) {
+    package init?(sampleRate: Double, recording roles: [Bool] = []) {
         guard sampleRate.isFinite, sampleRate > 100,
-              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.fftSize), .FORWARD) else { return nil }
+              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: Self.historyLength(sampleRate: sampleRate)),
+              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.historyLength(sampleRate: sampleRate)), .FORWARD)
+        else { return nil }
         self.setup = setup
+        self.spectrogramAnalyzer = spectrogramAnalyzer
         self.sampleRate = sampleRate
+        let n = Self.historyLength(sampleRate: sampleRate)
+        historyLength = n
+        history = [Float](repeating: 0, count: Role.count * n)
+        silentFrames = [Int](repeating: n, count: Role.count)
+        window = [Float](repeating: 0, count: n)
+        fftWindow = [Float](repeating: 0, count: n)
+        inputReal = [Float](repeating: 0, count: n)
+        inputImaginary = [Float](repeating: 0, count: n)
+        outputReal = [Float](repeating: 0, count: n)
+        outputImaginary = [Float](repeating: 0, count: n)
+        leftPower = [Float](repeating: 0, count: n / 2)
+        rightPower = [Float](repeating: 0, count: n / 2)
+        power = [Float](repeating: 0, count: n / 2)
         recordedRoles = [Role.left, Role.right] + (0..<min(roles.count, Role.count)).filter { $0 > Role.right && roles[$0] }
-        vDSP_hann_window(&window, vDSP_Length(Self.fftSize), Int32(vDSP_HANN_DENORM))
+        spatialField = SpatialFieldAnalyzer(sampleRate: sampleRate, transformLength: n, roles: recordedRoles)
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_DENORM))
         var half: Float = 0.5
-        vDSP_vsmul(window, 1, &half, &fftWindow, 1, vDSP_Length(Self.fftSize))
+        vDSP_vsmul(window, 1, &half, &fftWindow, 1, vDSP_Length(n))
         var windowSum: Float = 0
-        vDSP_sve(window, 1, &windowSum, vDSP_Length(Self.fftSize))
+        vDSP_sve(window, 1, &windowSum, vDSP_Length(n))
         amplitudeScale = 2 / windowSum
         var windowSquares: Float = 0
-        vDSP_svesq(window, 1, &windowSquares, vDSP_Length(Self.fftSize))
-        bandPowerScale = 2 / (Double(Self.fftSize) * Double(windowSquares))
-        binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: Self.fftSize)
+        vDSP_svesq(window, 1, &windowSquares, vDSP_Length(n))
+        bandPowerScale = 2 / (Double(n) * Double(windowSquares))
+        binBands = StereoBands.binBands(sampleRate: sampleRate, fftSize: n)
         bandBins = (0..<StereoBands.count).map { band in
             let bins = binBands.indices.filter { binBands[$0] == band }
             guard let first = bins.first, let last = bins.last else { return 0..<0 }
             return first..<(last + 1)
         }
-        bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate)
-        spectrogramBands = Self.bandMaps(count: MeterSnapshot.spectrogramBandCount, sampleRate: sampleRate)
-        let lowBins = (bands + spectrogramBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
-        lowDecibels = [Float](repeating: -120, count: min(Self.fftSize / 2, lowBins))
+        bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate, fftSize: n)
+        fineBands = Self.bandMaps(count: MeterSnapshot.fineBandCount, sampleRate: sampleRate, fftSize: n)
+        let lowBins = (bands + fineBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
+        lowDecibels = [Float](repeating: -120, count: min(n / 2, lowBins))
+    }
+
+    /// `historyLength` at `sampleRate`: `fftSize` up to 48 kHz, then doubled per doubling of the rate (up to 8×).
+    package static func historyLength(sampleRate: Double) -> Int {
+        var length = fftSize
+        while Double(length) * 48_000 / Double(fftSize) < sampleRate * 0.99 && length < 8 * fftSize { length *= 2 }
+        return length
     }
 
     /// Roles a Spatial spectrum sums: L, R and every other routed role.
-    var spatialRoles: [Int] { recordedRoles }
+    package var spatialRoles: [Int] { recordedRoles }
     /// Every routed role has a full FFT window (always true when only L and R are routed).
-    var spatialReady: Bool { recordedRoles.count <= 2 || (recordsSpatial && spatialHistoryCount == Self.fftSize) }
+    package var spatialReady: Bool { recordedRoles.count <= 2 || (recordsSpatial && spatialHistoryCount == historyLength) }
 
     /// Fills `lowDecibels`: 10·log10 of the display power times the amplitude scale², floored at −120 dB.
     private func refreshLowDecibels() {
@@ -354,7 +427,7 @@ final class SpectrumAnalyzer {
     deinit { vDSP_DFT_DestroySetup(setup) }
 
     /// Interleaved L/R frames (tests and tools): only L and R are recorded.
-    func consume(_ frames: UnsafeBufferPointer<StereoFrame>) {
+    package func consume(_ frames: UnsafeBufferPointer<StereoFrame>) {
         guard let base = frames.baseAddress, !frames.isEmpty else { return }
         base.withMemoryRebound(to: Float.self, capacity: frames.count * 2) { samples in
             accumulate(count: frames.count, stride: 2, roles: [Role.left, Role.right]) { samples + ($0 == Role.left ? 0 : 1) }
@@ -362,24 +435,24 @@ final class SpectrumAnalyzer {
     }
 
     /// Role-mapped frames from the capture ring: L/R sums for the correlation, history for every recorded role.
-    func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
+    package func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard let base = frames.baseAddress, !frames.isEmpty else { return }
         base.withMemoryRebound(to: Float.self, capacity: frames.count * Role.count) { samples in
             accumulate(count: frames.count, stride: Role.count, roles: historyRoles) { samples + $0 }
         }
-        if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + frames.count) }
+        if recordsSpatial { spatialHistoryCount = min(historyLength, spatialHistoryCount + frames.count) }
     }
 
     /// Already de-interleaved audio (see `MeterPipeline`); L, R and, while Spatial is recorded, every routed role
     /// must be present.
-    func consume(_ block: PlanarBlock) {
+    package func consume(_ block: PlanarBlock) {
         guard block.count > 0 else { return }
         accumulate(count: block.count, stride: 1, roles: historyRoles) { block.channel($0) }
-        if recordsSpatial { spatialHistoryCount = min(Self.fftSize, spatialHistoryCount + block.count) }
+        if recordsSpatial { spatialHistoryCount = min(historyLength, spatialHistoryCount + block.count) }
     }
 
     /// The roles whose history is kept right now: L and R, plus every routed role while Spatial is recorded.
-    var historyRoles: [Int] { recordsSpatial ? recordedRoles : [Role.left, Role.right] }
+    package var historyRoles: [Int] { recordsSpatial ? recordedRoles : [Role.left, Role.right] }
 
     /// `channel(role)` is the role's first sample; its samples lie `stride` floats apart. L and R come first.
     private func accumulate(count frameCount: Int, stride: Int, roles: [Int], channel: (Int) -> UnsafePointer<Float>) {
@@ -400,20 +473,21 @@ final class SpectrumAnalyzer {
         sumLeft += Double(leftSquared)
         sumRight += Double(rightSquared)
         sumProduct += Double(product)
-        // Keep the newest FFT window: at most two contiguous copies per role into its ring.
+        // Keep the newest `historyLength` samples: at most two contiguous copies per role into its ring.
+        let length = historyLength
         var remaining = frameCount
         var skip = 0
-        if remaining > Self.fftSize {
-            skip = remaining - Self.fftSize
-            remaining = Self.fftSize
+        if remaining > length {
+            skip = remaining - length
+            remaining = length
         }
         history.withUnsafeMutableBufferPointer { rings in
             while remaining > 0 {
-                let run = min(remaining, Self.fftSize - cursor)
+                let run = min(remaining, length - cursor)
                 for role in roles {
-                    audio_gather_strided(channel(role) + skip * stride, UInt32(stride), rings.baseAddress! + role * Self.fftSize + cursor, UInt32(run))
+                    audio_gather_strided(channel(role) + skip * stride, UInt32(stride), rings.baseAddress! + role * length + cursor, UInt32(run))
                 }
-                cursor = (cursor + run) % Self.fftSize
+                cursor = (cursor + run) % length
                 skip += run
                 remaining -= run
             }
@@ -426,17 +500,29 @@ final class SpectrumAnalyzer {
             case roles[1]: peak = rightPeak
             default: vDSP_maxmgv(channel(role), stride, &peak, count)
             }
-            silentFrames[role] = peak > 0 ? 0 : min(Self.fftSize, silentFrames[role] + frameCount)
+            silentFrames[role] = peak > 0 ? 0 : min(length, silentFrames[role] + frameCount)
         }
         levelFrames += frameCount
-        historyCount = min(Self.fftSize, historyCount + frameCount)
+        historyCount = min(length, historyCount + frameCount)
     }
 
     /// A full FFT window has been captured, so spectra are meaningful.
-    var ready: Bool { historyCount == Self.fftSize }
+    package var ready: Bool { historyCount == historyLength }
+
+    /// A break in the audio: the FFT window starts empty, so no transform mixes audio from both sides of it.
+    /// Until it has refilled (`ready`), the spectrum reads as it does when a stream starts.
+    package func interrupt() {
+        spatialField.reset()
+        spatialFieldBuilt = false
+        history.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+        for role in silentFrames.indices { silentFrames[role] = historyLength }
+        cursor = 0
+        historyCount = 0
+        spatialHistoryCount = 0
+    }
 
     /// L², R² and L·R sums since the previous call, for the phase correlation, and the frames they cover.
-    func takeStereoSums() -> (left: Double, right: Double, product: Double, frames: Int) {
+    package func takeStereoSums() -> (left: Double, right: Double, product: Double, frames: Int) {
         defer {
             peakLeft = 0
             peakRight = 0
@@ -449,28 +535,29 @@ final class SpectrumAnalyzer {
     }
 
     /// Pearson correlation of L and R from `takeStereoSums` totals; silence (or one silent side) has none.
-    static func correlation(left: Double, right: Double, product: Double) -> Float {
+    package static func correlation(left: Double, right: Double, product: Double) -> Float {
         let energy = left * right
         return energy > 1e-12 ? Float(max(-1, min(1, product / sqrt(energy)))) : MeterSnapshot.noCorrelation
     }
 
     /// Transforms the newest FFT window of `roles` (L and R by default; `spatialRoles` for every routed role)
-    /// and fills the 64 display bands; returns the dominant peak (Hz, dBFS). The power spectrum stays available
-    /// to `spectrogram(into:)` until the next transform.
-    func refreshSpectrum(into spectrum: inout [Float], roles: [Int] = [Role.left, Role.right]) -> (frequency: Float, level: Float) {
+    /// and fills the 64 display bands (and `fineSpectrum`); returns the dominant peak (Hz, dBFS). The power spectrum
+    /// stays available to `spectrogram(into:)` until the next transform.
+    package func refreshSpectrum(into spectrum: inout [Float], roles: [Int] = [Role.left, Role.right]) -> (frequency: Float, level: Float) {
         transform(roles)
         refreshLowDecibels()
         levels(bands, into: &spectrum)
+        levels(fineBands, into: &fineSpectrum)
         notes = tonalPeaks()
         return dominantPeak()
     }
 
     /// Note slots in each published snapshot (`MeterSnapshot.notes`).
-    static let maxNotes = 6
+    package static let maxNotes = 6
     /// Most notes the keyboard lights at once: the few that clearly lead, not every partial of a dense mix.
-    static let litNotes = 4
+    package static let litNotes = 4
     /// The newest transform's notes (`tonalPeaks`), loudest first.
-    private(set) var notes: [(frequency: Float, level: Float)] = []
+    package private(set) var notes: [(frequency: Float, level: Float)] = []
 
     /// The notes most likely sounding together, from the newest transform: tonal peaks between A0 and C8 (a
     /// local maximum at least 12 dB above the spectrum 3 to 8 bins either side, so noise and the window's own
@@ -479,9 +566,9 @@ final class SpectrumAnalyzer {
     /// the 2nd to 8th harmonic of a lower note already kept (within 40 cents) and not clearly louder than it is
     /// that note's overtone, not a note of its own. Each frequency is refined like `dominantPeak`.
     private func tonalPeaks() -> [(frequency: Float, level: Float)] {
-        let binWidth = sampleRate / Double(Self.fftSize)
+        let binWidth = sampleRate / Double(historyLength)
         let first = max(2, Int(27 / binWidth))
-        let last = min(Self.fftSize / 2 - 10, Int(min(4_200, sampleRate / 2) / binWidth))
+        let last = min(historyLength / 2 - 10, Int(min(4_200, sampleRate / 2) / binWidth))
         guard first < last else { return [] }
         let scale = amplitudeScale * amplitudeScale
         func decibels(_ power: Float) -> Float { 10 * log10(max(power * scale, 1e-12)) }
@@ -508,10 +595,8 @@ final class SpectrumAnalyzer {
             .sorted { $0.level > $1.level }
             .prefix(16)
             .map { candidate in
-                let a = decibels(power[candidate.bin - 1]), b = candidate.level, c = decibels(power[candidate.bin + 1])
-                let curvature = a - 2 * b + c
-                let offset = curvature < 0 ? max(-0.5, min(0.5, 0.5 * (a - c) / curvature)) : 0
-                return (Float((Double(candidate.bin) + Double(offset)) * binWidth), b - 0.25 * (a - c) * offset)
+                let peak = Self.hannPeak(decibels(power[candidate.bin - 1]), candidate.level, decibels(power[candidate.bin + 1]))
+                return (Float((Double(candidate.bin) + Double(peak.offset)) * binWidth), peak.level)
             }
         peaks = peaks.filter { (27...4_200).contains($0.frequency) }
         // One per semitone: the louder of two peaks on the same key.
@@ -534,7 +619,7 @@ final class SpectrumAnalyzer {
     }
 
     /// `notes` packed as `MeterSnapshot.notes`.
-    func packedNotes(into output: UnsafeMutablePointer<Float>) {
+    package func packedNotes(into output: UnsafeMutablePointer<Float>) {
         for index in 0..<Self.maxNotes {
             let note: (frequency: Float, level: Float) = index < notes.count ? notes[index] : (0, -120)
             output[2 * index] = note.frequency
@@ -542,12 +627,42 @@ final class SpectrumAnalyzer {
         }
     }
 
-    /// Waterfall rows of the most recent transform.
-    func spectrogram(into rows: inout [Float]) {
-        levels(spectrogramBands, into: &rows)
+    /// A waterfall column (`SpectrogramAnalyzer`) of the roles the newest transform was asked for, over the whole
+    /// history. Rings silent throughout add nothing and are skipped, as in `transform`.
+    package func spectrogram(into rows: inout [Float]) {
+        let length = historyLength
+        let roles = requestedRoles.count > 2
+            ? Array(requestedRoles.prefix(2)) + requestedRoles.dropFirst(2).filter { silentFrames[$0] < length }
+            : requestedRoles
+        let sounding = roles.allSatisfy { silentFrames[$0] >= length } ? [] : roles
+        // The newest transform is the bass zone's own: the same Hann window over the same ring, for the same roles
+        // unless one fell silent within the window.
+        let reuse = sounding == analysedRoles
+        if spectrogramMode == .enhanced {
+            if reassigned == nil { reassigned = ReassignedSpectrogram(sampleRate: sampleRate, span: length) }
+            if let reassigned {
+                history.withUnsafeBufferPointer { rings in
+                    rows.withUnsafeMutableBufferPointer { out in
+                        reassigned.column(rings: rings.baseAddress!, cursor: cursor, roles: sounding, into: out.baseAddress!)
+                    }
+                }
+                return
+            }
+        }
+        history.withUnsafeBufferPointer { rings in
+            power.withUnsafeBufferPointer { longest in
+                rows.withUnsafeMutableBufferPointer { out in
+                    spectrogramAnalyzer.column(rings: rings.baseAddress!, cursor: cursor, roles: sounding,
+                                               longest: reuse ? longest.baseAddress! : nil, into: out.baseAddress!)
+                }
+            }
+        }
     }
 
-    func snapshot() -> MeterSnapshot {
+    /// The waterfall's analysis (resolutions in use, for diagnostics).
+    package var spectrogramResolutions: [(length: Int, frames: Int, window: SpectralWindow)] { spectrogramAnalyzer.resolutions }
+
+    package func snapshot() -> MeterSnapshot {
         var result = MeterSnapshot()
         if levelFrames > 0 {
             result.leftPeak = peakLeft
@@ -557,6 +672,7 @@ final class SpectrumAnalyzer {
             result.correlation = Self.correlation(left: sumLeft, right: sumRight, product: sumProduct)
             if ready {
                 (result.peakFrequency, result.peakLevel) = refreshSpectrum(into: &result.spectrum)
+                result.spectrumFine = fineSpectrum
                 result.notes.withUnsafeMutableBufferPointer { packedNotes(into: $0.baseAddress!) }
                 spectrogram(into: &result.spectrogram)
             }
@@ -565,17 +681,21 @@ final class SpectrumAnalyzer {
         return result
     }
 
-    /// A log-spaced display row. Rows wider than ~1.5 bins take the loudest bin they cover;
-    /// narrower rows (the low octaves) interpolate power at their centre frequency instead of
-    /// repeating one bin, which removes the staircase at the bottom of the waterfall.
-    struct BandMap {
-        let first: Int
-        let last: Int
-        let fraction: Float
-        var interpolated: Bool { fraction >= 0 }
+    /// A log-spaced display band (the spectrum's 64, or a waterfall row at one of its resolutions). Bands wider than
+    /// ~1.5 bins take the loudest bin they cover; narrower ones (the low octaves) interpolate at their centre
+    /// frequency instead of repeating one bin, which removes the staircase at the bottom of the axis.
+    package struct BandMap {
+        package let first: Int
+        package let last: Int
+        package let fraction: Float
+        /// Half the band's width in bins, for an interpolated band (which reads the loudest point within it).
+        package var halfWidth: Float = 0
+        package var interpolated: Bool { fraction >= 0 }
+        /// The band's centre, in fractional bins (interpolated bands).
+        package var position: Float { Float(first) + fraction }
     }
 
-    static func bandMaps(count: Int, sampleRate: Double) -> [BandMap] {
+    package static func bandMaps(count: Int, sampleRate: Double, fftSize: Int = SpectrumAnalyzer.fftSize) -> [BandMap] {
         let upper = min(20_000, sampleRate / 2)
         let binWidth = sampleRate / Double(fftSize)
         let lastBin = fftSize / 2 - 1
@@ -585,7 +705,8 @@ final class SpectrumAnalyzer {
             if (high - low) / binWidth < 1.5 {
                 let position = min(Double(lastBin - 1), max(1, sqrt(low * high) / binWidth))
                 let first = Int(position)
-                return BandMap(first: first, last: first + 1, fraction: Float(position - Double(first)))
+                return BandMap(first: first, last: first + 1, fraction: Float(position - Double(first)),
+                               halfWidth: Float((high - low) / binWidth / 2))
             }
             let first = max(1, min(lastBin, Int(low / binWidth)))
             return BandMap(first: first, last: max(first, min(lastBin, Int(high / binWidth))), fraction: -1)
@@ -599,15 +720,24 @@ final class SpectrumAnalyzer {
     private func levels(_ maps: [BandMap], into output: inout [Float]) {
         let count = maps.count
         power.withUnsafeBufferPointer { bins in
-            for (index, map) in maps.enumerated() where !map.interpolated {
-                let width = map.last - map.first + 1
-                var power: Float = 0
-                if width < 8 {
-                    for bin in map.first...map.last { power = max(power, bins[bin]) }
-                } else {
-                    vDSP_maxv(bins.baseAddress! + map.first, 1, &power, vDSP_Length(width))
+            rowPower.withUnsafeMutableBufferPointer { rows in
+                rowPeakBin.withUnsafeMutableBufferPointer { peaks in
+                    for index in 0..<count where !maps[index].interpolated {
+                        let map = maps[index]
+                        let width = map.last - map.first + 1
+                        var power: Float = 0
+                        var peak = map.first
+                        if width < 8 {
+                            for bin in map.first...map.last where bins[bin] > power { power = bins[bin]; peak = bin }
+                        } else {
+                            var offset: vDSP_Length = 0
+                            vDSP_maxvi(bins.baseAddress! + map.first, 1, &power, &offset, vDSP_Length(width))
+                            peak = map.first + Int(offset)
+                        }
+                        rows[index] = max(0, power)
+                        peaks[index] = peak
+                    }
                 }
-                rowPower[index] = max(0, power)
             }
         }
         var scale = amplitudeScale * amplitudeScale
@@ -622,27 +752,92 @@ final class SpectrumAnalyzer {
             vvlog10f(base, base, &n)
             vDSP_vsmul(base, 1, &ten, base, 1, vDSP_Length(count))
         }
-        for (index, map) in maps.enumerated() {
-            guard map.interpolated else {
-                output[index] = rowPower[index]
-                continue
+        let scale2 = amplitudeScale * amplitudeScale
+        // Read through buffer pointers, with the estimator fetched once: indexing the stored arrays and reaching the
+        // static estimator per band cost an access check, a lazy-initialisation check and a retain each time, which
+        // was most of the time the bands took.
+        let estimator = PeakEstimator.hann
+        power.withUnsafeBufferPointer { bins in
+            rowPower.withUnsafeBufferPointer { rows in
+                rowPeakBin.withUnsafeBufferPointer { peaks in
+                    lowDecibels.withUnsafeBufferPointer { low in
+                        output.withUnsafeMutableBufferPointer { out in
+                            func decibels(_ bin: Int) -> Float { 10 * log10(max(bins[bin] * scale2, 1e-12)) }
+                            for index in 0..<count {
+                                let map = maps[index]
+                                guard map.interpolated else {
+                                    // A tone between two bins reads up to 1.4 dB low in either (Hann scalloping); where
+                                    // the band's loudest bin is a local maximum, the Hann peak estimate restores the
+                                    // level, if the tone lies in the band.
+                                    var level = rows[index]
+                                    let k = peaks[index]
+                                    if k > 0, k + 1 < bins.count, bins[k] > 0, bins[k] >= bins[k - 1], bins[k] >= bins[k + 1] {
+                                        let peak = estimator.peak(decibels(k - 1), level, decibels(k + 1))
+                                        let tone = Float(k) + peak.offset
+                                        if tone >= Float(map.first) - 0.5, tone <= Float(map.last) + 0.5 { level = peak.level }
+                                    }
+                                    out[index] = level
+                                    continue
+                                }
+                                out[index] = Self.interpolatedLevel(low, at: map.position, halfWidth: map.halfWidth,
+                                                                    estimator: estimator)
+                            }
+                        }
+                    }
+                }
             }
-            let position = Float(map.first) + map.fraction
-            let nearest = min(lowDecibels.count - 2, max(1, Int(position.rounded())))
-            let a = lowDecibels[nearest - 1], b = lowDecibels[nearest], c = lowDecibels[nearest + 1]
-            let x = position - Float(nearest)
-            let value = b + 0.5 * (c - a) * x + 0.5 * (a - 2 * b + c) * x * x
-            output[index] = max(-120, min(max(a, max(b, c)), value))
         }
     }
 
-    /// Loudest bin k in 20 Hz…upper, refined by parabolic interpolation of the dB values at k−1, k, k+1.
-    /// Plain `k · sampleRate / fftSize` is quantised to 5.9 Hz, which is more than a semitone below ~100 Hz;
-    /// the vertex offset (|δ| ≤ ½ bin) makes note names and cents meaningful there.
+    /// A tone's offset from bin k (−½…½ bin) and its level, from the dB levels `a`, `b`, `c` of bins k−1, k, k+1 of a
+    /// Hann-windowed spectrum, k the loudest. The Hann window's lobe makes the magnitude ratio of the two loudest bins
+    /// α = (1 + δ)/(2 − δ), so δ = (2α − 1)/(α + 1) exactly (Grandke's estimator), and the lobe's shape at δ,
+    /// sinc(δ)/(1 − δ²), gives the level lost to scalloping. For one tone it is exact (to the window's leakage from
+    /// elsewhere): a fitted log parabola was off by up to 2.9 cents and 0.3 dB at 55 Hz. Neighbours louder than
+    /// `b` (not a peak) give no offset. (`PeakEstimator` derives the same from any cosine-sum window's kernel.)
+    package static func hannPeak(_ a: Float, _ b: Float, _ c: Float) -> (offset: Float, level: Float) {
+        PeakEstimator.hann.peak(a, b, c)
+    }
+
+    /// The loudest level within `position ± halfWidth` (fractional bins) of a spectrum in dB, read from the parabola
+    /// through three bins: a band narrower than a bin stands for an interval of frequency, and a tone anywhere in it
+    /// reads its full level there, as it does in a wide band (its loudest bin). The parabola is centred on the local
+    /// maximum beside `position` when there is one, so it is the peak's own model (the one `dominantPeak` uses);
+    /// sampled at the band's centre around the nearest bin, a tone between rows read up to ~1.4 dB low. Elsewhere
+    /// (a flank or the floor) it is centred on the nearest bin. Never above the vertex or below −120 dB.
+    package static func interpolatedLevel(_ d: UnsafeBufferPointer<Float>, at position: Float, halfWidth: Float = 0,
+                                          estimator: PeakEstimator = .hann) -> Float {
+        guard d.count >= 3 else { return d.first ?? -120 }
+        var centre = min(d.count - 2, max(1, Int(position.rounded())))
+        if centre - 1 >= 1, d[centre - 1] > d[centre], d[centre - 1] >= d[centre - 2] {
+            centre -= 1
+        } else if centre + 2 < d.count, d[centre + 1] > d[centre], d[centre + 1] >= d[centre + 2] {
+            centre += 1
+        }
+        let a = d[centre - 1], b = d[centre], c = d[centre + 1]
+        let curvature = a - 2 * b + c
+        var x = position - Float(centre)
+        var ceiling = max(a, max(b, c))
+        if b >= a, b >= c, b > -120 {
+            // A peak: where the tone itself lies within the band, the band reads the tone's level (`hannPeak`);
+            // otherwise the band's edge nearer to it, on the flank.
+            let peak = estimator.peak(a, b, c)
+            if abs(peak.offset - x) <= halfWidth { return max(-120, peak.level) }
+            ceiling = peak.level
+            x = peak.offset < x ? x - halfWidth : x + halfWidth
+        }
+        x = max(-1.5, min(1.5, x))
+        let value = b + 0.5 * (c - a) * x + 0.5 * curvature * x * x
+        return max(-120, min(ceiling, value))
+    }
+
+    /// Loudest bin k in 20 Hz…upper, refined from k−1, k, k+1 (`hannPeak`). Plain `k · sampleRate / fftSize` is
+    /// quantised to 5.9 Hz, which is more than a semitone below ~100 Hz; the offset (|δ| ≤ ½ bin) makes note names
+    /// and cents meaningful there.
     private func dominantPeak() -> (Float, Float) {
-        let binWidth = sampleRate / Double(Self.fftSize)
+        let binWidth = sampleRate / Double(historyLength)
         let first = max(2, Int(20 / binWidth))
-        let last = min(Self.fftSize / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
+        let last = min(historyLength / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
         guard first < last else { return (0, -120) }
         var peakPower: Float = 0
         var index: vDSP_Length = 0
@@ -652,11 +847,8 @@ final class SpectrumAnalyzer {
         func decibels(_ bin: Int) -> Float {
             return 20 * log10(max(sqrt(power[bin]) * amplitudeScale, 0.000001))
         }
-        let a = decibels(peakBin - 1), b = decibels(peakBin), c = decibels(peakBin + 1)
-        let curvature = a - 2 * b + c
-        let offset = curvature < 0 ? max(-0.5, min(0.5, 0.5 * (a - c) / curvature)) : 0
-        let level = b - 0.25 * (a - c) * offset
-        return (Float((Double(peakBin) + Double(offset)) * binWidth), max(-120, level))
+        let peak = Self.hannPeak(decibels(peakBin - 1), decibels(peakBin), decibels(peakBin + 1))
+        return (Float((Double(peakBin) + Double(peak.offset)) * binWidth), max(-120, peak.level))
     }
 
     /// One complex DFT per pair of roles, z = A + iB (both windowed); Z[k] and conj(Z[N−k]) give each spectrum:
@@ -667,22 +859,42 @@ final class SpectrumAnalyzer {
         // A silent ring adds nothing to the power, and its band powers are zero: after L and R, only roles with
         // sound are transformed, paired among themselves. A 7.1.4 stream carrying stereo costs one transform.
         let roles = requested.count > 2
-            ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < Self.fftSize }
+            ? Array(requested.prefix(2)) + requested.dropFirst(2).filter { silentFrames[$0] < historyLength }
             : requested
-        let bins = vDSP_Length(Self.fftSize / 2)
-        if roles.allSatisfy({ silentFrames[$0] >= Self.fftSize }) {
+        requestedRoles = requested
+        analysedRoles = roles
+        // The spatial field reads the Spatial transform of every routed role (in Immersive only), every
+        // `SpatialFieldAnalyzer.interval`-th one; between them the newest field stands.
+        let spatialTransform = buildsSpatialField && requested == recordedRoles
+        let field = spatialTransform && spatialField.due(continuing: spatialFieldBuilt)
+        spatialFieldBuilt = spatialTransform && (field || spatialFieldBuilt)
+        let fieldSeconds = Double(SpatialFieldAnalyzer.interval) / MeterPipeline.tickRate
+        let bins = vDSP_Length(historyLength / 2)
+        if roles.allSatisfy({ silentFrames[$0] >= historyLength }) {
             // Digital silence everywhere (a paused player still delivers zeros): the transforms would be zeros.
             for i in power.indices { power[i] = 0 }
             for i in roleBandPower.indices { roleBandPower[i] = 0 }
             if roles.count > 1 && roles[0] == Role.left && roles[1] == Role.right {
                 bandSums = Array(repeating: (0, 0, 0), count: StereoBands.count)
             }
+            if field { spatialField.silenceAll(seconds: fieldSeconds) }
             return
+        }
+        if field {
+            for role in requested where !roles.contains(role) { spatialField.silence(role) }
         }
         var index = 0
         while index < roles.count {
             let pair = index + 1 < roles.count
             transformPair(roles[index], pair ? roles[index + 1] : nil)
+            if field {
+                outputReal.withUnsafeBufferPointer { real in
+                    outputImaginary.withUnsafeBufferPointer { imaginary in
+                        spatialField.capture(roles[index], pair ? roles[index + 1] : nil,
+                                             real: real.baseAddress!, imaginary: imaginary.baseAddress!)
+                    }
+                }
+            }
             if index == 0 && pair && roles[0] == Role.left && roles[1] == Role.right { accumulateStereoBands() }
             if index == 0 { for i in roleBandPower.indices { roleBandPower[i] = 0 } }
             accumulateRoleBands(roles[index], pair ? roles[index + 1] : nil)
@@ -699,6 +911,7 @@ final class SpectrumAnalyzer {
         }
         var half: Float = 0.5
         power.withUnsafeMutableBufferPointer { vDSP_vsmul($0.baseAddress!, 1, &half, $0.baseAddress!, 1, bins) }
+        if field { spatialField.analyse(seconds: fieldSeconds, scale: bandPowerScale) }
     }
 
     /// Mean square per band of the pair just transformed (`leftPower` for `a`, `rightPower` for `b`).
@@ -719,7 +932,7 @@ final class SpectrumAnalyzer {
     /// Per-band |L|², |R|² and the cross spectrum Re(L·R̄) of the L/R transform just made. With z = L + iR, the
     /// conjugate-symmetric split gives Re(L[k]·conj(R[k])) = (Zr[k]·Zi[N−k] + Zr[N−k]·Zi[k]) / 2.
     private func accumulateStereoBands() {
-        let n = Self.fftSize
+        let n = historyLength
         var sums = [(left: Double, right: Double, cross: Double)](repeating: (0, 0, 0), count: StereoBands.count)
         outputReal.withUnsafeBufferPointer { zr in
             outputImaginary.withUnsafeBufferPointer { zi in
@@ -740,7 +953,7 @@ final class SpectrumAnalyzer {
 
     /// Fills `leftPower` with |A|² and `rightPower` with |B|² (zero without a second role).
     private func transformPair(_ a: Int, _ b: Int?) {
-        let n = Self.fftSize
+        let n = historyLength
         let tail = n - cursor
         // Oldest sample first: the ring from the cursor to the end, then from the start, windowed on the way.
         inputReal.withUnsafeMutableBufferPointer { real in

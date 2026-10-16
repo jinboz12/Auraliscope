@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Sections of the Settings window, in sidebar order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, audio, channels, panels, appearance
+    case general, audio, channels, appearance
 
     static let defaultsKey = "settingsPane"
     var id: String { rawValue }
@@ -14,7 +14,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: return L("General")
         case .audio: return L("Audio")
         case .channels: return L("Channels")
-        case .panels: return L("Panels")
         case .appearance: return L("Appearance")
         }
     }
@@ -24,7 +23,6 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .general: return "gearshape"
         case .audio: return "mic"
         case .channels: return "hifispeaker.2"
-        case .panels: return "square.split.2x2"
         case .appearance: return "paintpalette"
         }
     }
@@ -64,11 +62,6 @@ final class SettingsDraft: ObservableObject {
     @Published var routing: [Int32]?
     @Published var appearance: AppearanceMode?
     @Published var palette: Theme.Palette?
-    @Published var stageStyle: StageStyle?
-    @Published var spectrumSide: SpectrumSide?
-    @Published var peakHolds: Bool?
-    @Published var waveSeconds: Int?
-    @Published var headline: LoudnessReading?
 
     enum Outcome: Equatable { case checking, applied, failed([String]) }
     @Published private(set) var outcome: Outcome?
@@ -129,24 +122,6 @@ final class SettingsDraft: ObservableObject {
         field(\.routing, { L("Routing") }, previewable: false, live: { $0.sourceForRole },
               write: { value, model in model.assign(routing: value) },
               applied: { routing, model in model.speakerLayout.roles.allSatisfy { model.sourceForRole[$0] == routing[$0] } }),
-        field(\.headline, { L("Main reading") }, live: { _ in LoudnessReading.stored },
-              write: { value, _ in store(value.rawValue, LoudnessReading.key) }),
-        field(\.stageStyle, { L("Stereometer style") }, live: { $0.stageStyle }, write: { value, model in
-            store(value.rawValue, StageStyle.key)
-            model.stageStyle = value
-        }, applied: { value, model in model.stageStyle == value && StageStyle.stored == value }),
-        field(\.spectrumSide, { L("Orientation") }, live: { $0.displayOptions.spectrumSide }, write: { value, model in
-            store(value.rawValue, SpectrumSide.key)
-            model.displayOptions.spectrumSide = value
-        }, applied: { value, model in model.displayOptions.spectrumSide == value && SpectrumSide.stored == value }),
-        field(\.peakHolds, { L("Peak holds") }, live: { $0.displayOptions.peakHolds }, write: { value, model in
-            store(value, DisplayOptions.peakHoldsKey)
-            model.displayOptions.peakHolds = value
-        }, applied: { value, model in model.displayOptions.peakHolds == value && DisplayOptions.stored.peakHolds == value }),
-        field(\.waveSeconds, { L("Time span") }, live: { $0.displayOptions.waveSeconds }, write: { value, model in
-            store(value, DisplayOptions.waveSecondsKey)
-            model.displayOptions.waveSeconds = value
-        }, applied: { value, model in model.displayOptions.waveSeconds == value && DisplayOptions.stored.waveSeconds == value }),
     ]
 
     private static func field(for key: AnyKeyPath) -> Field? { fields.first { $0.key == key } }
@@ -292,13 +267,13 @@ final class SettingsDraft: ObservableObject {
         }
     }
 
-    /// Diagnostics (`--settings-preview`): previews Light and the spectrum on the left, changes the style while
+    /// Diagnostics (`--settings-preview`): previews the other appearance, changes the palette and Mono while
     /// previewing, then reverts, and prints what the app uses at each step.
     func rehearsePreview(model: MeterModel) {
         guard !rehearsed else { return }
         rehearsed = true
         func report(_ step: String) {
-            print("preview \(step): previewing \(previewing) dirty \(dirty) theme \(ThemeSettings.shared.mode.rawValue) side \(model.displayOptions.spectrumSide.rawValue) stored side \(SpectrumSide.stored.rawValue) style \(model.stageStyle.rawValue)")
+            print("preview \(step): previewing \(previewing) dirty \(dirty) theme \(ThemeSettings.shared.mode.rawValue) palette \(ThemeSettings.shared.palette.rawValue) mono \(model.monoEnabled)")
             fflush(stdout)
         }
         func later(_ delay: Double, _ body: @escaping @MainActor () -> Void) {
@@ -308,12 +283,11 @@ final class SettingsDraft: ObservableObject {
             report("before")
             // The opposite of what is in use, so every step changes something whatever was stored.
             let appearance: AppearanceMode = ThemeSettings.shared.mode == .light ? .dark : .light
-            let side: SpectrumSide = model.displayOptions.spectrumSide == .left ? .right : .left
-            let style: StageStyle = model.stageStyle == .filled ? .outline : .filled
+            let palette = Theme.Palette.allCases.first { $0 != ThemeSettings.shared.palette } ?? ThemeSettings.shared.palette
             self.binding(\.appearance, live: { ThemeSettings.shared.mode }).wrappedValue = appearance
             report("staged, previewing at once")
-            self.binding(\.spectrumSide, live: { model.displayOptions.spectrumSide }).wrappedValue = side
-            self.binding(\.stageStyle, live: { model.stageStyle }).wrappedValue = style
+            self.binding(\.palette, live: { ThemeSettings.shared.palette }).wrappedValue = palette
+            self.binding(\.mono, live: { model.monoEnabled }).wrappedValue = !model.monoEnabled
             report("changed while on")
             guard !CommandLine.arguments.contains("--settings-preview-hold") else { return }
             later(1) {
@@ -384,7 +358,6 @@ struct SettingsView: View {
                         case .general: GeneralPane(model: model)
                         case .audio: AudioPane(model: model)
                         case .channels: ChannelsPane(model: model)
-                        case .panels: PanelsPane(model: model)
                         case .appearance: AppearancePane()
                         }
                     }
@@ -472,6 +445,8 @@ struct SettingsView: View {
             .padding(.horizontal, 2)
             Button { openWindow(id: "about") } label: {
                 Label(L("About Auraliscope"), systemImage: "info.circle")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
             }
             .glassButton()
@@ -532,6 +507,7 @@ private struct GeneralPane: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var l10n = Localizer.shared
     @ObservedObject private var draft = SettingsDraft.shared
+    @AppStorage(CanvasDriver.frameRateKey) private var frameRate = 0
 
     var body: some View {
         SettingsSection(title: L("LANGUAGE")) {
@@ -551,6 +527,31 @@ private struct GeneralPane: View {
                     .glassButton()
             }
             SettingsNote(L("Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen."))
+            SettingsRow(title: L("Horizontal strip")) {
+                Button(L("Horizontal Strip")) { PanelPlacement.shared.toggleStrip() }
+                    .glassButton()
+            }
+            SettingsRow(title: L("Layout")) {
+                Button(L("Reset Layout")) { LayoutPresets.shared.apply(LayoutPresets.builtIns[0]) }
+                    .glassButton()
+            }
+            SettingsNote(L("The strip lays the panels in one row along the bottom of the screen (⌥⌘S). Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own."))
+        }
+        SettingsSection(title: L("PERFORMANCE")) {
+            SettingsRow(title: L("Display frame rate")) {
+                Picker(L("Display frame rate"), selection: Binding(get: { frameRate }, set: { rate in
+                    frameRate = rate
+                    CanvasDriver.shared.restart()
+                    DiagnosticLog.event("Frame rate: \(rate)")
+                })) {
+                    Text(L("Automatic")).tag(0)
+                    Text(verbatim: "60 fps").tag(60)
+                    Text(verbatim: "30 fps").tag(30)
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            SettingsNote(L("How often the meters redraw. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Automatic uses 30 fps in Low Power Mode. Takes effect at once."))
         }
         SettingsSection(title: L("STARTUP")) {
             SettingsRow(title: L("Show welcome at launch")) {
@@ -568,22 +569,70 @@ private struct AudioPane: View {
     @ObservedObject private var l10n = Localizer.shared
     @ObservedObject private var draft = SettingsDraft.shared
 
+    /// The two kinds of source: the Mac's own audio devices (inputs, and what apps play to outputs), analysed
+    /// here; or the Auraliscope Bridge inserts in a DAW, which analyse their audio themselves.
+    private enum SourceKind: Hashable { case devices, plugins }
+
     var body: some View {
+        let source = draft.binding(\.source, live: { model.selectedID })
+        let kind = source.wrappedValue.bridge != nil ? SourceKind.plugins : .devices
         SettingsSection(title: L("DEVICE")) {
+            SettingsRow(title: L("Source type")) {
+                Picker(L("Source type"), selection: Binding(get: { kind }, set: { wanted in
+                    guard wanted != kind else { return }
+                    // Back to the kind in use: what is in use. Otherwise the kind's own choice (see the model).
+                    let live = model.selectedID
+                    if wanted == .plugins {
+                        source.wrappedValue = live.bridge != nil ? live : model.preferredPluginSource()
+                    } else {
+                        source.wrappedValue = live.bridge == nil ? live : model.preferredDeviceSource()
+                    }
+                })) {
+                    Text(L("Audio devices")).tag(SourceKind.devices)
+                    Text(L("Host plugins")).tag(SourceKind.plugins)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 280)
+            }
+            Divider()
             SettingsRow(title: L("Source")) {
                 HStack(spacing: 6) {
-                    Picker(L("Source"), selection: draft.binding(\.source, live: { model.selectedID })) {
-                        let inputs = model.devices.filter { !$0.output }, outputs = model.devices.filter(\.output)
-                        Section(L("Inputs")) {
-                            Text(L("No input device")).tag(SourceID.none)
-                            ForEach(inputs) { device in
-                                Text(verbatim: "\(device.name) · \(device.channels) ch").tag(device.id)
+                    Picker(L("Source"), selection: source) {
+                        if kind == .devices {
+                            let hardware = model.devices.filter { !$0.isBridge }
+                            let inputs = hardware.filter { !$0.output }, outputs = hardware.filter(\.output)
+                            Section(L("Inputs")) {
+                                Text(L("No input device")).tag(SourceID.none)
+                                ForEach(inputs) { device in
+                                    Text(verbatim: "\(device.name) · \(device.channels) ch").tag(device.id)
+                                }
                             }
-                        }
-                        Section(L("Outputs · what apps play to them")) {
-                            Text(L("No output device")).tag(SourceID.noOutput)
-                            ForEach(outputs) { device in
-                                Text(verbatim: "\(L("%@ (output)", device.name)) · \(device.channels) ch").tag(device.id)
+                            Section(L("Outputs · what apps play to them")) {
+                                Text(L("No output device")).tag(SourceID.noOutput)
+                                ForEach(outputs) { device in
+                                    Text(verbatim: "\(L("%@ (output)", device.name)) · \(device.channels) ch").tag(device.id)
+                                }
+                            }
+                        } else {
+                            let plugins = model.devices.filter(\.isBridge)
+                            let waiting = model.selectedID.bridge != nil && model.selectedID != .anyPlugin
+                                && !plugins.contains { $0.id == model.selectedID }
+                            Section(L("DAW plugins · Auraliscope Bridge")) {
+                                Text(plugins.isEmpty ? L("No DAW plugin connected") : L("Choose a DAW plugin"))
+                                    .tag(SourceID.anyPlugin)
+                                ForEach(plugins) { device in
+                                    // Inserts that could be the saved one, while that is ambiguous, are marked.
+                                    let candidate = device.bridgeSession.map(model.bridgeCandidates.contains) ?? false
+                                    Text(verbatim: "\(candidate ? "◆ " : "")\(device.detail) · \(device.channels) ch").tag(device.id)
+                                }
+                                if waiting {
+                                    let name = model.selectedDevice?.name
+                                        ?? UserDefaults.standard.string(forKey: "bridgeSourceName") ?? L("DAW plugin")
+                                    Text(model.bridgeCandidates.isEmpty ? L("%@ (waiting)", name)
+                                         : L("%@ (choose one of the ◆ inserts)", name))
+                                        .tag(model.selectedID)
+                                }
                             }
                         }
                     }
@@ -607,8 +656,21 @@ private struct AudioPane: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
-            SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
+            if !model.incompatibleBridgePlugins.isEmpty {
+                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope, then reopen the project.",
+                        model.incompatibleBridgePlugins.map { $0.hostName }.joined(separator: ", ")),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11)).foregroundStyle(Theme.ochre)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if kind == .devices {
+                SettingsNote(L("Inputs are read directly. An output (macOS 14.2 or later) is read through a Core Audio tap: Auraliscope meters what every app plays to it, such as your DAW's monitor or headphone bus, without changing or delaying the signal."))
+                SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
+            } else {
+                SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
+                    ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported, and in VST3 immersive buses up to 9.1.6."))
+                SettingsNote(L("Each insert measures its own audio inside the DAW; Auraliscope shows its results. The plugin window's button also chooses its insert here."))
+            }
         }
         SettingsSection(title: L("PRIVACY")) {
             SettingsRow(title: L("Microphone access")) { PermissionControl() }
@@ -637,19 +699,29 @@ private struct ChannelsPane: View {
             // The four-segment mode picker gets a full-width row of its own: beside the diagram it made the
             // pane wider than the window's default size.
             HStack(alignment: .center, spacing: 16) {
-                LayoutDiagram(layout: draft.layout ?? model.speakerLayout)
+                LayoutDiagram(layout: model.layoutFromPlugin ? model.shownLayout : draft.layout ?? model.speakerLayout)
                     .frame(width: 96, height: 96)
                 SettingsRow(title: L("Immersive format")) {
-                    Picker(L("Immersive format"), selection: draft.binding(\.layout, live: { model.speakerLayout })) {
-                        ForEach(SpeakerLayout.allCases) { layout in
-                            Text(L("%@ · %d channels", layout.name, layout.channelCount)).tag(layout)
+                    if model.layoutFromPlugin {
+                        // A DAW plugin's immersive bus: its own format, not a choice.
+                        Text(verbatim: L("%@ · %d channels", model.shownLayoutName, Int(model.selectedDevice?.channels ?? 0)))
+                            .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                            .frame(width: 170, alignment: .leading)
+                    } else {
+                        Picker(L("Immersive format"), selection: draft.binding(\.layout, live: { model.speakerLayout })) {
+                            ForEach(SpeakerLayout.allCases) { layout in
+                                Text(L("%@ · %d channels", layout.name, layout.channelCount)).tag(layout)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: 170)
                     }
-                    .labelsHidden()
-                    .frame(width: 170)
                 }
             }
             .padding(.vertical, 10)
+            if model.layoutFromPlugin {
+                SettingsNote(L("The DAW plugin's bus sets the format and the routing: each of its channels feeds its own speaker. The format chosen here returns with audio devices."))
+            }
             Divider()
             SettingsRow(title: L("Show Mono mode")) {
                 Toggle(L("Show Mono mode"), isOn: draft.binding(\.mono, live: { model.monoEnabled }))
@@ -678,11 +750,11 @@ private struct ChannelsPane: View {
                     draft.binding(\.routing, live: { model.sourceForRole }).wrappedValue = model.defaultAssignment
                 }
                 .glassButton()
-                .disabled(draft.routingLocked)
+                .disabled(draft.routingLocked || model.layoutFromPlugin)
                     .help(L("Input 1 to the first channel, input 2 to the second, and so on"))
             }
             .frame(minHeight: 34)
-            ForEach(model.speakerLayout.groups, id: \.self) { group in
+            ForEach(model.shownLayout.groups, id: \.self) { group in
                 Divider()
                 HStack(spacing: 6) {
                     Capsule().fill(Theme.groupColor(group)).frame(width: 8, height: 3)
@@ -692,9 +764,9 @@ private struct ChannelsPane: View {
                     Spacer()
                 }
                 .padding(.top, 8)
-                ForEach(model.speakerLayout.speakers.filter { $0.group == group }, id: \.role) { speaker in
+                ForEach(model.shownLayout.speakers.filter { $0.group == group }, id: \.role) { speaker in
                     RoutingRow(model: model, speaker: speaker)
-                        .disabled(draft.routingLocked)
+                        .disabled(draft.routingLocked || model.layoutFromPlugin)
                 }
             }
             if draft.routingLocked {
@@ -720,7 +792,8 @@ private struct RoutingRow: View {
             })) {
                 Text(L("Off")).tag(Int32(-1))
                 ForEach(0..<Int(min(model.selectedDevice?.channels ?? 0, 64)), id: \.self) { source in
-                    Text(model.selectedDevice?.output == true ? L("Output %d", source + 1) : L("Input %d", source + 1)).tag(Int32(source))
+                    Text(model.selectedDevice?.isBridge == true ? L("Channel %d", source + 1)
+                         : model.selectedDevice?.output == true ? L("Output %d", source + 1) : L("Input %d", source + 1)).tag(Int32(source))
                 }
             } label: {
                 Text(speaker.name)
@@ -729,58 +802,6 @@ private struct RoutingRow: View {
             .frame(width: 150)
         }
         .frame(minHeight: 28)
-    }
-}
-
-/// How the panels are laid out and drawn: the loudness summary's main reading, the Spectrum panel's orientation
-/// and peak holds, the waveform's span and the stereometer's style. Every choice here previews at once.
-private struct PanelsPane: View {
-    @ObservedObject var model: MeterModel
-    @ObservedObject private var draft = SettingsDraft.shared
-    @ObservedObject private var l10n = Localizer.shared
-
-    var body: some View {
-        SettingsSection(title: L("LOUDNESS")) {
-            SettingsRow(title: L("Main reading")) {
-                segments(L("Main reading"), LoudnessReading.allCases.map { ($0, $0.title) }, \.headline,
-                         live: { LoudnessReading.stored })
-            }
-            SettingsNote(L("The large reading, gauge and target difference follow this choice. The other two readings stay beside it. Momentary covers 400 ms; Short-term covers 3 s. Integrated measures the programme since the last reset, with loudness gating."))
-        }
-        SettingsSection(title: L("SPECTROGRAM") + " · " + L("SPECTRUM")) {
-            SettingsRow(title: L("Orientation")) {
-                segments(L("Orientation"), SpectrumSide.allCases.map { ($0, $0.title) }, \.spectrumSide,
-                         live: { model.displayOptions.spectrumSide })
-            }
-            SettingsNote(L("Standard: keyboard on the left, the spectrogram scrolling left from now, the spectrum on the right. Mirrored flips the panel: the spectrum on the left, the spectrogram scrolling right from now, the keyboard on the right."))
-            Divider()
-            SettingsRow(title: L("Peak holds")) {
-                Toggle(L("Peak holds"), isOn: draft.binding(\.peakHolds, live: { model.displayOptions.peakHolds }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.small)
-            }
-            SettingsNote(L("A short mark at each band's recent peak on the live spectrum, held 1.2 s and then falling."))
-        }
-        SettingsSection(title: L("WAVEFORM")) {
-            SettingsRow(title: L("Time span")) {
-                segments(L("Time span"), DisplayOptions.waveChoices.map { ($0, L("%d s", $0)) }, \.waveSeconds,
-                         live: { model.displayOptions.waveSeconds })
-            }
-            SettingsNote(L("How much history the lanes show. A short span resolves single transients; a long one shows the shape of a phrase."))
-        }
-        SettingsSection(title: L("SOUNDSTAGE")) {
-            SettingsRow(title: L("Stereometer style")) {
-                segments(L("Stereometer style"), StageStyle.allCases.map { ($0, $0.title) }, \.stageStyle,
-                         live: { model.stageStyle })
-            }
-            SettingsNote(L("How the Stereo stereometer draws each band. Dots shows every sample; Outlines traces where each band's samples reach; Filled tints each outline, laying the smaller shapes over the larger so every edge stays visible."))
-        }
-    }
-
-    private func segments<T: Hashable>(_ label: String, _ options: [(T, String)],
-                                       _ key: ReferenceWritableKeyPath<SettingsDraft, T?>, live: @escaping () -> T) -> some View {
-        let binding = draft.binding(key, live: live)
-        return GlassSegments(label: label, options: options.map { ($0.0, $0.1, $0.1) }, selection: binding.wrappedValue,
-                             select: { binding.wrappedValue = $0 })
     }
 }
 
@@ -808,7 +829,7 @@ private struct AppearancePane: View {
         SettingsSection(title: L("COLOR")) {
             SettingsRow(title: L("Color theme")) {
                 ThemePicker(selection: Binding(get: { palette.wrappedValue.rawValue },
-                                               set: { palette.wrappedValue = Theme.Palette(rawValue: $0) ?? .sage }))
+                                               set: { palette.wrappedValue = Theme.Palette(rawValue: $0) ?? .standard }))
                     .frame(width: 205, height: 26)
                     .background {
                         if #available(macOS 26, *) {
@@ -996,7 +1017,7 @@ struct LayoutDiagram: View {
             }
             context.fill(Path(ellipseIn: CGRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)), with: .color(Theme.ink.opacity(0.7)))
         }
-        .background(Theme.display.opacity(Theme.dark ? 0.6 : 1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Theme.display, in: RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
         .accessibilityLabel(Text(verbatim: layout.name))
     }
 }
@@ -1082,7 +1103,8 @@ struct PreviewBanner: View {
             .padding(.leading, 14)
             .padding(.trailing, 6)
             .padding(.vertical, 6)
-            .glassSurface(Capsule(), tint: Theme.sage.opacity(Theme.dark ? 0.16 : 0.10))
+            .glassSurface(RoundedRectangle(cornerRadius: Theme.controlRadius + 4, style: .continuous),
+                          tint: Theme.sage.opacity(Theme.dark ? 0.16 : 0.10))
             .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
@@ -1096,14 +1118,17 @@ struct SettingsSection<Content: View>: View {
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(Localizer.shared.tracking(0.6))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.tertiary)
                 .padding(.leading, 12)
+            // The meter's panel material, opaque here: a lit top edge fading down the sides.
             VStack(spacing: 0) { content }
                 .padding(.horizontal, 14)
-                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.10), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous)
+                        .strokeBorder(LinearGradient(colors: Theme.dark ? [Color.white.opacity(0.10), Color.white.opacity(0.03)]
+                                                                         : [Theme.hairline.opacity(0.06), Theme.hairline.opacity(0.10)],
+                                                     startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
                 }
         }
     }

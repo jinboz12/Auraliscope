@@ -1,3 +1,4 @@
+import AnalysisCore
 import AppKit
 import SwiftUI
 
@@ -141,18 +142,28 @@ enum ThemeFade {
     }
 }
 
-/// Auraliscope dashboard palette, in a dark and a light appearance.
+/// Auraliscope's visual system, in a dark and a light appearance.
 ///
-/// - **Surfaces**: dark slate window, charcoal cards and obsidian display wells; or a pale grey window, white
-///   cards and paper wells.
-/// - **Ink** is the high-contrast voice for type, peak readouts and lit edges: the palette's cream on dark,
-///   slate ink on light.
-/// - The selected **accent** marks actions, selections, signal levels and the live summary.
+/// - **Atmosphere** belongs to the window backdrop alone, and it is a sky: on light the palette's colour deep at the
+///   top, thinning through haze to white light on the horizon; on dark a night of near-black with the palette's light
+///   pooled behind the top row and a faint glow rising from below. A fine static grain lies over it (`Grain`), so the
+///   backdrop reads as film rather than as a flat gradient. Translucent graphite / frosted-white cards
+///   retain that atmosphere beneath their headers and plots. A faint inset wash separates plotting regions
+///   without opaque black or white plates. The spectrogram retains a stable neutral ground for its energy ramp.
+/// - **Radius scale**: panels 22, plots clipped at 14 where they need a shape, controls are capsules (`controlRadius`
+///   is half a control's height), tags 5. Round buttons are discs.
+/// - **Type levels**: readings in `ink`; panel titles in `title`; reading names, scales and units in `tertiary`;
+///   unavailable things in `disabled`.
+/// - **Colour roles**: the palette's **accent** is the live signal (levels, traces, LIVE, the resume button, AUTO
+///   while it drives the mode). **Ink** marks what is held or pointed at: peak holds, the target, needles, cursors,
+///   the chosen segment. **Ochre** is caution (near full scale, above target, wide stereo), **ember** is an alarm
+///   only (overs, out of phase, clipping), always with a word or glyph as well, and **slate** is below target.
+///   Selection and "on" states are shown by a **lit** plate (`lit`): the inverse of the surface, cream on dark and
+///   ink on light, with a soft halo on dark; never by a warning hue.
 ///
-/// Beyond those, hue carries meaning in only two places: level zones (accent → ochre → ember) and speaker
-/// groups (bed accent, height heather, LFE clay). On light surfaces every hue is deepened just enough to read as
-/// body text does (4.5 : 1), so a pale accent such as Starlight stays legible. Metal draws with the `RGB`
-/// values, SwiftUI with the matching `Color`s, so both layers read as one surface.
+/// Beyond those, hue carries meaning only for speaker groups (bed accent, height heather, LFE clay) and frequency
+/// bands. On light surfaces every hue is deepened just enough to read as body text does (4.5 : 1). Metal draws with
+/// the `RGB` values, SwiftUI with the matching `Color`s, so both layers read as one surface.
 enum Theme {
     struct RGB: Equatable {
         let r: Float, g: Float, b: Float
@@ -198,9 +209,13 @@ enum Theme {
     }
 
     enum Palette: String, CaseIterable, Identifiable {
+        /// The Auraliscope icon's slate indigo body: LABS' default, listed first.
+        case labsIndigo
         case starlight, blossomPink, sage, vintageAmber, phosphorGreen, iceBlue, electricViolet, safetyOrange
         case ocean, plum, copper
         var id: String { rawValue }
+        /// LABS' default theme (Auraliscope's is Sage).
+        static let standard = Palette.labsIndigo
         var title: String {
             switch self {
             case .starlight: return L("Starlight")
@@ -214,6 +229,7 @@ enum Theme {
             case .ocean: return L("Ocean & Mist")
             case .plum: return L("Plum & Pearl")
             case .copper: return L("Copper & Linen")
+            case .labsIndigo: return L("Indigo")
             }
         }
         var hex: UInt32 {
@@ -229,6 +245,7 @@ enum Theme {
             case .ocean: return 0x65A6B4
             case .plum: return 0xA883B1
             case .copper: return 0xBE8D62
+            case .labsIndigo: return 0x6B7E97
             }
         }
         var hexLabel: String { String(format: "#%06X", hex) }
@@ -240,11 +257,22 @@ enum Theme {
             case .ocean: return RGB(r: 236/255, g: 246/255, b: 247/255)
             case .plum: return RGB(r: 248/255, g: 239/255, b: 247/255)
             case .copper: return RGB(r: 250/255, g: 241/255, b: 226/255)
+            case .labsIndigo: return RGB(r: 237/255, g: 241/255, b: 248/255)
             default: return RGB(r: 247/255, g: 242/255, b: 235/255)
             }
         }
 
-        static var stored: Palette { Palette(rawValue: UserDefaults.standard.string(forKey: ThemeSettings.paletteKey) ?? "") ?? .sage }
+        static var stored: Palette {
+            let defaults = UserDefaults.standard
+            // Build 64 made LABS Indigo the default: a theme saved by an earlier LABS build gives way to it once;
+            // a theme chosen after that is kept.
+            if !defaults.bool(forKey: adoptedKey) {
+                defaults.set(true, forKey: adoptedKey)
+                defaults.set(standard.rawValue, forKey: ThemeSettings.paletteKey)
+            }
+            return Palette(rawValue: defaults.string(forKey: ThemeSettings.paletteKey) ?? "") ?? standard
+        }
+        private static let adoptedKey = "labsIndigoDefaultAdopted"
     }
 
     /// Everything a palette and an appearance resolve to. `ThemeSettings` replaces it when either changes;
@@ -277,10 +305,11 @@ enum Theme {
                         ember: RGB(r: 0.894, g: 0.408, b: 0.357), slate: RGB(r: 0.576, g: 0.651, b: 0.675))
             if dark {
                 ink = cream
-                windowTop = RGB(r: 0.132, g: 0.141, b: 0.156)
-                windowBottom = RGB(r: 0.092, g: 0.098, b: 0.110)
-                card = RGB(r: 0.170, g: 0.179, b: 0.196)
-                display = RGB(r: 0.066, g: 0.070, b: 0.079)
+                // Neutral graphite card tint; a slightly deeper stable ground is reserved for raster data.
+                windowTop = RGB(r: 0.052, g: 0.056, b: 0.068)
+                windowBottom = RGB(r: 0.018, g: 0.019, b: 0.024)
+                card = RGB(r: 0.160, g: 0.168, b: 0.190)
+                display = RGB(r: 0.050, g: 0.053, b: 0.062)
                 accent = swatch
                 sand = hues.sand
                 heather = hues.heather
@@ -291,13 +320,14 @@ enum Theme {
                 // Dark enough under cream type even when the accent itself is very bright.
                 banner = swatch.scaled(min(1, 0.5 / max(swatch.r, max(swatch.g, swatch.b))))
                 secondaryOpacity = 0.88
-                tertiaryOpacity = 0.68
+                tertiaryOpacity = 0.76
             } else {
                 ink = RGB(r: 0.102, g: 0.110, b: 0.125)
-                windowTop = RGB(r: 0.953, g: 0.954, b: 0.950)
-                windowBottom = RGB(r: 0.918, g: 0.920, b: 0.914)
-                card = RGB(r: 0.996, g: 0.996, b: 0.993)
-                display = RGB(r: 0.972, g: 0.971, b: 0.964)
+                windowTop = RGB(r: 0.945, g: 0.948, b: 0.953)
+                windowBottom = RGB(r: 0.902, g: 0.907, b: 0.916)
+                // Frosted cards reveal the backdrop; preserve the existing raster energy ramp.
+                card = RGB(r: 0.996, g: 0.996, b: 0.996)
+                display = RGB(r: 0.992, g: 0.992, b: 0.993)
                 func deepen(_ rgb: RGB) -> RGB { rgb.legible(on: RGB(r: 1, g: 1, b: 1), ratio: 4.5) }
                 accent = deepen(swatch)
                 sand = deepen(hues.sand)
@@ -308,8 +338,8 @@ enum Theme {
                 slate = deepen(hues.slate)
                 // A wash of the swatch itself, so the summary keeps the accent's own hue under dark type.
                 banner = RGB(r: 1, g: 1, b: 1).mixed(with: swatch, amount: 0.5)
-                secondaryOpacity = 0.80
-                tertiaryOpacity = 0.64
+                secondaryOpacity = 0.84
+                tertiaryOpacity = 0.76
             }
             // Fills under cream type (prominent buttons, switches, the selected segment) meet body-text contrast.
             action = accent.legible(on: cream, ratio: 4.5)
@@ -329,7 +359,8 @@ enum Theme {
             // lightness (obsidian → accent → cream on dark, paper → accent → ink on light), so loudness reads
             // the same in every hue and both appearances.
             if dark {
-                rampStops = [RGB(r: 0.030, g: 0.029, b: 0.026), swatch.scaled(0.14), swatch.scaled(0.33),
+                // From the panel's own ground, so silence in the waterfall is the panel and never a darker box.
+                rampStops = [display, swatch.scaled(0.14), swatch.scaled(0.33),
                              swatch.scaled(0.72), swatch.mixed(with: cream, amount: 0.35), cream]
             } else {
                 let paper = RGB(r: 0.992, g: 0.991, b: 0.986)
@@ -345,7 +376,7 @@ enum Theme {
         }
     }
 
-    private(set) static var style = Style.stored
+    private(set) static var style = Style.stored { didSet { rampTables = [:] } }
     static func resolve(palette: Palette, dark: Bool) { style = Style(palette: palette, dark: dark) }
     /// macOS's appearance before AppKit is up (offscreen renders from the command line).
     static var systemIsDark: Bool { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
@@ -389,7 +420,14 @@ enum Theme {
     }
 
     static var ink: Color { style.ink.color }
+    /// Type on a solid ink fill (the chosen segment's pill): near-black on dark, where ink is the palette's cream, and
+    /// white on light.
+    static var onInk: Color { style.dark ? style.windowBottom.color : .white }
+    /// Panel titles: the strongest label, a step under the readings themselves.
+    static var title: Color { ink.opacity(style.dark ? 0.94 : 0.90) }
     static var secondary: Color { ink.opacity(style.secondaryOpacity) }
+    /// Unavailable controls and silent channels: clearly receded, never mistaken for a scale label.
+    static var disabled: Color { ink.opacity(style.dark ? 0.36 : 0.34) }
     static var tertiary: Color { ink.opacity(style.tertiaryOpacity) }
     /// Micro-borders and tracks: ink at low opacity, so edges stay warm on dark and neutral on light.
     static var hairline: Color { ink }
@@ -398,14 +436,45 @@ enum Theme {
     static var windowBottom: Color { style.windowBottom.color }
     static var cardTint: Color { style.card.color }
     static var display: Color { style.display.color }
-    static var wellFill: Color { style.display.color.opacity(style.dark ? 0.97 : 1) }
+    static var wellFill: Color { plotWash }
+    /// Neutral tint over native frosted material; keep the backdrop visible without adding saturation.
+    static var panelFill: Color { style.dark ? style.card.color.opacity(0.32) : Color.white.opacity(0.20) }
+    /// Background-only inset tint. Never apply this opacity to the measurement content.
+    static var plotWash: Color { style.dark ? Color.black.opacity(0.36) : Color.white.opacity(0.48) }
     /// Head of the summary, welcome and About banners; ink stays legible on it in both appearances.
     static var bannerAccent: Color { style.banner.color }
-    /// Small labels set on a banner (LIVE, version) sit on this.
-    static var chipFill: Color { style.dark ? Color.black.opacity(0.22) : ink.opacity(0.07) }
-    /// Stat tiles on the summary: a faint lift on dark, frosted white on light.
-    static var tileFill: Color { style.dark ? ink.opacity(0.05) : Color.white.opacity(0.62) }
-    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.13 : 0.07) }
+    /// Panels float on a soft shadow: deep on dark, where it separates them from the night, faint on light.
+    static var cardShadow: Color { Color.black.opacity(style.dark ? 0.34 : 0.10) }
+    /// A control's resting fill and its hover and pressed steps, on panels and on the toolbar alike.
+    static var controlFill: Color { ink.opacity(style.dark ? 0.08 : 0.06) }
+    static var controlHover: Color { ink.opacity(style.dark ? 0.14 : 0.10) }
+    /// The recessed track a group of controls sits in (segments, the toolbar docks).
+    static var trackFill: Color { ink.opacity(style.dark ? 0.07 : 0.06) }
+    /// A lit control: the chosen segment, a toggled button. The inverse of its surface (cream on dark, ink on light),
+    /// so the state reads at a glance; `onLit` is the type on it.
+    /// A lit control (the mode in use, a chosen segment, a switched-on button) is a glowing key in both appearances:
+    /// cream on dark, white on light, each with its halo, and the label in the dark ink on it.
+    static var lit: Color { style.dark ? style.cream.color : .white }
+    static var onLit: Color { style.dark ? style.windowBottom.color : style.ink.color }
+    /// The halo around a lit control: the cream's glow on dark, a white bloom over the light sky and cards.
+    static var litHalo: Color { style.dark ? style.cream.color.opacity(0.42) : Color.white.opacity(0.95) }
+    /// The window backdrop at its top edge (and the toolbar's in full screen): near-black on dark, the palette's
+    /// wash on light.
+    static var backdropTop: Color { style.dark ? style.windowTop.color : style.banner.color }
+    /// The backdrop's light band: the palette's wash turning into the pale window.
+    static var backdropMiddle: Color { style.banner.mixed(with: style.windowTop, amount: 0.62).color }
+    /// The very top of the light sky: the palette's own colour, a little deeper than the banner wash, so the title
+    /// row sits under real colour that thins toward the horizon.
+    /// LABS in the wordmark: ochre, deepened in light mode until it holds 3:1 on the sky behind the toolbar, where the
+    /// white-plate ochre washed out.
+    static var wordmarkOchre: Color {
+        guard !dark else { return ochre }
+        let sky = style.palette.accent.mixed(with: style.ink, amount: 0.18).mixed(with: style.banner, amount: 0.2)
+        return style.ochre.legible(on: sky.mixed(with: RGB(r: 1, g: 1, b: 1), amount: 0.35), ratio: 3).color
+    }
+    static var skyTop: Color { style.palette.accent.mixed(with: style.ink, amount: 0.18).mixed(with: style.banner, amount: 0.2).color }
+    /// The horizon at the foot of the light sky: white light.
+    static var horizon: Color { Color(red: 0.985, green: 0.986, blue: 0.99) }
     /// Type on a solid status fill (accent, ochre, slate): near-black on dark, where the hues are light, and
     /// cream on light, where they are deepened.
     static var onStatus: Color { style.dark ? style.display.color : style.cream.color }
@@ -469,9 +538,8 @@ enum Theme {
     /// Red, amber, green, blue and violet: five fixed hues, independent of the palette's accent, so they stay apart
     /// as small dots in every palette. On the light well they are deepened to hold contrast.
     static func bandRGB(_ band: Int) -> RGB {
-        let hues = [RGB(r: 0.93, g: 0.37, b: 0.33), RGB(r: 0.95, g: 0.69, b: 0.26), RGB(r: 0.42, g: 0.79, b: 0.46),
-                    RGB(r: 0.37, g: 0.63, b: 0.96), RGB(r: 0.73, g: 0.51, b: 0.96)]
-        let hue = hues[max(0, min(hues.count - 1, band))]
+        let raw = SpectralHue.bands[max(0, min(SpectralHue.bands.count - 1, band))]
+        let hue = RGB(r: raw.x, g: raw.y, b: raw.z)
         return dark ? hue : hue.legible(on: displayRGB, ratio: 4)
     }
 
@@ -503,23 +571,113 @@ enum Theme {
         }
     }
 
+    /// The theme's own waterfall ramp (`SpectrogramColors.theme`).
     static var rampStops: [RGB] { style.rampStops }
 
-    /// The waterfall shader's colour for a level (its `rampMap` after the −90…−12 dB curve), so the live spectrum
-    /// can wear the same colours as the waterfall's newest column.
-    static func ramp(decibels db: Float) -> RGB {
-        var x = pow(max(0, min(1, (db + 90) / 78)), 1.6)
-        x += (x * x * (3 - 2 * x) - x) * 0.6
-        let stops = rampStops
+    /// The stops of a spectrogram colour map in the current appearance, 0 the empty well, 1 the loudest. Every map
+    /// moves away from the well's own lightness (dark to bright on dark, paper to ink on light), so the grid, cursor
+    /// and labels drawn over the waterfall stay legible.
+    static func rampStops(_ colors: SpectrogramColors) -> [RGB] {
+        switch colors {
+        case .theme:
+            return rampStops
+        case .heat:
+            // A perceptually ordered black–indigo–crimson–amber map in the manner of inferno: lightness rises
+            // steadily, and the hue turns as it does, so neighbouring levels differ in two ways at once.
+            // On dark it starts at the panel's ground (`displayRGB`, near-black) rather than pure black, so silence
+            // is the panel itself and the waterfall never shows as a box.
+            let stops = [displayRGB, RGB(r: 0.106, g: 0.047, b: 0.255),
+                         RGB(r: 0.290, g: 0.047, b: 0.420), RGB(r: 0.494, g: 0.118, b: 0.427),
+                         RGB(r: 0.710, g: 0.208, b: 0.353), RGB(r: 0.886, g: 0.353, b: 0.212),
+                         RGB(r: 0.976, g: 0.565, b: 0.075), RGB(r: 0.984, g: 0.765, b: 0.200),
+                         RGB(r: 0.988, g: 0.988, b: 0.700)]
+            guard !dark else { return stops }
+            // On paper: the same hues in reverse, lightness falling from white as steadily as it rises from black on
+            // dark, so quiet detail stays a pale wash and only loud partials turn deep.
+            return [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.990, g: 0.950, b: 0.850),
+                    RGB(r: 0.990, g: 0.880, b: 0.620), RGB(r: 0.980, g: 0.740, b: 0.380),
+                    RGB(r: 0.930, g: 0.550, b: 0.260), RGB(r: 0.820, g: 0.330, b: 0.270),
+                    RGB(r: 0.600, g: 0.150, b: 0.380), RGB(r: 0.330, g: 0.060, b: 0.400),
+                    RGB(r: 0.060, g: 0.020, b: 0.120)]
+        case .gray:
+            let black = RGB(r: 0.030, g: 0.030, b: 0.032), white = RGB(r: 0.965, g: 0.965, b: 0.955)
+            return dark ? [black, white] : [RGB(r: 0.992, g: 0.991, b: 0.986), RGB(r: 0.060, g: 0.062, b: 0.070)]
+        }
+    }
+
+    /// The theme's ramp is eased between its few stops; the other maps are dense enough to run straight between them.
+    static func rampEased(_ colors: SpectrogramColors) -> Bool { colors == .theme }
+
+    /// The waterfall's colour for a level, through the same tone curve and range (`SpectrogramTone`), so the live
+    /// spectrum and the legend wear the colours the waterfall shows.
+    static func ramp(decibels db: Float, range: SpectrogramRange, colors: SpectrogramColors) -> RGB {
+        ramp(position: SpectrogramTone.position(db, range: range), colors: colors)
+    }
+
+    /// The colour at `x` (0…1) along `colors`' stops (`rampStops(_:)`), from a fine table: the live spectrum asks for
+    /// about a thousand colours a frame.
+    static func ramp(position x: Float, colors: SpectrogramColors) -> RGB {
+        let table = rampTables[colors] ?? {
+            let table = (0..<rampTableSize).map { exactRamp(position: Float($0) / Float(rampTableSize - 1), colors: colors) }
+            rampTables[colors] = table
+            return table
+        }()
+        return table[Int((max(0, min(1, x)) * Float(rampTableSize - 1)).rounded())]
+    }
+
+    private static let rampTableSize = 1024
+    /// `exactRamp` per map in the current style; cleared when the style changes.
+    private static var rampTables: [SpectrogramColors: [RGB]] = [:]
+
+    private static func exactRamp(position x: Float, colors: SpectrogramColors) -> RGB {
+        let x = max(0, min(1, x))
+        let stops = rampStops(colors)
         let scaled = x * Float(stops.count - 1)
         let index = min(Int(scaled), stops.count - 2)
         let t = scaled - Float(index)
-        return stops[index].mixed(with: stops[index + 1], amount: t * t * (3 - 2 * t))
+        return stops[index].mixed(with: stops[index + 1], amount: rampEased(colors) ? t * t * (3 - 2 * t) : t)
     }
 
-    // Soft dashboard card and recessed plot radii.
-    static let cardRadius: CGFloat = 18
-    static let wellRadius: CGFloat = 12
+    /// Colours the waterfall shader reads per map: every 1/32, which holds each stop of the eight-segment maps exactly
+    /// and follows the theme's eased ramp within a fraction of a percent.
+    static let waterfallRampCount = 33
+
+    /// The map sampled at `waterfallRampCount` evenly spaced positions for the waterfall shader, which runs straight
+    /// between them.
+    static func waterfallRamp(_ colors: SpectrogramColors) -> [SIMD4<Float>] {
+        (0..<waterfallRampCount).map { exactRamp(position: Float($0) / Float(waterfallRampCount - 1), colors: colors).simd() }
+    }
+
+    // One radius scale, each step nested inside the one before by its inset: panels, the plot plates inside them,
+    // controls on either (capsules: half the 22 pt control height), and tags over the plots.
+    static let cardRadius: CGFloat = 22
+    static let wellRadius: CGFloat = 14
+    static let controlRadius: CGFloat = 11
+    static let tagRadius: CGFloat = 5
+    /// The toolbar's round buttons and the docks that hold them.
+    static let dockButton: CGFloat = 26
+}
+
+/// The film grain over the backdrop: one small tile of monochrome noise, made once and tiled, at device resolution
+/// so it stays a fine texture on Retina displays. Static: it never animates, and it lies under every panel, so no
+/// plot is ever drawn through it.
+enum Grain {
+    static let tile: NSImage = {
+        let side = 192
+        var rng = SystemRandomNumberGenerator()
+        var bytes = [UInt8](repeating: 0, count: side * side)
+        for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255, using: &rng) }
+        let data = Data(bytes)
+        let image = CGImage(width: side, height: side, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: side,
+                            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                            provider: CGDataProvider(data: data as CFData)!, decode: nil, shouldInterpolate: false,
+                            intent: .defaultIntent)!
+        // Half the pixel count in points: one noise pixel per device pixel on a 2× display.
+        return NSImage(cgImage: image, size: NSSize(width: side / 2, height: side / 2))
+    }()
+
+    /// How strongly the grain shows: screened onto the night, multiplied into the light sky.
+    static var opacity: Double { Theme.dark ? 0.10 : 0.15 }
 }
 
 extension AppearanceMode {

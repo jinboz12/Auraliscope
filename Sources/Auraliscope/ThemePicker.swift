@@ -33,7 +33,7 @@ struct ThemePicker: NSViewRepresentable {
         for (item, palette) in zip(button.itemArray, Theme.Palette.allCases) where item.title != palette.title {
             item.title = palette.title
         }
-        let selected = Theme.Palette(rawValue: selection) ?? .sage
+        let selected = Theme.Palette(rawValue: selection) ?? .standard
         button.selectItem(at: Theme.Palette.allCases.firstIndex(of: selected)!)
         button.toolTip = "\(selected.title) · \(selected.hexLabel)"
         button.setAccessibilityLabel(L("Color theme"))

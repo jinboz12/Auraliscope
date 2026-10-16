@@ -1,36 +1,51 @@
-import AudioRing
+import AnalysisKernels
 import Foundation
 
 /// Float offsets of one published snapshot inside the C11 triple buffer (`METER_SNAPSHOT_FLOATS`).
-enum SnapshotSlots {
-    static let spectrum = 0
-    static let peaks = 64
-    static let rms = peaks + Role.count
-    static let truePeaks = rms + Role.count
-    static let heldPeaks = truePeaks + Role.count
-    static let heldTruePeaks = heldPeaks + Role.count
-    static let momentary = heldTruePeaks + Role.count
-    static let shortTerm = momentary + 1
-    static let integrated = momentary + 2
-    static let range = momentary + 3
-    static let sequence = momentary + 4
-    static let stream = momentary + 5
-    static let peakFrequency = momentary + 6
-    static let peakLevel = momentary + 7
-    static let format = momentary + 8
-    static let waveSerial = momentary + 9
-    static let correlation = momentary + 10
-    static let spectrogramSerial = momentary + 11
-    static let spectrogram = momentary + 12
-    static let bandCorrelation = spectrogram + MeterSnapshot.spectrogramBandCount
-    static let bandWidth = bandCorrelation + StereoBands.groups.count
-    static let bandBalance = bandWidth + StereoBands.groups.count
-    static let bandLevel = bandBalance + StereoBands.groups.count
-    static let bandPoints = bandLevel + StereoBands.groups.count
-    static let roleBandPower = bandPoints + StereoBands.scopeFloats
-    static let notes = roleBandPower + StereoBands.roleFloats
-    static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
-    static let total = waveform + WaveformEnvelope.publishedFloats
+package enum SnapshotSlots {
+    package static let spectrum = 0
+    package static let peaks = 64
+    package static let rms = peaks + Role.count
+    package static let truePeaks = rms + Role.count
+    package static let heldPeaks = truePeaks + Role.count
+    package static let heldTruePeaks = heldPeaks + Role.count
+    package static let momentary = heldTruePeaks + Role.count
+    package static let shortTerm = momentary + 1
+    package static let integrated = momentary + 2
+    package static let range = momentary + 3
+    package static let sequence = momentary + 4
+    package static let stream = momentary + 5
+    package static let peakFrequency = momentary + 6
+    package static let peakLevel = momentary + 7
+    package static let format = momentary + 8
+    package static let waveSerial = momentary + 9
+    package static let correlation = momentary + 10
+    package static let spectrogramSerial = momentary + 11
+    package static let spectrogram = momentary + 12
+    package static let bandCorrelation = spectrogram + MeterSnapshot.spectrogramBandCount
+    package static let bandWidth = bandCorrelation + StereoBands.groups.count
+    package static let bandBalance = bandWidth + StereoBands.groups.count
+    package static let bandLevel = bandBalance + StereoBands.groups.count
+    package static let bandPoints = bandLevel + StereoBands.groups.count
+    package static let roleBandPower = bandPoints + StereoBands.scopeFloats
+    package static let notes = roleBandPower + StereoBands.roleFloats
+    package static let waveform = notes + 2 * SpectrumAnalyzer.maxNotes
+    package static let breaks = waveform + WaveformEnvelope.publishedFloats
+    package static let missing = breaks + 1
+    package static let spectrumFine = missing + 1
+    /// `SpectrogramMode` of the newest waterfall column.
+    package static let spectrogramMode = spectrumFine + MeterSnapshot.fineBandCount
+    /// The Immersive soundstage's spatial field (`SpatialField`), status 0 while it does not describe the audio.
+    package static let spatialField = spectrogramMode + 1
+    /// The same transform's bins, each where a spatial analyser places it (`SpatialPoints`), status 0 likewise.
+    package static let spatialPoints = spatialField + SpatialField.floats
+    /// `SignalHealthMeter`: each role's DC offset, then its infrasonic mean square, then the status (1 settled, 0.5
+    /// settling, 0 not measured: a plugin before build 90).
+    package static let signalHealth = spatialPoints + SpatialPoints.floats
+    package static let dcOffset = signalHealth
+    package static let infrasonic = signalHealth + Role.count
+    package static let healthStatus = signalHealth + 2 * Role.count
+    package static let total = healthStatus + 1
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -41,34 +56,63 @@ enum SnapshotSlots {
 /// - L/R correlation integrates L², R² and L·R with a 0.25 s time constant, weighted by energy as a hardware
 ///   correlation meter's integrator is, so it reads the mix rather than each tick; silence rests it and restarts
 ///   the average; the five `StereoBands` integrate their L/R cross spectrum the same way, once per transform;
-/// - the waterfall still gains exactly 30 columns per second, each from the newest 8192-point FFT;
+/// - the waterfall still gains exactly 30 columns per second, each a multi-resolution analysis of the newest audio
+///   (`SpectrogramAnalyzer`: 8192-point windows in the bass down to 512 in the treble, centred on one instant);
 /// - the format detector still sees consecutive, non-overlapping 1/30 s windows at 30 Hz;
 /// - loudness (M, S, I, LRA) is block-based and does not depend on the tick rate at all.
 /// In Spatial monitoring the spectrum and waterfall sum every routed role instead of showing L and R.
 /// Device buffers longer than a tick (a DAW at 2048 frames delivers every 43 ms) no longer publish false
 /// silence between deliveries: an empty window repeats the newest audio for up to 100 ms before reading silent.
-final class MeterPipeline {
-    static let tickRate = 60.0
+///
+/// A break in the audio (`interrupt`: frames lost, the source stopped delivering, a bypass or an offline render in
+/// between) ends one stretch of signal and starts the next. No analysis window spans a break: the filters, the
+/// 100 ms loudness segment, the momentary (400 ms) and short-term (3 s) windows, the FFT window, the true-peak
+/// interpolator and the correlation integrators start again after it, and momentary and short-term read "no
+/// value" until their windows refill. What is made of complete windows carries on: integrated loudness and
+/// loudness range keep their blocks, the held peaks keep their maxima, the waterfall and the waveform keep their
+/// history (with a notch at the break). Every break is counted in the snapshot, with the time known missing, so
+/// a reading that spans breaks never passes for one continuous measurement.
+package final class MeterPipeline {
+    package static let tickRate = 60.0
     /// Ticks per level window and per waterfall column: 1/30 s.
-    static let windowTicks = 2
+    package static let windowTicks = 2
     /// With no audio for this many ticks (100 ms) the input reads as silence.
-    static let staleTicks = 6
+    package static let staleTicks = 6
     /// Time constant of the L/R correlation integrator, in seconds.
-    static let correlationTime = 0.25
+    package static let correlationTime = 0.25
     private static let correlationDecay = exp(-1 / (tickRate * correlationTime))
 
-    let loudness: LoudnessAnalyzer
-    let spectrum: SpectrumAnalyzer
-    let waveform: WaveformEnvelope
-    let splitter: StereoBandSplitter
+    package let loudness: LoudnessAnalyzer
+    package let spectrum: SpectrumAnalyzer
+    package let waveform: WaveformEnvelope
+    package let splitter: StereoBandSplitter
+    package let health: SignalHealthMeter
     private var detector: FormatDetector
     private let streamID: Float
+    private let sampleRate: Double
+    /// Breaks since the analysis started, and the seconds of audio known to be missing at them.
+    package private(set) var breaks = 0
+    package private(set) var missingSeconds = 0.0
     /// Spatial monitoring: spectrum and waterfall sum every routed role; otherwise they show L and R.
     /// Set by the owner; takes effect once every routed role has a full FFT window (≤ 170 ms).
-    var spatialSpectrum = false {
-        didSet { spectrum.recordsSpatial = spatialSpectrum }
+    package var spatialSpectrum = false {
+        didSet {
+            spectrum.recordsSpatial = spatialSpectrum
+            spectrum.buildsSpatialField = spatialSpectrum
+        }
     }
-    private var analysedSpatial = false
+    /// The spatial field's coherence threshold (`SpatialFieldAnalyzer.coherenceThreshold`), set by the display.
+    package var spatialCoherence: Float {
+        get { spectrum.spatialField.coherenceThreshold }
+        set { spectrum.spatialField.coherenceThreshold = newValue }
+    }
+    /// Side surrounds at ±90° in the spatial field, as in the layout the display shows.
+    package var spatialSidesAtNinety: Bool {
+        get { spectrum.spatialField.sidesAtNinety }
+        set { spectrum.spatialField.sidesAtNinety = newValue }
+    }
+    /// Whether the newest spectrum (and the waterfall column made from it) summed every routed role.
+    package private(set) var analysedSpatial = false
     /// Newest slice at `head`; older ones behind it.
     private var slices = [LevelSlice](repeating: LevelSlice(), count: MeterPipeline.staleTicks)
     private var head = 0
@@ -96,34 +140,80 @@ final class MeterPipeline {
     private var planar = [Float](repeating: 0, count: Role.count * MeterPipeline.planarCapacity)
     private let planarRoles: [Int]
     /// Loudest sample peak of the newest tick, for the "signal confirmed" diagnostic.
-    private(set) var newestPeak: Float = 0
+    package private(set) var newestPeak: Float = 0
 
-    init?(sampleRate: Double, activeRoles: [Bool], detector: FormatDetector, streamID: UInt32) {
+    package init?(sampleRate: Double, activeRoles: [Bool], detector: FormatDetector, streamID: UInt32) {
         guard let spectrum = SpectrumAnalyzer(sampleRate: sampleRate, recording: activeRoles),
               let loudness = LoudnessAnalyzer(sampleRate: sampleRate, activeRoles: activeRoles),
               let splitter = StereoBandSplitter(sampleRate: sampleRate) else { return nil }
         self.splitter = splitter
+        health = SignalHealthMeter(sampleRate: sampleRate, activeRoles: activeRoles)
         self.spectrum = spectrum
         self.loudness = loudness
         waveform = WaveformEnvelope(sampleRate: sampleRate, activeRoles: activeRoles)
         self.detector = detector
         format = detector.format
         self.streamID = Float(streamID)
+        self.sampleRate = sampleRate
         planarRoles = (0..<Role.count).filter { $0 == Role.left || $0 == Role.right || ($0 < activeRoles.count && activeRoles[$0]) }
     }
 
-    func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
+    package func consume(_ frames: UnsafeBufferPointer<ChannelFrame>) {
         guard !frames.isEmpty else { return }
         // One de-interleave for every analysis: the routed roles, and L and R, which the spectrum and the band
         // splitter always read (they hold silence when unrouted).
         planar.withUnsafeMutableBufferPointer { storage in
             PlanarBlock.deinterleave(frames, roles: planarRoles, into: storage.baseAddress!, capacity: Self.planarCapacity) { block in
-                loudness.consume(block)
-                waveform.consume(block)
-                spectrum.consume(block)
-                splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
+                analyse(block)
             }
         }
+    }
+
+    /// The same analyses, fed with `frames` interleaved frames of `channels` source channels, channel c going to
+    /// role `roles[c]`. Every other role the analyses read holds silence, as an unrouted role of a `ChannelFrame`
+    /// does. For producers without 16-role frames (the Bridge plugins).
+    package func consume(interleaved samples: UnsafePointer<Float>, channels: Int, frames: Int, roles: [Int]) {
+        guard frames > 0, channels > 0, roles.count == channels else { return }
+        planar.withUnsafeMutableBufferPointer { buffer in
+            let storage = buffer.baseAddress!
+            let capacity = Self.planarCapacity
+            var position = 0
+            while position < frames {
+                let count = min(capacity, frames - position)
+                for role in planarRoles where !roles.contains(role) {
+                    (storage + role * capacity).update(repeating: 0, count: count)
+                }
+                for (channel, role) in roles.enumerated() where (0..<Role.count).contains(role) {
+                    audio_gather_strided(samples + position * channels + channel, UInt32(channels),
+                                         storage + role * capacity, UInt32(count))
+                }
+                analyse(PlanarBlock(base: storage, stride: capacity, count: count))
+                position += count
+            }
+        }
+    }
+
+    private func analyse(_ block: PlanarBlock) {
+        loudness.consume(block)
+        waveform.consume(block)
+        spectrum.consume(block)
+        splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
+        health.consume(block)
+    }
+
+    /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing
+    /// and the source did not deliver for `idleMilliseconds`, where the producer knows.
+    package func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
+        loudness.interrupt()
+        spectrum.interrupt()
+        splitter.interrupt()
+        health.interrupt()
+        correlationSums = (0, 0, 0)
+        integrateBands(fresh: nil)
+        let missing = Double(lostFrames) / sampleRate + Double(idleMilliseconds) / 1000
+        waveform.interrupt(missingFrames: Int(min(missing, 60) * sampleRate))
+        breaks += 1
+        missingSeconds += missing
     }
 
     private func slice(_ age: Int) -> Int { (head - age + Self.staleTicks) % Self.staleTicks }
@@ -147,7 +237,7 @@ final class MeterPipeline {
     }
 
     /// Clears the held true peaks only (the TRUE PEAK reading's reset); held sample peaks stay.
-    func resetTruePeaks() {
+    package func resetTruePeaks() {
         for role in 0..<Role.count { heldTruePeak[role] = 0 }
     }
 
@@ -204,7 +294,7 @@ final class MeterPipeline {
 
     /// Closes the current tick and writes a full snapshot (`SnapshotSlots.total` floats) to `v`.
     /// `now` is in seconds on any monotonic clock; it paces the format detector.
-    func publish(into v: UnsafeMutablePointer<Float>, now: Double) {
+    package func publish(into v: UnsafeMutablePointer<Float>, now: Double) {
         tick += 1
         head = (head + 1) % Self.staleTicks
         loudness.take(into: &slices[head])
@@ -269,6 +359,17 @@ final class MeterPipeline {
         splitter.writePoints(into: v + SnapshotSlots.bandPoints, silent: stale)
         for i in 0..<StereoBands.roleFloats { v[SnapshotSlots.roleBandPower + i] = roleBands[i] }
         for i in 0..<MeterSnapshot.bandCount { v[SnapshotSlots.spectrum + i] = bands[i] }
+        let fine = stale || !spectrum.ready ? nil : spectrum.fineSpectrum
+        for i in 0..<MeterSnapshot.fineBandCount { v[SnapshotSlots.spectrumFine + i] = fine?[i] ?? -120 }
+        // The spatial field of the newest Spatial transform; status 0 (and nothing in it) otherwise.
+        let field = v + SnapshotSlots.spatialField, points = v + SnapshotSlots.spatialPoints
+        if stale || !spectrum.ready || !analysedSpatial || !spectrum.spatialFieldBuilt {
+            field.update(repeating: 0, count: SpatialField.floats)
+            points.update(repeating: 0, count: SpatialPoints.floats)
+        } else {
+            field.update(from: spectrum.spatialField.fieldValues, count: SpatialField.floats)
+            points.update(from: spectrum.spatialField.pointValues, count: SpatialPoints.floats)
+        }
         v[SnapshotSlots.peakFrequency] = dominant.frequency
         v[SnapshotSlots.peakLevel] = dominant.level
         if stale || !spectrum.ready {
@@ -296,6 +397,7 @@ final class MeterPipeline {
         }
         for i in 0..<MeterSnapshot.spectrogramBandCount { v[SnapshotSlots.spectrogram + i] = column[i] }
         v[SnapshotSlots.spectrogramSerial] = Float(spectrogramSerial)
+        v[SnapshotSlots.spectrogramMode] = Float(spectrum.spectrogramMode.rawValue)
         v[SnapshotSlots.format] = Float(format.rawValue)
 
         let loudness = loudness.loudnessValues()
@@ -309,5 +411,8 @@ final class MeterPipeline {
         v[SnapshotSlots.stream] = streamID
         v[SnapshotSlots.waveSerial] = Float(waveform.serial)
         waveform.write(into: v + SnapshotSlots.waveform)
+        v[SnapshotSlots.breaks] = Float(breaks)
+        v[SnapshotSlots.missing] = Float(missingSeconds)
+        health.write(into: v + SnapshotSlots.signalHealth)
     }
 }

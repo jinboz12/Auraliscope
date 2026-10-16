@@ -29,7 +29,7 @@ struct AboutView: View {
 
     private var features: [(title: String, detail: String)] {
         [(L("Loudness"), L("LUFS, loudness range and True Peak against your target.")),
-         (L("Spectrogram & Spectrum"), L("Live spectrum beside its spectral history on one pitch axis, with the notes sounding together lit on its keyboard.")),
+         (L("Spectrogram & Spectrum"), L("Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer.")),
          (L("Waveform"), L("Real-time waveforms for each monitored channel.")),
          (L("Soundstage"), L("The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive.")),
          (L("Channel Levels"), L("Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo."))]
@@ -63,13 +63,15 @@ struct AboutView: View {
                             }
                         }
                     }
+                    AboutGroup(title: L("Accuracy")) {
+                        paragraph(L("Integrated loudness and loudness range use the BS.1770 and Tech 3342 gates; true peak is 4× oversampled at 48 kHz. The meter passes the synthetic cases of EBU Tech 3341 (1–6) and Tech 3342 (1–4)."))
+                    }
                     AboutGroup(title: L("Privacy")) {
                         paragraph(L("Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded."))
                     }
                     AboutGroup(title: L("Acknowledgements")) {
                         VStack(alignment: .leading, spacing: 10) {
-                            paragraph(L("Spectrogram inspired by AudioSpectrogram. MIT license included."))
-                            paragraph(L("Spotify, YouTube, Tidal, Apple Music, Dolby Atmos and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them."))
+                            paragraph(L("Spotify, YouTube, Tidal, Amazon Music, Deezer, Apple Music, Dolby Atmos, Prime Video and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them."))
                             DisclosureGroup(L("Third-party notices")) {
                                 ScrollView {
                                     Text(verbatim: notices)

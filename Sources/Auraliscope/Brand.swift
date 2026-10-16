@@ -45,6 +45,11 @@ struct BrandLogo: View {
     }
 }
 
+/// The public product name, shared by windows and accessibility labels.
+enum AppName {
+    static let full = "Auraliscope"
+}
+
 /// Logo plus "AURALISCOPE" in the heading voice (SF Pro Expanded, semibold, uppercase, tracked). Every window
 /// that names the app uses this one mark, scaled by `size` (the wordmark's point size).
 struct BrandMark: View {
@@ -59,14 +64,13 @@ struct BrandMark: View {
             // Title case, as the app's name appears everywhere else on the system. Lowercase letters read
             // smaller than capitals at one point size, so the name is set a little larger, with the light
             // tracking that mixed case wants (the wide spacing suited the former all-caps wordmark).
-            Text(verbatim: "Auraliscope")
+            Text(verbatim: AppName.full).foregroundColor(color)
                 .font(.system(size: size * 1.18, weight: .semibold).width(.expanded))
                 .tracking(Tracking.wordmark * size / 13)
-                .foregroundStyle(color)
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: "Auraliscope"))
+        .accessibilityLabel(Text(verbatim: AppName.full))
         .accessibilityAddTraits(.isHeader)
     }
 }

@@ -11,7 +11,7 @@ freedom-to-operate search in the markets you ship to.
 | Item | Origin | Status |
 | --- | --- | --- |
 | Swift, C and Metal sources | Written for this project | No copied third-party code found. No `Package.swift` dependencies; only Apple system frameworks are linked. |
-| Spectrogram presentation | Design cues (dB legend, time and frequency marks) from [AudioSpectrogram](https://github.com/lmshao/AudioSpectrogram), MIT | Independent implementation; MIT text bundled in `THIRD_PARTY_NOTICES.md` and shown in About. |
+| Spectrogram | Written for this project (rewritten in 1.3dev build 68: multi-resolution analysis, float history, own color scale, axes and inspector) | Own work. The earlier credit to AudioSpectrogram (MIT) for design cues was removed with the rewrite; nothing of it remains. |
 | App icon | `SoundmeterIcon/` (the project's own artwork) | Own work. |
 | Brand mark | Two hexagons drawn in code (`Brand.swift`) | Own work; no SF Symbol or font glyph in the logo or icon. |
 | Interface icons | SF Symbols, through SwiftUI | Used as interface symbols, which Apple's SF Symbols terms allow; never in the app icon or logo. |

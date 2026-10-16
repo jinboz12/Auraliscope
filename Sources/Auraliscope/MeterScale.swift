@@ -1,3 +1,4 @@
+import AnalysisCore
 import CoreGraphics
 import Foundation
 
@@ -205,6 +206,8 @@ struct NoteHolds: Equatable {
 
     struct Note: Equatable {
         let midi: Int
+        /// The newest refined frequency the analyzer found for this key, in Hz.
+        var frequency: Float
         var level: Float
         var hold: Double
     }
@@ -219,10 +222,11 @@ struct NoteHolds: Equatable {
             guard frequency > 0, level >= PeakTracker.gate else { continue }
             let midi = Int((69 + 12 * log2(Double(frequency) / 440)).rounded())
             if let index = notes.firstIndex(where: { $0.midi == midi }) {
+                notes[index].frequency = frequency
                 notes[index].level = level
                 notes[index].hold = Self.holdTime
             } else {
-                notes.append(Note(midi: midi, level: level, hold: Self.holdTime))
+                notes.append(Note(midi: midi, frequency: frequency, level: level, hold: Self.holdTime))
             }
         }
         notes.removeAll { $0.hold <= 0 }
@@ -235,6 +239,266 @@ struct NoteHolds: Equatable {
 enum FrequencyAxis {
     /// Tick labels under a plot.
     static let labelHeight: CGFloat = 20
+}
+
+/// The levels the spectrogram's colours span, chosen in the panel's settings. Standard suits most programme; Deep
+/// lifts quiet detail (reverb tails, noise floors, low-level hum) into view; Hot keeps a loud master's upper
+/// partials apart instead of letting them all reach the brightest colour.
+enum SpectrogramRange: String, CaseIterable {
+    case standard, deep, hot
+
+    static let key = "spectrogram.range"
+    static var stored: SpectrogramRange { SpectrogramRange(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .standard }
+
+    /// The darkest and brightest colours' levels, in dBFS.
+    var floor: Float {
+        switch self {
+        case .standard: return -90
+        case .deep: return -114
+        case .hot: return -72
+        }
+    }
+    var ceiling: Float {
+        switch self {
+        case .standard: return -12
+        case .deep: return -24
+        case .hot: return 0
+        }
+    }
+    var title: String {
+        switch self {
+        case .standard: return L("Standard")
+        case .deep: return L("Deep")
+        case .hot: return L("Hot")
+        }
+    }
+}
+
+/// The spectrogram's colour map, chosen in the panel's settings. Theme runs from the well through the accent to cream;
+/// Heat is a perceptually ordered black–indigo–crimson–amber map, whose hue turns as the level rises, so neighbouring
+/// levels are easier to tell apart; Gray is plain greyscale, the most neutral picture. On a light appearance each runs
+/// from the paper-white well toward ink instead (`Theme.rampStops(_:)`).
+enum SpectrogramColors: String, CaseIterable {
+    case heat, theme, gray
+
+    static let key = "spectrogram.colors"
+    static var stored: SpectrogramColors { SpectrogramColors(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .heat }
+
+    var title: String {
+        switch self {
+        case .theme: return L("Theme")
+        case .heat: return L("Heat")
+        case .gray: return L("Gray")
+        }
+    }
+}
+
+/// How quickly the live spectrum follows the newest column, chosen in the panel's settings. Fast shows every attack;
+/// Slow steadies the curve so a mix's tonal balance reads at a glance. Peak holds and the average are unaffected.
+enum SpectrumResponse: String, CaseIterable {
+    case fast, medium, slow
+
+    static let key = "spectrum.response"
+    static var stored: SpectrumResponse { SpectrumResponse(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .medium }
+
+    /// Rate of the critically damped filter, per second: settling times of about 0.2, 0.45 and 1.2 s.
+    var rate: Float {
+        switch self {
+        case .fast: return 22
+        case .medium: return 10
+        case .slow: return 4
+        }
+    }
+    var title: String {
+        switch self {
+        case .fast: return L("Fast")
+        case .medium: return L("Medium")
+        case .slow: return L("Slow")
+        }
+    }
+}
+
+/// How much the live spectrum's curve, peak holds and average are smoothed across frequency: a Gaussian of the given
+/// width (full width at half maximum, in octaves), averaged in power so a narrow peak keeps its energy. Off draws
+/// every fine band; 1/6 octave reads like a mixing engineer's analyser; 1/3 octave shows the broad tonal balance.
+enum SpectrumSmoothing: String, CaseIterable {
+    case off, twelfth, sixth, third, variable
+
+    static let key = "spectrum.smoothing"
+    static var stored: SpectrumSmoothing { SpectrumSmoothing(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .sixth }
+
+    var octaves: Double {
+        switch self {
+        case .off: return 0
+        case .twelfth: return 1.0 / 12
+        case .sixth: return 1.0 / 6
+        case .third: return 1.0 / 3
+        case .variable: return 1.0 / 6
+        }
+    }
+
+    /// The smoothing width at `frequency`, in octaves. Variable follows the room-measurement convention: 1/48 octave
+    /// up to 100 Hz, where modes and fundamentals need detail, widening steadily (on a log scale) to 1/3 octave from
+    /// 10 kHz, where the ear hears broad balance and fine detail is mostly noise.
+    func octaves(at frequency: Double) -> Double {
+        guard self == .variable else { return octaves }
+        let position = max(0, min(1, log10(max(frequency, 1) / 100) / 2))
+        return exp(log(1.0 / 48) + (log(1.0 / 3) - log(1.0 / 48)) * position)
+    }
+
+    var title: String {
+        switch self {
+        case .off: return L("Off")
+        case .twelfth: return "1/12"
+        case .sixth: return "1/6"
+        case .third: return "1/3"
+        case .variable: return L("Var")
+        }
+    }
+
+    /// One kernel per point of a spectrum of `count` points spaced evenly in log frequency from 20 Hz to `upper`:
+    /// the same everywhere for a fixed width, each point's own for Variable.
+    func kernels(count: Int, upper: Double) -> [[Float]] {
+        let pointsPerOctave = Double(count) / log2(upper / 20)
+        guard self == .variable else { return [[Float]](repeating: kernel(pointsPerOctave: pointsPerOctave), count: count) }
+        return (0..<count).map { index in
+            let frequency = 20 * pow(upper / 20, (Double(index) + 0.5) / Double(count))
+            return Self.kernel(octaves: octaves(at: frequency), pointsPerOctave: pointsPerOctave)
+        }
+    }
+
+    /// Normalised kernel weights for offsets −n…n points, with `pointsPerOctave` points to an octave; empty when off
+    /// or narrower than a point.
+    func kernel(pointsPerOctave: Double) -> [Float] { Self.kernel(octaves: octaves, pointsPerOctave: pointsPerOctave) }
+
+    static func kernel(octaves: Double, pointsPerOctave: Double) -> [Float] {
+        let sigma = octaves * pointsPerOctave / 2.3548
+        guard sigma > 0.35 else { return [] }
+        let reach = Int((3 * sigma).rounded(.up))
+        let weights = (-reach...reach).map { Float(exp(-0.5 * pow(Double($0) / sigma, 2))) }
+        let sum = weights.reduce(0, +)
+        return weights.map { $0 / sum }
+    }
+
+    /// `levels` (dBFS) smoothed in power, each point with its own kernel; the ends reuse the nearest point.
+    static func apply(_ kernels: [[Float]], to levels: [Float]) -> [Float] {
+        guard kernels.count == levels.count, kernels.contains(where: { !$0.isEmpty }) else { return levels }
+        let power = levels.map { pow(10, $0 / 10) }
+        return levels.indices.map { index in
+            let kernel = kernels[index]
+            guard !kernel.isEmpty else { return levels[index] }
+            let reach = kernel.count / 2
+            var sum: Float = 0
+            for (offset, weight) in kernel.enumerated() {
+                sum += weight * power[max(0, min(levels.count - 1, index + offset - reach))]
+            }
+            return max(-120, 10 * log10(max(sum, 1e-12)))
+        }
+    }
+
+    /// `levels` (dBFS) smoothed with `kernel` in power; the ends reuse the nearest point.
+    static func apply(_ kernel: [Float], to levels: [Float]) -> [Float] {
+        guard !kernel.isEmpty else { return levels }
+        let reach = kernel.count / 2
+        let power = levels.map { pow(10, $0 / 10) }
+        return levels.indices.map { index in
+            var sum: Float = 0
+            for (offset, weight) in kernel.enumerated() {
+                sum += weight * power[max(0, min(levels.count - 1, index + offset - reach))]
+            }
+            return max(-120, 10 * log10(max(sum, 1e-12)))
+        }
+    }
+}
+
+/// How the spectrogram is analysed. Classic is the multi-resolution short-time Fourier analysis, every row at its
+/// calibrated level. Enhanced reassigns each bin's energy to where its phase says it belongs, in time and in frequency
+/// (`ReassignedSpectrogram`): tones become thin lines and onsets sharp edges, while noise breaks into fine grain.
+enum SpectrogramAnalysis: String, CaseIterable {
+    case classic, enhanced
+
+    static let key = "spectrogram.analysis"
+    static var stored: SpectrogramAnalysis { SpectrogramAnalysis(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .classic }
+
+    var title: String { self == .classic ? L("Classic") : L("Enhanced") }
+}
+
+/// The spectrogram as a flat image scrolling in time, or as a 3D landscape: time across, frequency in depth, level
+/// as height, seen from above the front.
+enum SpectrogramView: String, CaseIterable {
+    case flat, surface
+
+    static let key = "spectrogram.view"
+    static var stored: SpectrogramView { SpectrogramView(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .flat }
+
+    var title: String { self == .flat ? "2D" : "3D" }
+}
+
+/// How many seconds the spectrogram shows: Auto fits 3 to 8 s to the panel's width (about 100 pt a second); a fixed
+/// span shows that much at any width, up to 15 s to see a whole phrase (the history keeps 17 s).
+enum SpectrogramSpan: String, CaseIterable {
+    case auto, four, eight, fifteen
+
+    static let key = "spectrogram.span"
+    static var stored: SpectrogramSpan { SpectrogramSpan(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .auto }
+
+    /// 0 for Auto.
+    var seconds: Double {
+        switch self {
+        case .auto: return 0
+        case .four: return 4
+        case .eight: return 8
+        case .fifteen: return 15
+        }
+    }
+    var title: String { self == .auto ? L("Auto") : L("%d s", Int(seconds)) }
+}
+
+/// A display slope for the spectrum and the spectrogram, pivoting at 1 kHz. Music falls by roughly 3 to 4.5 dB per
+/// octave, so a tilt of that much shows a balanced mix as level across the axis and makes the treble's detail as
+/// readable as the bass's. Readouts (the peak badge, the inspector) always give the true level.
+enum SpectrumTilt: String, CaseIterable {
+    case flat, three, fourAndHalf
+
+    static let key = "spectrum.tilt"
+    static var stored: SpectrumTilt { SpectrumTilt(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .flat }
+    static let pivot = 1_000.0
+
+    var decibelsPerOctave: Float {
+        switch self {
+        case .flat: return 0
+        case .three: return 3
+        case .fourAndHalf: return 4.5
+        }
+    }
+    var title: String {
+        switch self {
+        case .flat: return L("Flat")
+        case .three: return L("%@ dB/oct", "3")
+        case .fourAndHalf: return L("%@ dB/oct", "4.5")
+        }
+    }
+    /// What the slope adds at `frequency`.
+    func offset(frequency: Double) -> Float { decibelsPerOctave * Float(log2(max(frequency, 1) / Self.pivot)) }
+}
+
+/// How a spectrogram level becomes a colour: the position on `Theme.rampStops` (0 the empty well, 1 the brightest).
+/// The Metal waterfall evaluates the same curve (`waterfallTone`), the live spectrum's fill and the header legend
+/// call it here, so the three always agree. A level is mapped linearly over the range, then shaped: a power curve
+/// keeps the noise floor dark, and a partial S-curve separates quiet detail from loud partials.
+enum SpectrogramTone {
+    static let gamma: Float = 1.6
+    static let contrast: Float = 0.6
+    /// How far, in cells, an enlarged waterfall cell eases into its neighbour (`waterfallAxis`): a whole cell, so
+    /// enlarged cells blend from centre to centre like a smooth image while each cell's centre keeps its exact level.
+    static let columnSoftness: Float = 1.0
+    static let rowSoftness: Float = 1.0
+
+    static func position(_ db: Float, range: SpectrogramRange) -> Float {
+        let linear = max(0, min(1, (db - range.floor) / (range.ceiling - range.floor)))
+        let x = pow(linear, gamma)
+        return x + (x * x * (3 - 2 * x) - x) * contrast
+    }
 }
 
 /// The Spectrum card's display well, which holds the spectrogram and the live spectrum on one frequency axis:
@@ -275,8 +539,9 @@ struct SpectrogramLayout {
     let mirrored: Bool
     var visibleColumns: Int { Int(seconds * Self.analysisRate) }
 
-    /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair.
-    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false) {
+    /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair;
+    /// `span` fixes the seconds shown (`SpectrogramSpan`), `0` fits them to the width.
+    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false, span: Double = 0) {
         mirrored = spectrumLeft
         let top: CGFloat = 8, margin: CGFloat = 12
         let height = max(1, size.height - top - FrequencyAxis.labelHeight)
@@ -300,7 +565,7 @@ struct SpectrogramLayout {
             plot = CGRect(x: left, y: top, width: waterfall, height: height)
             spectrum = CGRect(x: plot.maxX + Self.spectrumGap, y: top, width: spectrumWidth, height: height)
         }
-        seconds = max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
+        seconds = span > 0 ? span : max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
     }
 
     /// Centre of the octave labels' column, beside the keyboard on its outer side.
@@ -331,6 +596,19 @@ struct SpectrogramLayout {
     func x(decibels db: Float) -> CGFloat {
         let offset = MeterScale.spectrumFraction(db) * spectrum.width
         return mirrored ? spectrum.maxX - offset : spectrum.minX + offset
+    }
+
+    /// Inverse of `y(frequency:)`: the frequency at `y` on the shared axis.
+    func frequency(y: CGFloat, sampleRate: Double) -> Double {
+        let fraction = Double((plot.maxY - y) / max(1, plot.height))
+        return 20 * pow(MeterScale.upperFrequency(sampleRate: sampleRate) / 20, fraction)
+    }
+    /// The fractional waterfall row (and spectrum band, with `rows` 64) at `y`, row 0 centred on the bottom one.
+    func row(y: CGFloat, rows: Int) -> Double { Double((plot.maxY - y) / max(1, plot.height)) * Double(rows) - 0.5 }
+    /// Across the waterfall at `x`: 0 at its oldest edge, 1 at "now", whichever side "now" is on.
+    func timeFraction(x: CGFloat) -> Double {
+        let fraction = Double((x - plot.minX) / max(1, plot.width))
+        return mirrored ? 1 - fraction : fraction
     }
 
     /// Frequency marks along the spectrum: 20, 50, 100, 200, 500 Hz… up to the ceiling, each at least 13 pt
@@ -382,7 +660,8 @@ struct SpectrogramLayout {
 }
 
 /// The Waveform panel's display well: one lane per channel, stacked top to bottom in the layout's display
-/// order, channel names in the left gutter and −6 dBFS marks in the right one. `size` is the well itself.
+/// order, channel names in the left gutter, the level scale (`WaveScale`) in the right one and the time ruler
+/// under the lanes. `size` is the well itself.
 ///
 /// L always weighs 1, R weighs `1 − mono`, and every other lane weighs `presence` (1 Spatial, 0 Stereo). The
 /// scope keeps its height, so as extended lanes grow in, L and R shrink to make room, and in Mono the single
@@ -391,6 +670,8 @@ struct WaveformLayout {
     static let gutter: CGFloat = 32
     static let scaleColumn: CGFloat = 30
     static let inset: CGFloat = 8
+    /// The time ruler under the lanes: −1 s … now.
+    static let ruler: CGFloat = 16
     /// Gap between neighbouring lanes, scaled by the lower lane's weight.
     static let laneGap: CGFloat = 4
     /// Lanes shorter than this drop their −6 dBFS labels and graticule text.
@@ -413,7 +694,7 @@ struct WaveformLayout {
         well = CGRect(origin: .zero, size: CGSize(width: max(1, size.width), height: max(1, size.height)))
         waveform = CGRect(x: Self.gutter, y: Self.inset,
                           width: max(1, well.width - Self.gutter - Self.scaleColumn),
-                          height: max(1, well.height - Self.inset * 2))
+                          height: max(1, well.height - Self.inset - Self.ruler))
         let weights = speakers.map { $0.weight(presence: p, mono: m) }
         // Gaps never take more than a quarter of a short well, so 16 lanes still fit.
         let requested = weights.dropFirst().reduce(0) { $0 + $1 * Self.laneGap }
@@ -433,8 +714,69 @@ struct WaveformLayout {
 
     func weight(_ index: Int) -> CGFloat { speakers[index].weight(presence: presence, mono: mono) }
 
-    /// Where a linear amplitude (−1…1) lands inside a lane.
+    /// Where a lane deflection (−1…1, `WaveScale.deflection`) lands inside a lane.
     func laneY(_ index: Int, amplitude: CGFloat) -> CGFloat { lanes[index].midY - amplitude * lanes[index].height / 2 }
+
+    /// Where the history `secondsAgo` before now sits across the lanes (`seconds` across the whole width).
+    func x(secondsAgo: Double, seconds: Double) -> CGFloat {
+        waveform.maxX - CGFloat(secondsAgo / max(0.001, seconds)) * waveform.width
+    }
+
+    /// Seconds before now at `x`.
+    func secondsAgo(x: CGFloat, seconds: Double) -> Double {
+        Double((waveform.maxX - x) / max(1, waveform.width)) * seconds
+    }
+
+    /// The lane under `y`, if any (receding lanes never match).
+    func lane(at y: CGFloat) -> Int? {
+        lanes.indices.first { lanes[$0].height >= 6 && y >= lanes[$0].minY - 2 && y <= lanes[$0].maxY + 2 }
+    }
+}
+
+/// The Waveform lanes' vertical scale. Linear amplitude reads as a DAW draws it; Decibels opens up quiet passages:
+/// each lane edge is full scale and the centre line −`range` dBFS, so −12 dBFS fills three quarters of the half lane.
+/// Either way the envelope is the exact sample peak of each column; only where it is drawn changes.
+enum WaveScale: String, CaseIterable {
+    case linear, decibels
+
+    static let key = "waveform.scale"
+    static let range: Float = 48
+    static var stored: WaveScale { WaveScale(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .linear }
+
+    var title: String { self == .linear ? L("Linear") : "dB" }
+
+    /// The shader's dB range for this scale (0 = linear).
+    var shaderRange: Float { self == .linear ? 0 : Self.range }
+
+    /// Deflection in a lane (full scale at ±1) of a signed sample value. Mirrors `scaled` in `waveformFragment`.
+    func deflection(_ amplitude: Float) -> Float {
+        guard self == .decibels else { return amplitude }
+        let a = abs(amplitude)
+        guard a > 0 else { return 0 }
+        let y = max(0, min(1, 1 + 20 * log10(a) / Self.range))
+        return amplitude < 0 ? -y : y
+    }
+
+    /// Deflection of a level in dBFS (positive half).
+    func deflection(decibels: Float) -> Float { deflection(pow(10, decibels / 20)) }
+
+    /// Levels the scale names, most useful first: on the linear scale −6 dBFS (half the lane) and full scale; on
+    /// the dB scale, where −6 crowds the edge, full scale and the even steps down.
+    var marks: [Float] { self == .linear ? [-6, 0, -12, -24] : [0, -12, -24, -6] }
+
+    /// The marks labelled in a lane of `height`, at least `spacing` points apart and clear of the centre line.
+    func labelled(laneHeight height: CGFloat, spacing: CGFloat = 11) -> [Float] {
+        let half = height / 2
+        var kept: [CGFloat] = []
+        var result: [Float] = []
+        for db in marks {
+            let y = CGFloat(deflection(decibels: db)) * half
+            guard y >= spacing * 0.7, kept.allSatisfy({ abs($0 - y) >= spacing }) else { continue }
+            kept.append(y)
+            result.append(db)
+        }
+        return result
+    }
 }
 
 /// The left column below the loudness summary: the Spectrum card (spectrogram and live spectrum together), then
@@ -442,7 +784,7 @@ struct WaveformLayout {
 /// area so it scales with the window, and both panels keep a minimum at which their contents stay legible.
 struct PanelLayout {
     /// A divider's hit strip, which is also the gap between the two panels.
-    static let divider: CGFloat = 14
+    static let divider: CGFloat = 10
     static let minSpectrum: CGFloat = 180
     static let minWaveform: CGFloat = 120
     static let defaultSpectrum: CGFloat = 0.64
@@ -522,14 +864,20 @@ enum HeroLayout {
     static let maxVU: CGFloat = 640
 
     static func leadWidth(compact: Bool) -> CGFloat { compact ? 190 : 250 }
+    /// Between the short-term reading and the loudness column.
     static func gap(compact: Bool) -> CGFloat { compact ? 14 : 22 }
+    /// The loudness panel's inner margins: its title lines up with the titles of the panels below it.
+    static let inset: CGFloat = 18
+    static let trailingInset: CGFloat = 16
+    /// Between the loudness column and the history card, and between the history and VU cards: the panels' gutter.
+    static let cardGap: CGFloat = PanelLayout.divider
     static func defaultVU(compact: Bool) -> CGFloat { compact ? 170 : 236 }
     /// The loudness column keeps room for its tiles' full titles; unset, it grows to `max` before the history does.
-    static func loudnessRange(compact: Bool) -> (min: CGFloat, max: CGFloat) { compact ? (380, 440) : (430, 560) }
+    static func loudnessRange(compact: Bool) -> (min: CGFloat, max: CGFloat) { compact ? (380, 410) : (430, 560) }
 
-    /// Width left for the loudness column, history and VU inside a row `width` wide (padding excluded).
+    /// Width left for the loudness column, history and VU inside a row `width` wide (the inset excluded).
     static func available(width: CGFloat, compact: Bool) -> CGFloat {
-        max(0, width - leadWidth(compact: compact) - 3 * gap(compact: compact))
+        max(0, width - leadWidth(compact: compact) - gap(compact: compact) - 2 * cardGap)
     }
 
     static func columns(width: CGFloat, compact: Bool, loudness requestedLoudness: CGFloat, vu requestedVU: CGFloat) -> Columns {
@@ -579,16 +927,21 @@ enum ColumnLayout {
     /// Minimum heights in a column `total` tall: the full ones where they fit, closing in continuously (Channel
     /// Levels before the room, whose stereometer needs the height more) as the column shortens, so a resize never
     /// makes a panel jump.
-    static func minimums(total: CGFloat) -> (room: CGFloat, levels: CGFloat) {
+    /// In Immersive, Channel Levels has meters only (no correlation section), so in a short column it closes in
+    /// further and the dome, which needs height more than anything else there, keeps its full minimum longer.
+    static let shortLevelsImmersive: CGFloat = 214
+
+    static func minimums(total: CGFloat, spatial: Bool = false) -> (room: CGFloat, levels: CGFloat) {
         let panels = total - PanelLayout.divider
-        let room = min(minRoom, max(shortRoom, panels - shortLevels))
-        return (room, min(minLevels, max(shortLevels, panels - room)))
+        let shortest = spatial ? shortLevelsImmersive : shortLevels
+        let room = min(minRoom, max(shortRoom, panels - shortest))
+        return (room, min(minLevels, max(shortest, panels - room)))
     }
 
     /// Soundstage (room) panel height for a stored share of a column `total` points tall (both panels and the divider).
-    static func roomHeight(share: CGFloat, total: CGFloat) -> CGFloat {
+    static func roomHeight(share: CGFloat, total: CGFloat, spatial: Bool = false) -> CGFloat {
         let valid = share.isFinite && share > 0 ? share : defaultRoomShare
-        let least = minimums(total: total)
+        let least = minimums(total: total, spatial: spatial)
         let upper = max(least.room, total - PanelLayout.divider - least.levels)
         return PanelLayout.clamp((valid * total).rounded(), least.room, upper)
     }
@@ -696,9 +1049,9 @@ struct SoundstageLayout {
     /// Column pitch L and R widen to in Stereo, and the single column in Mono, when the well allows it.
     static let stereoPitch: CGFloat = 112
     static let monoPitch: CGFloat = 128
-    /// Bar thickness limit: 10 pt in Spatial, up to 18 pt for the wide Stereo and Mono columns.
-    static let spatialBar: CGFloat = 10
-    static let pairBar: CGFloat = 18
+    /// Bar thickness limit: 9 pt in Spatial, up to 16 pt for the wide Stereo and Mono columns.
+    static let spatialBar: CGFloat = 9
+    static let pairBar: CGFloat = 16
     /// Column pitch in Spatial: small layouts get wider columns (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14
     /// or more channels. A narrow well compresses every column alike.
     static func spatialPitch(channels: Int) -> CGFloat { max(30, min(42, 44 - CGFloat(channels))) }
@@ -731,6 +1084,10 @@ struct SoundstageLayout {
     /// The correlation track (−1 at the left, 0 at the centre, +1 at the right) and its whole section.
     let correlationTrack: CGRect
     let correlationArea: CGRect
+    /// Below this well height (inside its margins) a wide Channel Levels well sets the correlation beside the meters.
+    static let sideBySideHeight: CGFloat = 200
+    /// The meters' share of the width then.
+    static let sideBySideMeters: CGFloat = 0.42
 
     /// Lanes of the correlation bar: 1 (full band), 3 or 5 (`StereoBands.Resolution`), or a value between them
     /// while a band switch animates; the bar's height follows it.
@@ -752,7 +1109,12 @@ struct SoundstageLayout {
         // Decided for the full section at its tallest (five lanes) and independent of the format mix, so the section
         // keeps its form through band switches and mode changes, and fewer lanes always give the bars more height.
         let fullSection = Self.correlationHeight(lanes: CGFloat(StereoBands.count)) + Self.roomGap
-        compactCorrelation = part == .levels && inner.height - fullSection - Self.meterRows < Self.compactBars
+        // Short and wide (the horizontal strip): the meters on the left and the correlation section beside them,
+        // as tall as the well. The main window's columns never get this short.
+        let sideBySide = part == .levels && inner.height < Self.sideBySideHeight && inner.width >= 360
+        compactCorrelation = part == .levels
+            && (sideBySide ? inner.height < Self.correlationHeight(lanes: CGFloat(StereoBands.count)) + 8
+                           : inner.height - fullSection - Self.meterRows < Self.compactBars)
         let correlationHeight = Self.correlationHeight(lanes: max(1, lanes), compact: compactCorrelation)
         let correlationGap = compactCorrelation ? 10 : Self.roomGap
 
@@ -769,12 +1131,26 @@ struct SoundstageLayout {
         case .levels:
             side = 0
             radar = CGRect(x: inner.midX, y: inner.minY, width: 0, height: 0)
-            meterHeight = max(1, inner.height - (correlationHeight + correlationGap) * correlationWeight)
-            block = CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: meterHeight)
+            if sideBySide {
+                // The correlation section's share folds into the meters as Stereo gives way to Mono or Immersive.
+                let meters = (inner.width * Self.sideBySideMeters).rounded()
+                meterHeight = inner.height
+                block = CGRect(x: inner.minX, y: inner.minY, width: inner.width - (inner.width - meters) * correlationWeight,
+                               height: meterHeight)
+            } else {
+                meterHeight = max(1, inner.height - (correlationHeight + correlationGap) * correlationWeight)
+                block = CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: meterHeight)
+            }
         }
-        correlationArea = CGRect(x: inner.minX, y: block.maxY + correlationGap, width: inner.width, height: correlationHeight)
-        correlationTrack = CGRect(x: inner.minX + Self.laneLabelColumn, y: correlationArea.minY + 22,
-                                  width: max(1, inner.width - Self.laneLabelColumn - Self.laneValueColumn),
+        if sideBySide {
+            let start = inner.minX + (inner.width * Self.sideBySideMeters).rounded() + 14
+            correlationArea = CGRect(x: start, y: inner.minY + max(0, (inner.height - correlationHeight) / 2),
+                                     width: max(1, inner.maxX - start), height: correlationHeight)
+        } else {
+            correlationArea = CGRect(x: inner.minX, y: block.maxY + correlationGap, width: inner.width, height: correlationHeight)
+        }
+        correlationTrack = CGRect(x: correlationArea.minX + Self.laneLabelColumn, y: correlationArea.minY + 22,
+                                  width: max(1, correlationArea.width - Self.laneLabelColumn - Self.laneValueColumn),
                                   height: Self.trackHeight(lanes: max(1, lanes)))
 
         // Columns: each takes a pitch share by its weight, groups sit a small gap apart, and the set is centred
@@ -787,7 +1163,7 @@ struct SoundstageLayout {
         let headerWeights = groups.map { $0 == .front ? CGFloat(1) : p }
         headerSpace = Self.headerHeight * p
         let gaps = headerWeights.dropFirst().reduce(0, +) * Self.groupGap
-        let area = CGRect(x: inner.minX + Self.axisColumn, y: block.minY, width: max(1, inner.width - Self.axisColumn),
+        let area = CGRect(x: block.minX + Self.axisColumn, y: block.minY, width: max(1, block.width - Self.axisColumn),
                           height: meterHeight)
         let spatialPitch = Self.spatialPitch(channels: layout.channelCount)
         let pairPitch = Self.stereoPitch + (Self.monoPitch - Self.stereoPitch) * m
@@ -849,7 +1225,7 @@ struct SoundstageLayout {
     /// The bar inside a column: thickness follows the column pitch, so narrowing columns thin out as they fade.
     func bar(_ index: Int) -> CGRect {
         let column = columns[index]
-        // Slim, like the loudness gauge on the summary, in Atmos; the two wide Stereo columns carry fuller bars.
+        // Narrow in Immersive; the two wide Stereo columns carry fuller bars.
         let limit = Self.pairBar + (Self.spatialBar - Self.pairBar) * presence
         let thickness = min(column.width * 0.6, max(3, min(limit, column.width * 0.4)))
         return CGRect(x: column.midX - thickness / 2, y: scale.minY, width: thickness, height: scale.height)
@@ -1049,5 +1425,22 @@ struct SoundstageLayout {
         let projected = point(at)
         guard speaker.azimuth != nil else { return CGPoint(x: projected.x, y: projected.y + 14) }
         return CGPoint(x: projected.x, y: projected.y - markerRadius(at) - 12)
+    }
+}
+
+/// Uniform-grid monotone cubic Hermite interpolation for spectrum drawing. Harmonic-mean slopes
+/// vanish at extrema and preserve the interval between adjacent measured levels (including mirrored axes).
+/// This only draws the curve; measurement values and analysis bandwidth are unchanged.
+enum SpectrumInterpolation {
+    static func value(_ a: CGFloat, _ b: CGFloat, _ c: CGFloat, _ d: CGFloat, fraction: CGFloat) -> CGFloat {
+        func slope(_ left: CGFloat, _ right: CGFloat) -> CGFloat {
+            guard left * right > 0 else { return 0 }
+            return 2 * left * right / (left + right)
+        }
+        let t = max(0, min(1, fraction)), t2 = t * t, t3 = t2 * t
+        let delta = c - b
+        let m0 = slope(b - a, delta), m1 = slope(delta, d - c)
+        return (2 * t3 - 3 * t2 + 1) * b + (t3 - 2 * t2 + t) * m0
+             + (-2 * t3 + 3 * t2) * c + (t3 - t2) * m1
     }
 }
