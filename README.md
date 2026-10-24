@@ -1,16 +1,11 @@
 # Auraliscope
 
-**Real-time loudness, spectrum and soundstage analysis for macOS: stereo to 9.1.6, live or from a file.**
+**Real-time audio analysis for macOS from mono, stereo to 9.1.6, live, from daw or from a audio file.**
 
 Auraliscope shows loudness, levels, spectrum, spectrogram, waveform and the spatial image of your audio in one window
 while you listen. Meter any input, anything your Mac plays, or a DAW track through the Auraliscope Bridge plugin.
 Analyse a whole file and get a printable loudness and master report.
 
-[Download](https://github.com/jinboz12/Auraliscope/releases) · [What's new in 2.0 RC 2](docs/2.0_RC2_RELEASE_NOTES.md) ·
-[Full update log](docs/UPDATE_LOG_since_1.2.2.md) · [Report an issue](https://github.com/jinboz12/Auraliscope/issues)
-
-> **Status:** 2.0 RC 2 (build 118) is a release candidate. The app and plugins are ad hoc signed. The installer is
-> unsigned and not notarized.
 
 ## Features
 
