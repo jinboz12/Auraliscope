@@ -91,7 +91,25 @@ struct AppFeatureChecks {
         do { _ = try available(rc); throw Failure(message:"stable channel accepted a pre-release") } catch is GitHubUpdateError {}
         try check(GitHubUpdateCatalog.endpoint(includePrereleases: true) == GitHubUpdateCatalog.listEndpoint
                   && GitHubUpdateCatalog.endpoint(includePrereleases: false) == GitHubUpdateCatalog.endpoint, "channel endpoints")
-        print("PASS: opt-in pre-release channel: newest of either kind, final beats older pre-release, invalid entries skipped, stable unchanged")
+        // GitHub replaces spaces in uploaded asset names with dots.
+        for (name, expected) in [("Auraliscope.2.0.rc.2.build.118.pkg", true), ("Auraliscope 2.0 rc 2 build 118.pkg", true),
+                                 ("Auraliscope-2.0-build-118.pkg", true), ("Auraliscope_2.0_build_118.PKG", true),
+                                 ("Auraliscope.Bridge.2.0.118.pkg", false), ("Auraliscope Bridge 2.0.pkg", false),
+                                 ("AuraliscopeX.2.0.pkg", false), ("Auraliscope.pkg.zip", false), ("Other.2.0.pkg", false),
+                                 ("Auraliscope-2.0-rc2-build118-source.tar.gz", false)] {
+            try check(GitHubUpdateCatalog.isAppInstaller(name) == expected, "installer name \(name)")
+        }
+        let dotted = release(tag:"v2.0-rc.2", name:"Auraliscope 2.0 RC 2 (build 118)", asset:"Auraliscope.2.0.rc.2.build.118.pkg",
+                             download:"https://github.com/jinboz12/Auraliscope/releases/download/v2.0-rc.2/Auraliscope.2.0.rc.2.build.118.pkg",
+                             prerelease:true)
+        if case .available(let u) = try channel(list([dotted]), build: 117) {
+            try check(u.build == 118 && u.installerURL?.lastPathComponent == "Auraliscope.2.0.rc.2.build.118.pkg", "dotted installer not linked")
+        } else { throw Failure(message:"dotted pre-release not offered") }
+        if case .available(let u) = try GitHubUpdateCatalog.evaluate(release(asset:"Auraliscope.2.0.build.116.pkg"),
+                                                                      currentVersion:"2.0", currentBuild:115) {
+            try check(u.installerURL != nil, "stable dotted installer not linked")
+        } else { throw Failure(message:"stable dotted release not offered") }
+        print("PASS: opt-in pre-release channel: newest of either kind, final beats older pre-release, invalid entries skipped, stable unchanged, GitHub dotted installer names linked")
 
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [UpdateMockProtocol.self]

@@ -65,6 +65,16 @@ enum GitHubUpdateCatalog {
         return value
     }
 
+    /// The app's installer package. GitHub stores an uploaded "Auraliscope 2.0 build 118.pkg" as
+    /// "Auraliscope.2.0.build.118.pkg", so a space, dot, dash or underscore may follow the name. Plugin-only packages
+    /// ("Auraliscope Bridge …") are not the app installer.
+    static func isAppInstaller(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        guard lower.hasSuffix(".pkg"), lower.hasPrefix("auraliscope"),
+              let separator = lower.dropFirst("auraliscope".count).first, " ._-".contains(separator) else { return false }
+        return !lower.dropFirst("auraliscope".count + 1).hasPrefix("bridge")
+    }
+
     /// Repository-scoped HTTPS links only, even when remote metadata contains malformed or unexpected URLs.
     static func officialURL(_ text: String, download: Bool) -> URL? {
         guard let url = URL(string: text), let c = URLComponents(url: url, resolvingAgainstBaseURL: false),
@@ -102,8 +112,7 @@ enum GitHubUpdateCatalog {
         guard !release.draft, allowPrerelease || !release.prerelease, let published = version(release.tag_name),
               let page = officialURL(release.html_url, download: false) else { throw GitHubUpdateError.invalidResponse }
         let packages = release.assets.filter {
-            $0.name.hasPrefix("Auraliscope ") && !$0.name.hasPrefix("Auraliscope Bridge")
-                && $0.name.lowercased().hasSuffix(".pkg") && ($0.state == nil || $0.state == "uploaded")
+            isAppInstaller($0.name) && ($0.state == nil || $0.state == "uploaded")
         }
         let explicitBuilds = Set([build(release.tag_name), release.name.flatMap(build)].compactMap { $0 })
         guard explicitBuilds.count < 2 else { throw GitHubUpdateError.invalidResponse }
