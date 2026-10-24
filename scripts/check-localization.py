@@ -7,8 +7,8 @@
 4. Each translation keeps the key's format specifiers (%@, %d…) and its trailing ellipsis.
 5. Terms that are never translated (units, abbreviations, channel labels, standards and product names) appear
    unchanged in every translation.
-6. Terms with an established translation use it consistently, in the meter window too (Stereo → 立体声 / 스테레오,
-   True Peak → 真峰值 / 트루 피크, Momentary → 瞬时 / 순간…).
+6. Terms with an established translation use it consistently, in the meter window too (Stereo → 立体声 / 스테레오 /
+   ステレオ / 立體聲 / estéreo, True Peak → 真峰值 / 트루 피크 / トゥルーピーク / pico real, Momentary → 瞬时 / 순간…).
 7. A key made only of never-translated terms is an error: write it as a literal instead of calling L().
 8. A SwiftUI view that calls L( observes Localizer.shared, so a language switch redraws it (text inside a
    StatusMessage closure is exempt: it is rendered when shown).
@@ -36,18 +36,40 @@ PROTECTED = [
     "LFE", "L/R", "Ls", "Rs", "L", "R", "C",
 ]
 # Terms with an established translation, used for them everywhere, the meter window included. Longer terms first.
+# Per language: Simplified Chinese, Korean, Japanese, Traditional Chinese (Taiwan) and Spanish (Spain). Spanish is
+# matched without regard to case and by stem, since its terms inflect and start sentences ("integrada", "Pico real").
+LANGUAGES = ["zh-Hans", "ko", "ja", "zh-Hant", "es"]
 GLOSSARY = {
-    "True Peak": ("真峰值", "트루 피크"), "TRUE PEAK": ("真峰值", "트루 피크"),
-    "SHORT-TERM LOUDNESS": ("短期响度", "단기 라우드니스"), "ON TARGET": ("达标", "목표 도달"), "TARGET": ("目标", "목표"), "CEILING": ("上限", "상한"),
-    "Stereo": ("立体声", "스테레오"), "Mono": ("单声道", "모노"), "Immersive": ("沉浸声", "이머시브"),
-    "Auto": ("自动", "자동"), "Momentary": ("瞬时", "순간"), "Short-term": ("短期", "단기"),
-    "Integrated": ("积分", "통합"), "Range": ("响度范围", "레인지"), "Peak": ("峰值", "피크"),
-    "Spectrogram": ("声谱图", "스펙트로그램"), "Spectrum": ("频谱", "스펙트럼"), "Waveform": ("波形", "파형"),
-    "Soundstage": ("声场", "사운드스테이지"), "Front": ("前置", "프런트"), "Surround": ("环绕", "서라운드"),
-    "Height": ("顶部", "하이트"), "MOMENTARY": ("瞬时", "순간"), "INTEGRATED": ("积分", "통합"),
-    "SPECTROGRAM": ("声谱图", "스펙트로그램"), "SPECTRUM": ("频谱", "스펙트럼"), "WAVEFORM": ("波形", "파형"),
-    "SOUNDSTAGE": ("声场", "사운드스테이지"),
+    "True Peak": ("真峰值", "트루 피크", "トゥルーピーク", "真峰值", "pico real"),
+    "TRUE PEAK": ("真峰值", "트루 피크", "トゥルーピーク", "真峰值", "pico real"),
+    "SHORT-TERM LOUDNESS": ("短期响度", "단기 라우드니스", "ショートタームラウドネス", "短期響度", "sonoridad a corto plazo"),
+    "ON TARGET": ("达标", "목표 도달", "ターゲット内", "達標", "en objetivo"),
+    "TARGET": ("目标", "목표", "ターゲット", "目標", "objetivo"),
+    "CEILING": ("上限", "상한", "上限", "上限", "techo"),
+    "Stereo": ("立体声", "스테레오", "ステレオ", "立體聲", "estéreo"),
+    "Mono": ("单声道", "모노", "モノ", "單聲道", "mono"),
+    "Immersive": ("沉浸声", "이머시브", "イマーシブ", "沉浸聲", "inmersiv"),
+    "Auto": ("自动", "자동", "自動", "自動", "auto"),
+    "Momentary": ("瞬时", "순간", "モーメンタリー", "瞬時", "momentáne"),
+    "Short-term": ("短期", "단기", "ショートターム", "短期", "corto plazo"),
+    "Integrated": ("积分", "통합", "インテグレーテッド", "積分", "integrad"),
+    "Range": ("响度范围", "레인지", "レンジ", "響度範圍", "rango"),
+    "Peak": ("峰值", "피크", "ピーク", "峰值", "pico"),
+    "Spectrogram": ("声谱图", "스펙트로그램", "スペクトログラム", "聲譜圖", "espectrograma"),
+    "Spectrum": ("频谱", "스펙트럼", "スペクトラム", "頻譜", "espectro"),
+    "Waveform": ("波形", "파형", "波形", "波形", "forma de onda"),
+    "Soundstage": ("声场", "사운드스테이지", "サウンドステージ", "聲場", "escena sonora"),
+    "Front": ("前置", "프런트", "フロント", "前置", "frontal"),
+    "Surround": ("环绕", "서라운드", "サラウンド", "環繞", "envolvente"),
+    "Height": ("顶部", "하이트", "ハイト", "頂部", "altura"),
+    "MOMENTARY": ("瞬时", "순간", "モーメンタリー", "瞬時", "momentáne"),
+    "INTEGRATED": ("积分", "통합", "インテグレーテッド", "積分", "integrad"),
+    "SPECTROGRAM": ("声谱图", "스펙트로그램", "スペクトログラム", "聲譜圖", "espectrograma"),
+    "SPECTRUM": ("频谱", "스펙트럼", "スペクトラム", "頻譜", "espectro"),
+    "WAVEFORM": ("波形", "파형", "波形", "波形", "forma de onda"),
+    "SOUNDSTAGE": ("声场", "사운드스테이지", "サウンドステージ", "聲場", "escena sonora"),
 }
+CASELESS = {"es"}
 # macOS's own menu titles (retitled by SystemMenus) read as macOS words them, not with the meter's glossary.
 GLOSSARY_EXEMPT = {"Bring All to Front"}
 # Word edges are ASCII-only: Korean particles and CJK characters may follow a term directly ("Stereo와").
@@ -106,8 +128,8 @@ for path in SOURCES:
         used.add(key)
 
 tables = {Path(table).parent.stem: load(table) for table in TABLES}
-if set(tables) != {"en", "zh-Hans", "ko"}:
-    fail(f"expected en, zh-Hans and ko tables, found {sorted(tables)}")
+if set(tables) != {"en", *LANGUAGES}:
+    fail(f"expected en, {', '.join(LANGUAGES)} tables, found {sorted(tables)}")
 
 for language, table in tables.items():
     missing = sorted(used - table.keys())
@@ -129,8 +151,9 @@ for language, table in tables.items():
                 fail(f"{language}: {term!r} must stay in English: {key!r} → {value!r}")
         if language != "en" and key not in GLOSSARY_EXEMPT:
             for term, pattern, translations in GLOSSARY_PATTERNS:
-                wanted = translations[0 if language == "zh-Hans" else 1]
-                if pattern.search(rest) and wanted not in value:
+                wanted = translations[LANGUAGES.index(language)]
+                found = wanted.lower() in value.lower() if language in CASELESS else wanted in value
+                if pattern.search(rest) and not found:
                     fail(f"{language}: {term!r} should read {wanted!r}: {key!r} → {value!r}")
                 rest = pattern.sub(" ", rest)
 
@@ -157,4 +180,4 @@ for path in SOURCES:
 if failures:
     print("\n".join(f"FAILED {message}" for message in failures), file=sys.stderr)
     sys.exit(1)
-print(f"PASS: {len(used)} keys in en, zh-Hans and ko; placeholders, instrument terms and view observation checked")
+print(f"PASS: {len(used)} keys in en, {', '.join(LANGUAGES)}; placeholders, instrument terms and view observation checked")

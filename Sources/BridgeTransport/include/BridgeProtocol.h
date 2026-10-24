@@ -23,10 +23,13 @@
 //   plugin → app   RESULT    while subscribed: the newest analysis state plus the spectrogram and waveform columns
 //                            the subscriber has not had (fields: Sources/AnalysisCore/ResultProtocol.swift)
 //   plugin → app   ACK       the outcome of a COMMAND
+//   plugin → app   SPATIAL_ACK  what came of a SPATIAL_CONFIG: applied (its revision and hash) or why not (build 98)
 //   plugin → app   FOCUS     the user clicked "Show in Auraliscope Labs": make this instance the active source
 //   app → plugin   WELCOME   reply to HELLO: u32 protocol_version, u32 reserved, then fields
 //   app → plugin   SUBSCRIBE / UNSUBSCRIBE   start or stop RESULTs for this instance (a new number each time)
 //   app → plugin   COMMAND   reset, reset true peak, pause or resume the instance's measurement
+//   app → plugin   SPATIAL_CONFIG  the speaker geometry and spatial options the display draws with, for a plugin
+//                            with ABR_CAPABILITY_SPATIAL_CONFIG only (an older one would close a message this long)
 //
 // Results are never replayed: every RESULT names the subscription it answers and carries the plugin's current
 // state, so a receiver drops anything of an earlier subscription and never mistakes queued results for new ones.
@@ -36,7 +39,7 @@
 #define ABR_PROTOCOL_VERSION 3u
 #define ABR_ANALYSIS_SCHEMA 1u         // the RESULT field set (ResultProtocol.swift)
 #define ABR_MAGIC 0x47524241u          // "ABRG" in memory order
-#define ABR_MAX_CHANNELS 2u
+#define ABR_MAX_CHANNELS 16u            // mono, stereo, or an immersive bus of up to 16 speakers (9.1.6)
 #define ABR_MAX_PAYLOAD (1u << 20)
 #define ABR_STATUS_INTERVAL_MS 250u
 #define ABR_TEXT_MAX 255u              // longest UTF-8 text field, bytes
@@ -47,10 +50,12 @@ enum {
     ABR_MSG_FOCUS = 5,        // no payload
     ABR_MSG_RESULT = 6,
     ABR_MSG_ACK = 7,
+    ABR_MSG_SPATIAL_ACK = 8,
     ABR_MSG_WELCOME = 16,
     ABR_MSG_SUBSCRIBE = 17,
     ABR_MSG_UNSUBSCRIBE = 18,  // no payload
     ABR_MSG_COMMAND = 19,
+    ABR_MSG_SPATIAL_CONFIG = 20,
 };
 // Version 2 types, never sent by version 3: FORMAT (3) and AUDIO (4).
 
@@ -64,13 +69,23 @@ enum {
 
 // The analysis' measurement state.
 enum {
-    ABR_MEASUREMENT_NONE = 0,       // no analysis: never configured, or not mono/stereo
+    ABR_MEASUREMENT_NONE = 0,       // no analysis: never configured, or a channel layout it cannot measure
     ABR_MEASUREMENT_MEASURING = 1,
     ABR_MEASUREMENT_PAUSED = 2,     // paused by a COMMAND: audio passes and is not accumulated
 };
 
 enum { ABR_FORMAT_VST3 = 1, ABR_FORMAT_AU = 2, ABR_FORMAT_TEST = 99 };
-enum { ABR_LAYOUT_UNKNOWN = 0, ABR_LAYOUT_MONO = 1, ABR_LAYOUT_STEREO = 2 };  // stereo order is L, R
+// Channel layouts. Stereo order is L, R; a SPEAKERS layout gives each channel's speaker role (STATUS 21, RESULT 18).
+enum { ABR_LAYOUT_UNKNOWN = 0, ABR_LAYOUT_MONO = 1, ABR_LAYOUT_STEREO = 2, ABR_LAYOUT_SPEAKERS = 3 };
+
+// Speaker roles, the same indices as Sources/AnalysisCore/Role.swift. LS/RS are the surrounds of a 5.x bed and the
+// side surrounds of a 7.x or 9.x bed (whose rear surrounds are LRS/RRS); a .2 bed's one height pair is LTF/RTF.
+enum {
+    ABR_ROLE_L = 0, ABR_ROLE_R = 1, ABR_ROLE_C = 2, ABR_ROLE_LFE = 3, ABR_ROLE_LS = 4, ABR_ROLE_RS = 5,
+    ABR_ROLE_LTF = 6, ABR_ROLE_RTF = 7, ABR_ROLE_LRS = 8, ABR_ROLE_RRS = 9, ABR_ROLE_LW = 10, ABR_ROLE_RW = 11,
+    ABR_ROLE_LTM = 12, ABR_ROLE_RTM = 13, ABR_ROLE_LTR = 14, ABR_ROLE_RTR = 15,
+    ABR_ROLE_COUNT = 16,
+};
 
 // STATUS flags and break reasons.
 enum {
@@ -105,6 +120,25 @@ enum {
     ABR_CAPABILITY_RESET = 1u << 1,
     ABR_CAPABILITY_RESET_TRUE_PEAK = 1u << 2,
     ABR_CAPABILITY_PAUSE = 1u << 3,
+    ABR_CAPABILITY_SPATIAL_CONFIG = 1u << 4,  // applies SPATIAL_CONFIG and then sends observations (RESULT 58)
+};
+
+// SPATIAL_CONFIG: fields written and read by the analysis core (SpatialConfigWire.swift); the transport only checks the
+// length. SPATIAL_ACK outcomes, and its fields.
+#define ABR_SPATIAL_CONFIG_MAX 1000u
+enum {
+    ABR_SPATIAL_APPLIED = 0,        // in force from the next spatial transform; RESULT 58 carries its hash
+    ABR_SPATIAL_INVALID = 1,        // a field missing, malformed or out of range, or unusable for this bus: unchanged
+    ABR_SPATIAL_HASH_MISMATCH = 2,  // the content does not match its hash: unchanged
+    ABR_SPATIAL_UNSUPPORTED = 3,    // a version or option this plugin does not know: unchanged
+};
+enum {  // SPATIAL_ACK
+    ABR_SPATIAL_ACK_REVISION = 1,    // u32: the configuration's revision
+    ABR_SPATIAL_ACK_HASH = 2,        // u64: its content hash (0 when refused)
+    ABR_SPATIAL_ACK_OUTCOME = 3,     // u32: ABR_SPATIAL_*
+    ABR_SPATIAL_ACK_GENERATION = 4,  // u32: the analysis generation it applies to
+    ABR_SPATIAL_ACK_FRAMES = 5,      // u64: frames that generation had analysed when it took effect
+    ABR_SPATIAL_ACK_SESSION_ID = 6,  // bytes[16]: the instance that answered
 };
 
 // COMMAND codes and ACK outcomes.
@@ -137,6 +171,12 @@ enum {  // HELLO, after the fixed prefix
 };
 enum {  // WELCOME, after the fixed prefix
     ABR_WELCOME_SCHEMA = 1,          // u32: newest RESULT schema the application reads
+    ABR_WELCOME_CAPABILITIES = 2,    // u32: ABR_DISPLAY_* (after build 98; absent: none)
+};
+// WELCOME capabilities: what the display does with the results.
+enum {
+    ABR_DISPLAY_KEEPS_OBSERVATIONS = 1u << 0,  // keeps a RESULT's observations (tag 58) until one carries new ones, so
+                                               // each observation frame is sent to it once
 };
 enum {  // STATUS
     ABR_STATUS_STATE = 1,            // u32: ABR_STATE_*
@@ -159,10 +199,15 @@ enum {  // STATUS
     ABR_STATUS_LAST_BREAK = 18,      // u32: reasons of the newest break the analysis saw
     ABR_STATUS_BACKLOG_MS = 19,      // u32: audio waiting to be analysed
     ABR_STATUS_SECONDS_SINCE_AUDIO = 20,  // f64: since the host last delivered live audio (< 0: never)
+    ABR_STATUS_ROLES = 21,           // u8[channels]: each channel's speaker role (ABR_ROLE_*), in the bus's order
+    ABR_STATUS_LAYOUT_NAME = 22,     // utf8 ≤ 15: the layout as the plugin names it ("Stereo", "5.1", "7.1.4")
 };
 enum {  // SUBSCRIBE
     ABR_SUBSCRIBE_SUBSCRIPTION = 1,  // u32, non-zero: echoed in every RESULT of this subscription
     ABR_SUBSCRIBE_SPECTROGRAM = 2,   // u32: the waterfall analysis wanted, 0 Classic (default), 1 Enhanced
+    ABR_SUBSCRIBE_SPECTRUM = 3,      // u32: what the spectrum and spectrogram sum, 0 L and R (default), 1 every channel
+    ABR_SUBSCRIBE_COHERENCE = 4,     // u32: the spatial field's coherence threshold in thousandths (50–950); absent or
+                                     // 0: the default 300 (build 80 and later)
 };
 enum {  // COMMAND
     ABR_COMMAND_ID = 1,              // u32: chosen by the application, echoed in the ACK

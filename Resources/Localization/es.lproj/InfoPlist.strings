@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Auraliscope";
+"NSMicrophoneUsageDescription" = "Auraliscope mide la entrada de audio que elijas: espectro, niveles de canal y sonoridad, de mono a 9.1.6. El audio nunca se graba ni se sube.";
+"NSAudioCaptureUsageDescription" = "Auraliscope mide lo que las apps reproducen en la salida que elijas como fuente. El audio nunca se graba ni se sube.";

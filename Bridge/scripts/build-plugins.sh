@@ -5,7 +5,7 @@
 # Plain clang, no CMake: the VST3 SDK and AudioUnitSDK sources the wrappers need are compiled directly.
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
 [[ -d Bridge/ThirdParty/vst3sdk/public.sdk && -d Bridge/ThirdParty/AudioUnitSDK/src ]] || Bridge/scripts/fetch-sdks.sh
 
 obj=.build/bridge/obj
@@ -29,7 +29,7 @@ newest_header="$(ls -t Bridge/Plugin/*/*.h Bridge/Plugin/Analysis/include/*.h So
 compile() {
     local object="$obj/$1" source="$2"; shift 2
     mkdir -p "${object:h}"
-    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" || Bridge/scripts/prototype-version.sh -nt "$object" ]]; then
+    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" || Bridge/scripts/release-version.sh -nt "$object" ]]; then
         clang++ -c "$source" -o "$object" "${base[@]}" "$@" &
         pids+=($!)
     fi
@@ -103,7 +103,10 @@ bundle() {  # bundle <name.ext> <plist> <exports> <objects…>
     plutil -lint "$contents/Info.plist" >/dev/null
     printf 'BNDL????' > "$contents/PkgInfo"
     clang++ "${link_flags[@]}" -exported_symbols_list "$exports" "$@" -o "$contents/MacOS/Auraliscope Bridge"
+    # Local symbols only: the exported factory entry points the hosts look up stay.
+    strip -x "$contents/MacOS/Auraliscope Bridge"
     cp Bridge/THIRD_PARTY_NOTICES.md "$contents/Resources/"
+    cp LICENSE COPYRIGHT.md docs/SOURCE_DISTRIBUTION.md docs/ASSET_RIGHTS.md "$contents/Resources/"
     find "$stage/$name" -name '._*' -delete
     xattr -cr "$stage/$name"
     codesign --force --sign - --timestamp=none "$stage/$name"

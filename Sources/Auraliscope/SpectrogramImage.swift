@@ -109,7 +109,7 @@ enum SpectrogramImage {
     /// The caption: what was analysed and how, the scale and when.
     static func caption(source: String, sampleRate: Double, options: DisplayOptions) -> String {
         let range = options.spectrogramRange
-        var parts = ["Auraliscope LABS", L("Spectrogram"), source, SpectrogramResolution.range(sampleRate: sampleRate),
+        var parts = [AppName.full, L("Spectrogram"), source, SpectrogramResolution.range(sampleRate: sampleRate),
                      "\(MeterScale.signedInteger(range.floor))…\(MeterScale.signedInteger(range.ceiling)) dBFS"]
         if options.tilt != .flat { parts.append("+" + options.tilt.title) }
         let date = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium)

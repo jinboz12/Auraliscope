@@ -7,6 +7,14 @@
 #   daw-reaper.sh vst3|au render    offline render of the project saved by the live run
 #   daw-reaper.sh vst3|au identity  duplicate, loop, seek, rate change, unload/reload (reaper-identity-test.lua)
 #   daw-reaper.sh vst3|au reopen    reopen the project saved by the identity run and play it
+#   daw-reaper.sh vst3 surround     a 12-channel track playing the 12-channel test WAV through the Bridge: which binary
+#                                   REAPER loaded, the pins and channel configuration it negotiated
+#                                   (reaper-surround-test.lua)
+#
+# ABR_REAPER_VST3=<path to "Auraliscope Bridge Dev.vst3"> (build-dev-vst3.sh): the current source, put on REAPER's
+# private VST path and inserted instead of "Auraliscope Bridge". REAPER also scans the system's VST3 folders and
+# resolves a VST3 by its class ID, so an installed Bridge would be loaded in place of the source under test; the dev
+# build has a class ID and name of its own. Nothing is installed.
 #
 # Run Auraliscope Lab alongside to see the stream (e2e-daw.sh does both). Logs: .build/bridge/validation/.
 set -euo pipefail
@@ -19,6 +27,7 @@ mkdir -p "$root/vst3only" "$root/clap-none" "$root/render" "$logs"
 # Only the Bridge VST3 is on REAPER's VST path; AUs come from the system registry, so a copy of the user's AU scan
 # cache spares every other Audio Unit a rescan (the Bridge is new to it and gets scanned).
 ln -sfn "$HOME/Library/Audio/Plug-Ins/VST3/Auraliscope Bridge.vst3" "$root/vst3only/Auraliscope Bridge.vst3"
+[[ -n "${ABR_REAPER_VST3:-}" ]] && ln -sfn "$ABR_REAPER_VST3" "$root/vst3only/Auraliscope Bridge Dev.vst3"
 # REAPER still scans its default VST folders, so the user's scan caches are copied too: every plugin already known
 # to their REAPER stays cached, and only the Bridge is scanned (no third-party licence dialogs, no long scan).
 for cache in "$HOME/Library/Application Support/REAPER"/reaper-{auplugins,vstplugins,vstshells}_arm64*.ini(N); do
@@ -42,6 +51,7 @@ wav="$root/bridge-test-48k.wav"
 [[ -f "$wav" ]] || python3 Bridge/Tools/make-test-wav.py "$wav" 48000 30
 project="$root/bridge-$format.rpp"
 fx="VST3:Auraliscope Bridge"; [[ "$format" == au ]] && fx="AU:Auraliscope Bridge"
+[[ -n "${ABR_REAPER_VST3:-}" && "$format" == vst3 ]] && fx="VST3:Auraliscope Bridge Dev"
 export ABR_WAV="$wav" ABR_FX="$fx" ABR_TRACK="REAPER $format track" ABR_PROJECT="$project" ABR_RENDER_DIR="$root/render"
 export ABR_LOG="$logs/reaper-$format-$mode.txt"
 rm -f "$ABR_LOG"
@@ -69,6 +79,14 @@ if [[ "$mode" == identity || "$mode" == reopen ]]; then
         [[ -f "$project" ]] || { echo "run the identity test first (it saves $project)" >&2; exit 1; }
     fi
     run_reaper "$project" "Bridge/Tools/reaper-$mode-test.lua" > "$logs/reaper-$format-$mode.stdout" 2>&1
+elif [[ "$mode" == surround ]]; then
+    wav12="$root/bridge-test-48k-12ch.wav"
+    [[ -f "$wav12" ]] || python3 Bridge/Tools/make-test-wav.py "$wav12" 48000 30 12
+    export ABR_WAV="$wav12"
+    project="$root/bridge-surround-$format.rpp"
+    export ABR_PROJECT="$project"
+    printf '<REAPER_PROJECT 0.1 "7.80" 0\n  SAMPLERATE 48000 0 0\n>\n' > "$project"
+    run_reaper "$project" Bridge/Tools/reaper-surround-test.lua > "$logs/reaper-$format-$mode.stdout" 2>&1
 elif [[ "$mode" == render ]]; then
     [[ -f "$project" ]] || { echo "run the live test first (it saves $project)" >&2; exit 1; }
     rm -f "$root/render/"*(N)

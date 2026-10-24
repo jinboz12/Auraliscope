@@ -7,9 +7,13 @@ import Foundation
 /// this reads what the meters show.
 ///
 ///   --bridge-selftest [name]        select the plugin instance with this name (default: the first one)
-///   --expect-peak-db L[,R]          expected sample peak per channel in dBFS (±0.05 dB)
+///   --expect-peak-db L[,R,…]        expected sample peak per channel in dBFS (±0.05 dB), in the bus's channel order:
+///                                   each is read on that channel's speaker role (every channel of an immersive bus)
 ///   --expect-rate Hz                expected stream sample rate
 ///   --expect-channels n             expected channel count
+///   --expect-layout name            an immersive bus: the format shown is the plugin's own (e.g. 7.1.4), its routing
+///                                   fixed to the bus, and every role outside the bus silent
+///   --expect-format f               the monitoring format shown (stereo, spatial, mono): Auto follows the plugin
 ///   --measure-seconds s             how long to measure (default 2)
 ///   --then-reconnect                afterwards, wait for the source to disconnect and return, and measure again
 ///   --then-rate Hz                  afterwards, wait for the stream to change to this rate, and measure again
@@ -66,6 +70,10 @@ enum BridgeSelfTest {
             }
         }
         guard arguments.contains("--bridge-selftest") else { return }
+        // The canvases ask for what they draw (every channel's spectrum, the speaker geometry) only while the window is
+        // visible; ask as they would, 30 times a second, so the checks hold on a locked or covered screen too.
+        let frames = Timer(timeInterval: 1.0 / 30, repeats: true) { _ in MainActor.assumeIsolated { _ = model.canvasFrame() } }
+        RunLoop.main.add(frames, forMode: .common)
         Run(model: model).start()
     }
 
@@ -75,6 +83,8 @@ enum BridgeSelfTest {
         let expectedPeaks = value(after: "--expect-peak-db")?.split(separator: ",").compactMap { Double($0) } ?? []
         let expectedRate = value(after: "--expect-rate").flatMap(Double.init)
         let expectedChannels = value(after: "--expect-channels").flatMap(Int.init)
+        let expectedLayout = value(after: "--expect-layout")
+        let expectedFormat = value(after: "--expect-format")
         let measureSeconds = value(after: "--measure-seconds").flatMap(Double.init) ?? 2
         let reconnect = arguments.contains("--then-reconnect")
         let nextRate = value(after: "--then-rate").flatMap(Double.init)
@@ -129,15 +139,16 @@ enum BridgeSelfTest {
         }
 
         func measure(then next: @escaping () -> Void) {
-            var peaks = [Float](repeating: 0, count: 2), rmsSum = [Double](repeating: 0, count: 2)
+            // Every role: an immersive bus puts its channels on their speakers (L and R are roles 0 and 1).
+            var peaks = [Float](repeating: 0, count: Role.count), rmsSum = [Double](repeating: 0, count: Role.count)
             var samples = 0
             let end = Date().addingTimeInterval(measureSeconds)
             timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [self] timer in
                 MainActor.assumeIsolated {
                     let snapshot = model.pollSnapshot()
-                    for channel in 0..<2 {
-                        peaks[channel] = max(peaks[channel], snapshot.channelPeaks[channel])
-                        rmsSum[channel] += Double(snapshot.channelRMS[channel])
+                    for role in 0..<Role.count {
+                        peaks[role] = max(peaks[role], snapshot.channelPeaks[role])
+                        rmsSum[role] += Double(snapshot.channelRMS[role])
                     }
                     samples += 1
                     guard Date() >= end else { return }
@@ -175,9 +186,45 @@ enum BridgeSelfTest {
             }
             if let expectedRate, model.sampleRate != expectedRate { fail("sample rate \(model.sampleRate), expected \(expectedRate)") }
             if let expectedChannels, channels != expectedChannels { fail("\(channels) channels, expected \(expectedChannels)") }
-            for (channel, expected) in expectedPeaks.enumerated() where channel < 2 {
-                if abs(db(peaks[channel]) - expected) > 0.05 {
-                    fail(String(format: "channel %d peak %.3f dBFS, expected %.3f", channel + 1, db(peaks[channel]), expected))
+            // Each channel of the bus on its speaker role (mono L, stereo L R).
+            let roles = source?.roles ?? (channels == 1 ? [Role.left] : [Role.left, Role.right])
+            if roles.count > 2 {
+                let layout = model.shownLayout
+                say("bus: \(model.shownLayoutName) (drawn in \(layout.name)) · " + roles.map { role in
+                    String(format: "%@ %.2f", layout.name(of: role), db(peaks[role]))
+                }.joined(separator: ", "))
+            }
+            for (channel, expected) in expectedPeaks.enumerated() where channel < roles.count {
+                let role = roles[channel]
+                if abs(db(peaks[role]) - expected) > 0.05 {
+                    fail(String(format: "channel %d (%@) peak %.3f dBFS, expected %.3f", channel + 1,
+                                model.shownLayout.name(of: role), db(peaks[role]), expected))
+                }
+            }
+            if let expectedLayout {
+                if !model.layoutFromPlugin || model.shownLayoutName != expectedLayout {
+                    fail("format shown \(model.shownLayoutName) (from the plugin: \(model.layoutFromPlugin)), expected the plugin's \(expectedLayout)")
+                }
+                let routed = model.routedRoles.enumerated().filter(\.element).map(\.offset)
+                if model.format != .mono && Set(routed) != Set(roles) { fail("routed roles \(routed), expected the bus's \(roles.sorted())") }
+                let stray = (0..<Role.count).filter { !roles.contains($0) && peaks[$0] > 0 }
+                if !stray.isEmpty { fail("signal on roles outside the bus: \(stray)") }
+            }
+            if let expectedFormat, model.format.rawValue != (expectedFormat == "spatial" ? 1 : expectedFormat == "mono" ? 2 : 0) {
+                fail("monitoring \(model.format), expected \(expectedFormat)")
+            }
+            // Immersive from a plugin of build 98 or later: it computes with the geometry the dome draws (SPATIAL_CONFIG),
+            // so its observations carry that geometry's hash and the dome draws them, with no notice.
+            if model.format == .spatial, roles.count > 2, let source = model.selectedBridgeSource {
+                let drawn = model.displayGeometry(for: model.shownLayout)
+                let o = model.lastObservations
+                say(String(format: "spatial observations: status %.0f, source %d, hash %016llx; dome's geometry %016llx; plugin takes geometry: %@",
+                           o.status, Int(o.source.rawValue), o.hash, drawn.hash, source.takesSpatialGeometry ? "yes" : "no"))
+                if source.takesSpatialGeometry {
+                    if o.status != 1 || o.source != .measured || o.hash != drawn.hash {
+                        fail("the plugin's observations are not of the geometry the dome draws")
+                    }
+                    if let notice = model.geometryNotice { fail("geometry notice shown: \(notice)") }
                 }
             }
             // With one channel the analysis sees it on L only; R must stay silent (nothing invented).

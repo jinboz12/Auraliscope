@@ -1,19 +1,18 @@
 #!/bin/zsh
-# Completes the experimental distribution folder after build-plugins.sh and build-labs-app.sh: documentation, the Labs
-# icon, one zip per bundle (made and checked on the local disk, so the external volume's "._" files never get in),
+# Completes the RC distribution after build-app.sh and build-plugins.sh: documentation and
+# one zip per bundle (made and checked locally so the external volume's "._" files never get in),
 # and SHA256SUMS.txt. Nothing is uploaded or published.
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
 dist="$ABR_DIST"
-for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
+for bundle in "Auraliscope.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     [[ -d "$dist/$bundle" ]] || { echo "missing $dist/$bundle: build it first" >&2; exit 1; }
 done
-cp Bridge/README.md Bridge/ARCHITECTURE.md Bridge/PROTOCOL.md Bridge/VALIDATION.md Bridge/TESTING-zh.md Bridge/THIRD_PARTY_NOTICES.md "$dist/"
-cp Bridge/App/Icon/AuraliscopeLabs-1024.png "$dist/"
+cp docs/2.0_RC2_RELEASE_NOTES.md docs/MULTIFFT_ARCHITECTURE.md LICENSE COPYRIGHT.md docs/THIRD_PARTY_NOTICES.md docs/INSTALLATION.md docs/LOUDNESS_REFERENCES.md docs/2.0_RC1_RELEASE_NOTES.md docs/UPDATE_LOG_since_1.2.2.md docs/SOURCE_DISTRIBUTION.md docs/ASSET_RIGHTS.md "$dist/"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
-for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
+for bundle in "Auraliscope.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     ditto --norsrc "$dist/$bundle" "$stage/$bundle"
     find "$stage/$bundle" -name '._*' -delete
     # The external volume reports folders as owner-only; unzipped as such, other users could not open the bundle.
@@ -29,5 +28,5 @@ for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Brid
     echo "zipped and verified: $bundle"
 done
 find "$dist" -name '._*' -delete
-(cd "$dist" && shasum -a 256 *.pkg(N) *.zip *.md *.png > SHA256SUMS.txt)
+(cd "$dist" && shasum -a 256 LICENSE *.pkg(N) *.zip *.md > SHA256SUMS.txt)
 cat "$dist/SHA256SUMS.txt"

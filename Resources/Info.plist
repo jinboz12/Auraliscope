@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>AuraliscopeVersionLabel</key>
-	<string>1.2.2</string>
+	<string>2.0 rc 2</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
@@ -12,6 +12,8 @@
 	<string>Auraliscope</string>
 	<key>CFBundleIconFile</key>
 	<string>Auraliscope.icns</string>
+	<key>CFBundleIconName</key>
+	<string>Auraliscope</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.jinboz.SoundMeterJBZ</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -20,16 +22,19 @@
 	<array>
 		<string>en</string>
 		<string>zh-Hans</string>
+		<string>zh-Hant</string>
+		<string>ja</string>
 		<string>ko</string>
+		<string>es</string>
 	</array>
 	<key>CFBundleName</key>
 	<string>Auraliscope</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.2</string>
+	<string>2.0</string>
 	<key>CFBundleVersion</key>
-	<string>62</string>
+	<string>118</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
 	<key>LSMinimumSystemVersion</key>
@@ -38,6 +43,8 @@
 	<string>Auraliscope meters what apps play to the output you choose as its source. Audio is never recorded or uploaded.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 JINBOZ. Licensed under GNU GPL v3 only.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Auraliscope meters the audio input you select: spectrum, channel levels and loudness, from Mono to 9.1.6. Audio is never recorded or uploaded.</string>
 	<key>NSPrincipalClass</key>

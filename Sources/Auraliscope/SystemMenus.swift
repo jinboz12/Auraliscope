@@ -10,10 +10,10 @@ import AppKit
 enum SystemMenus {
     /// AppKit's items by the action they send, with their title's table key.
     private static let actions: [(Selector, String)] = [
-        (#selector(NSApplication.hide(_:)), LKey("Hide Auraliscope LABS")),
+        (#selector(NSApplication.hide(_:)), LKey("Hide Auraliscope")),
         (#selector(NSApplication.hideOtherApplications(_:)), LKey("Hide Others")),
         (#selector(NSApplication.unhideAllApplications(_:)), LKey("Show All")),
-        (#selector(NSApplication.terminate(_:)), LKey("Quit Auraliscope LABS")),
+        (#selector(NSApplication.terminate(_:)), LKey("Quit Auraliscope")),
         (Selector(("undo:")), LKey("Undo")),
         (Selector(("redo:")), LKey("Redo")),
         (#selector(NSText.cut(_:)), LKey("Cut")),
@@ -53,12 +53,17 @@ enum SystemMenus {
     private static var found: [ObjectIdentifier: String] = [:]
 
     /// The key of `title`: the one it is spelled as, else a title-case key (menu and window titles are), else any.
+    /// A heading in capitals ("LAYOUT", "EDIT") shares its translation with the menu of that name in some languages;
+    /// it never wins, and of two title-case keys the shorter one does ("Auto" over "Automatic").
     private static func key(for title: String, of object: AnyObject) -> String? {
         let id = ObjectIdentifier(object)
         if let known = found[id], L(known) == title || keys[title]?.contains(known) == true { return known }
         guard let candidates = keys[title] else { return nil }
-        func titleCase(_ key: String) -> Int { key.split(separator: " ").filter { $0.first?.isUppercase == true }.count }
-        let key = candidates.first { $0 == title } ?? candidates.max { titleCase($0) < titleCase($1) }!
+        func titleCase(_ key: String) -> Int {
+            key.split(separator: " ").filter { $0.first?.isUppercase == true && $0.dropFirst().contains(where: \.isLowercase) }.count
+        }
+        let key = candidates.first { $0 == title }
+            ?? candidates.max { (titleCase($0), -$0.count) < (titleCase($1), -$1.count) }!
         found[id] = key
         return key
     }
@@ -105,7 +110,11 @@ enum SystemMenus {
     /// Puts every title in the current language.
     static func relocalize() {
         for entry in expected() where entry.title != entry.wanted { entry.set(entry.wanted) }
+        afterRelocalize?()
     }
+
+    /// Runs after each pass over the menus (the app routes Minimize through `MinimizeRouter` here).
+    static var afterRelocalize: (@MainActor () -> Void)?
 
     /// Titles that still read in another language (none once `relocalize` has run).
     static var mismatches: [String] { expected().filter { $0.title != $0.wanted }.map(\.wanted) }

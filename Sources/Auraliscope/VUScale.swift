@@ -11,6 +11,9 @@ import QuartzCore
 /// the scale is spread out and −20 VU sits near the left stop.
 enum VUScale {
     static let defaultReference: Float = -18
+    /// Stored 0 VU level in dBFS; 0 follows the loudness target of the current mode.
+    static let referenceKey = "vu.reference"
+    static let referenceChoices: [Double] = [0, -14, -18, -20, -24]
     static let top: Float = 3
     static let marks: [Float] = [-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3]
     /// Needle travel: ±48° either side of vertical.

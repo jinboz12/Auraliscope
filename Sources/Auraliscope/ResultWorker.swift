@@ -13,6 +13,8 @@ protocol MeterWorker: AnyObject {
     func resetTruePeaks()
     func setSpatialSpectrum(_ spatial: Bool)
     func setSpectrogramMode(_ mode: SpectrogramMode)
+    /// The spatial field's coherence threshold and the shown layout's side surrounds.
+    func setSpatialField(threshold: Float, geometry: SpatialGeometry)
 }
 
 extension DSPWorker: MeterWorker {}
@@ -78,6 +80,8 @@ final class ResultWorker: MeterWorker {
     func setSpatialSpectrum(_ spatial: Bool) {}
     /// The plugin analyses: `BridgeReceiver.setSpectrogram` asks it.
     func setSpectrogramMode(_ mode: SpectrogramMode) {}
+    /// The plugin analyses: its threshold travels in SUBSCRIBE (`BridgeSource.setCoherence`).
+    func setSpatialField(threshold: Float, geometry: SpatialGeometry) {}
 
     deinit {
         stop()

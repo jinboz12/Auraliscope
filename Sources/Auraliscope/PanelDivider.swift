@@ -18,6 +18,8 @@ struct PanelDivider: NSViewRepresentable {
     let onResize: (CGFloat) -> Void
     /// Double-click: restore this divider's default position.
     let onReset: () -> Void
+    /// Names the divider for the diagnostics (which strip gap it is).
+    var identifier: String? = nil
     /// Redraws the tooltip and accessibility label when the language changes.
     @ObservedObject private var l10n = Localizer.shared
 
@@ -31,6 +33,7 @@ struct PanelDivider: NSViewRepresentable {
         view.leading = leading
         view.onResize = onResize
         view.onReset = onReset
+        view.identifier = identifier.map { NSUserInterfaceItemIdentifier(rawValue: $0) }
         view.setAccessibilityLabel(L("Resize panels"))
         view.toolTip = L("Drag to resize · double-click to reset")
     }

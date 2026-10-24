@@ -42,6 +42,7 @@ cp Resources/Auraliscope.icns "$app/Contents/Resources/Auraliscope.icns"
 cp -R Resources/Localization/*.lproj "$app/Contents/Resources/"
 for strings in "$app/Contents/Resources/"*.lproj/*.strings; do plutil -lint "$strings" >/dev/null; done
 cp docs/THIRD_PARTY_NOTICES.md "$app/Contents/Resources/THIRD_PARTY_NOTICES.md"
+cp LICENSE COPYRIGHT.md docs/SOURCE_DISTRIBUTION.md docs/ASSET_RIGHTS.md "$app/Contents/Resources/"
 cp "$binary_directory/Auraliscope" "$app/Contents/MacOS/Auraliscope"
 find "$app" -name '._*' -delete
 xattr -cr "$app"

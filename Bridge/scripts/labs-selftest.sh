@@ -6,8 +6,8 @@
 #   labs-selftest.sh --bridge-selftest "<track name>" --expect-peak-db -6.02,-12.04 --compare-reference --then-controls
 set -uo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
+source Bridge/scripts/release-version.sh
+app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
 if [[ " $* " == *" --restore "* ]]; then
     exec "$app" --diagnostic "$@" -showWelcomeOnLaunch NO
 fi

@@ -2,11 +2,9 @@
 import PackageDescription
 import Foundation
 
-// DAW Bridge prototype branch: the binary carries the "Auraliscope Labs" test identity (1.3dev,
-// com.jinboz.SoundMeterJBZ.Labs), so it never shares preferences, logs or TCC grants with Auraliscope.
-// Resources/Info.plist (the release identity) is left as it is.
+// The executable and packaged app share the public release identity.
 let infoPlist = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-    .appendingPathComponent("Bridge/App/Info.plist").path
+    .appendingPathComponent("Resources/Info.plist").path
 
 let package = Package(
     name: "Auraliscope",

@@ -15,7 +15,7 @@ package enum SpectrogramMode: UInt32 {
 /// energy to the centre of gravity of the component that produced it, read from the phase: two more transforms of
 /// the same samples, with the window weighted by time and with its derivative, give each bin's true frequency and time.
 /// A tone's main lobe collapses onto its frequency, a click's energy onto its instant, and noise, having no centre to
-/// converge on, scatters into fine grain. Visu and other analysers call this an "enhanced" or "reassigned" view.
+/// converge on, scatters into fine grain. Analysers call this an "enhanced" or "reassigned" view.
 ///
 /// - Windows: Hann, whose derivative is smooth. Each zone serves the rows where its main lobe (±2 bins) stays within
 ///   1/`resolvingPower` of the frequency, a looser rule than Classic's because reassignment, not the bin width,

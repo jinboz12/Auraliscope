@@ -1,23 +1,15 @@
 #!/bin/zsh
-# Builds the early-test installer after build-plugins.sh and build-labs-app.sh:
-#   experimental-dist/Auraliscope LABS <label> build <n>/Auraliscope LABS <label> build <n>.pkg
-# One package, three choices (all selected), for every user of the Mac:
-#   /Applications/Auraliscope LABS.app                          (independent of Auraliscope: own name and bundle ID)
-#   /Library/Audio/Plug-Ins/VST3/Auraliscope Bridge.vst3
-#   /Library/Audio/Plug-Ins/Components/Auraliscope Bridge.component
-# The plugins are installed where, and under the names and bundle IDs, an official Auraliscope Bridge release would
-# use, with bundle versions below any release (0.<build>, prototype-version.sh), so an official installer replaces
-# them; this package never replaces a newer plugin. Nothing is relocated to another copy Launch Services knows of.
-# Unsigned (no Developer ID on this Mac): Gatekeeper asks for Open Anyway. Nothing is uploaded or published.
+# Public installer: app plus optional VST3 and Audio Unit components.
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
+python3 scripts/check-release.py
 dist="$ABR_DIST"
-name="Auraliscope LABS $ABR_LABEL build $ABR_BUILD"
-for bundle in "Auraliscope LABS.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
+name="Auraliscope $ABR_LABEL build $ABR_BUILD"
+for bundle in "Auraliscope.app" "Auraliscope Bridge.vst3" "Auraliscope Bridge.component"; do
     [[ -d "$dist/$bundle" ]] || { echo "missing $dist/$bundle: build it first" >&2; exit 1; }
 done
-app_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$dist/Auraliscope LABS.app/Contents/Info.plist")"
+app_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$dist/Auraliscope.app/Contents/Info.plist")"
 [[ "$app_build" == "$ABR_BUILD" ]] || { echo "app build $app_build is not $ABR_BUILD: update Bridge/App/Info.plist" >&2; exit 1; }
 
 stage="$(mktemp -d)"
@@ -64,35 +56,37 @@ exit 0
 EOF
 chmod +x "$stage/scripts-com.jinboz.AuraliscopeBridge.component/postinstall"
 
-component "Auraliscope LABS.app" /Applications com.jinboz.SoundMeterJBZ.Labs "$ABR_VERSION.$ABR_BUILD"
+component "Auraliscope.app" /Applications com.jinboz.SoundMeterJBZ "$ABR_VERSION.$ABR_BUILD"
 component "Auraliscope Bridge.vst3" /Library/Audio/Plug-Ins/VST3 com.jinboz.AuraliscopeBridge.vst3 "$ABR_PLUGIN_BUNDLE_VERSION"
 component "Auraliscope Bridge.component" /Library/Audio/Plug-Ins/Components com.jinboz.AuraliscopeBridge.component "$ABR_PLUGIN_BUNDLE_VERSION"
 
 mkdir -p "$stage/resources"
 cat > "$stage/resources/welcome.html" <<EOF
 <html><body style="font-family: -apple-system, sans-serif; font-size: 13px">
-<p><b>$name</b> · <span style="color:#b8862e"><b>Prototype experiment only</b></span></p>
-<p>An early test build. It installs, for every user of this Mac:</p>
-<ul>
-<li><b>Auraliscope LABS</b> in Applications: the test app. It is separate from Auraliscope (its own name, settings and
-privacy permissions), so both can be installed and used side by side.</li>
-<li><b>Auraliscope Bridge</b> VST3 and Audio Unit plugins in /Library/Audio/Plug-Ins. Each insert measures its own audio
-inside your DAW; Auraliscope LABS shows the results. Audio passes through unchanged.</li>
-</ul>
-<p>In Auraliscope LABS, Settings → Audio → <b>Source type</b> chooses between your <b>Audio devices</b> (inputs, or what
-apps play to an output, as in Auraliscope) and <b>Host plugins</b> (the Bridge inserts in your DAW).</p>
-<p>A later official Auraliscope Bridge installer replaces these test plugins. Requires macOS 13 or later on Apple silicon.</p>
+<h2>$name</h2>
+<p>Audio metering, spatial analysis and loudness reports for macOS.</p>
+<p>Choose the app and the plugin formats you use. The app installs in Applications; VST3 and Audio Unit plugins
+install in /Library/Audio/Plug-Ins. Requires Apple silicon and macOS 13 or later.</p>
+<p>Quit Auraliscope and your DAW before installing. This release candidate replaces Auraliscope 2.0 and earlier Bridge plugins
+in place. Auraliscope LABS is not removed.</p>
+<p>Copyright © 2026 JINBOZ. Original source code is licensed under GNU GPL v3 only. Official compiled packages may be sold;
+recipients retain their GPL rights. See the included source distribution and image-rights records.</p>
+<p>This package is unsigned and not notarized.</p>
 </body></html>
 EOF
+cp LICENSE "$stage/resources/license.txt"
 cat > "$stage/resources/readme.html" <<EOF
 <html><body style="font-family: -apple-system, sans-serif; font-size: 13px">
-<p><b>After installing</b>: rescan plugins in your DAW if it was open, insert <i>Auraliscope Bridge</i> on a track, bus or
-master, and click <i>Open Auraliscope LABS</i> in the plugin window.</p>
-<p><b>Earlier test builds</b>: remove any Auraliscope Bridge copies from ~/Library/Audio/Plug-Ins (VST3 and Components)
-and older Auraliscope LABS copies, so hosts and macOS see only this build.</p>
-<p><b>To uninstall</b>, delete /Applications/Auraliscope LABS.app, /Library/Audio/Plug-Ins/VST3/Auraliscope Bridge.vst3 and
-/Library/Audio/Plug-Ins/Components/Auraliscope Bridge.component.</p>
-<p>Not for distribution. Nothing is recorded or uploaded.</p>
+<p><b>Start</b>: open Auraliscope, choose Audio devices or Host plugins in Settings → Audio.
+For a DAW source, insert Auraliscope Bridge and click Open Auraliscope.</p>
+<p><b>Upgrading from LABS</b>: install both app and plugins. On first launch Auraliscope takes over any LABS setting
+Auraliscope itself never set. Remove duplicate Bridge copies from your user Library only after confirming their
+location; rescan plugins in your DAW.</p>
+<p><b>First launch</b>: if macOS blocks the download, use System Settings → Privacy &amp; Security → Open Anyway
+for this package after verifying its source. Audio permissions are requested when needed.</p>
+<p><b>Uninstall</b>: remove /Applications/Auraliscope.app and the Auraliscope Bridge bundles from
+/Library/Audio/Plug-Ins/VST3 and /Library/Audio/Plug-Ins/Components.</p>
+<p>Live audio is analyzed in memory. Reports and images are saved only when requested.</p>
 </body></html>
 EOF
 cat > "$stage/distribution.xml" <<EOF
@@ -101,6 +95,7 @@ cat > "$stage/distribution.xml" <<EOF
     <title>$name</title>
     <welcome file="welcome.html" mime-type="text/html"/>
     <readme file="readme.html" mime-type="text/html"/>
+    <license file="license.txt" mime-type="text/plain"/>
     <options customize="allow" require-scripts="false" hostArchitectures="arm64" rootVolumeOnly="true"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <volume-check><allowed-os-versions><os-version min="13.0"/></allowed-os-versions></volume-check>
@@ -109,8 +104,8 @@ cat > "$stage/distribution.xml" <<EOF
         <line choice="vst3"/>
         <line choice="au"/>
     </choices-outline>
-    <choice id="app" title="Auraliscope LABS (app)" description="The test app, in Applications. Independent of Auraliscope.">
-        <pkg-ref id="com.jinboz.SoundMeterJBZ.Labs"/>
+    <choice id="app" title="Auraliscope (app)" description="The audio meter, in Applications. Replaces Auraliscope 2.0 and earlier releases.">
+        <pkg-ref id="com.jinboz.SoundMeterJBZ"/>
     </choice>
     <choice id="vst3" title="Auraliscope Bridge VST3" description="The VST3 plugin, in /Library/Audio/Plug-Ins/VST3.">
         <pkg-ref id="com.jinboz.AuraliscopeBridge.vst3"/>
@@ -118,7 +113,7 @@ cat > "$stage/distribution.xml" <<EOF
     <choice id="au" title="Auraliscope Bridge Audio Unit" description="The Audio Unit, in /Library/Audio/Plug-Ins/Components.">
         <pkg-ref id="com.jinboz.AuraliscopeBridge.component"/>
     </choice>
-    <pkg-ref id="com.jinboz.SoundMeterJBZ.Labs" version="$ABR_VERSION.$ABR_BUILD">com.jinboz.SoundMeterJBZ.Labs.pkg</pkg-ref>
+    <pkg-ref id="com.jinboz.SoundMeterJBZ" version="$ABR_VERSION.$ABR_BUILD">com.jinboz.SoundMeterJBZ.pkg</pkg-ref>
     <pkg-ref id="com.jinboz.AuraliscopeBridge.vst3" version="$ABR_PLUGIN_BUNDLE_VERSION">com.jinboz.AuraliscopeBridge.vst3.pkg</pkg-ref>
     <pkg-ref id="com.jinboz.AuraliscopeBridge.component" version="$ABR_PLUGIN_BUNDLE_VERSION">com.jinboz.AuraliscopeBridge.component.pkg</pkg-ref>
 </installer-gui-script>
@@ -129,7 +124,7 @@ productbuild --distribution "$stage/distribution.xml" --resources "$stage/resour
 # Check: the payload is the three bundles, byte for byte, still validly signed, installed where intended.
 mkdir -p "$stage/check"
 pkgutil --expand-full "$stage/$name.pkg" "$stage/check/pkg"
-for entry in "com.jinboz.SoundMeterJBZ.Labs.pkg:Auraliscope LABS.app" "com.jinboz.AuraliscopeBridge.vst3.pkg:Auraliscope Bridge.vst3" \
+for entry in "com.jinboz.SoundMeterJBZ.pkg:Auraliscope.app" "com.jinboz.AuraliscopeBridge.vst3.pkg:Auraliscope Bridge.vst3" \
              "com.jinboz.AuraliscopeBridge.component.pkg:Auraliscope Bridge.component"; do
     part="${entry%%:*}" bundle="${entry#*:}"
     payload="$stage/check/pkg/$part/Payload/$bundle"

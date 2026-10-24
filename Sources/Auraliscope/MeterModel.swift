@@ -21,6 +21,9 @@ final class DSPWorker {
     /// Owned by `queue`: only ever touched there.
     private let pipeline: MeterPipeline
     private var spectrogramMode = SpectrogramMode.classic
+    private let multiFFTMailbox = MultiFFTMailbox()
+    private var multiFFTConfiguration: MultiFFTConfiguration?
+    private var legacyChoice: LegacySTFT?
 
     init?(ring: OpaquePointer, sampleRate: Double, streamID: UInt32, activeRoles: [Bool], detector: FormatDetector) {
         precondition(SnapshotSlots.total == Int(METER_SNAPSHOT_FLOATS), "snapshot layout and C buffer disagree")
@@ -37,6 +40,7 @@ final class DSPWorker {
         var mark = ChannelRingMark()
         var marked: Int32 = 0
         let clock = clock
+        let multiFFTMailbox = multiFFTMailbox
         source.schedule(deadline: .now(), repeating: .nanoseconds(Int(1_000_000_000 / MeterPipeline.tickRate)), leeway: .milliseconds(1))
         source.setEventHandler {
             batch.withUnsafeMutableBufferPointer { buffer in
@@ -70,6 +74,7 @@ final class DSPWorker {
                 Diagnostics.log("Nonzero audio signal confirmed")
                 receivedSignal = true
             }
+            multiFFTMailbox.store(pipeline.multiFFT?.latest)
             meter_exchange_publish(exchange, values)
         }
         timer = source
@@ -82,11 +87,43 @@ final class DSPWorker {
     /// Spatial monitoring: spectrum and waterfall sum every routed channel.
     func setSpatialSpectrum(_ spatial: Bool) { meter_exchange_set_mode(exchange, spatial ? 1 : 0) }
 
+    /// The spatial field's coherence threshold and the speaker geometry (`SpatialFieldAnalyzer`), applied on the DSP
+    /// queue between transforms: the snapshots carry the geometry's hash from the next spatial transform on.
+    func setSpatialField(threshold: Float, geometry: SpatialGeometry) {
+        guard threshold != spatialThreshold || geometry != spatialGeometry else { return }
+        spatialThreshold = threshold
+        spatialGeometry = geometry
+        queue.async { [pipeline] in
+            pipeline.spatialCoherence = threshold
+            pipeline.spatialGeometry = geometry
+        }
+    }
+    private var spatialThreshold: Float = -1
+    private var spatialGeometry: SpatialGeometry?
+
     /// The waterfall's analysis for the columns from now on.
     func setSpectrogramMode(_ mode: SpectrogramMode) {
         guard mode != spectrogramMode else { return }
         spectrogramMode = mode
         queue.async { [pipeline] in pipeline.spectrum.spectrogramMode = mode }
+    }
+
+    func setMultiFFT(_ configuration: MultiFFTConfiguration?) {
+        guard configuration != multiFFTConfiguration else { return }
+        multiFFTConfiguration = configuration
+        let mailbox = multiFFTMailbox
+        queue.async { [pipeline] in
+            pipeline.multiFFT = configuration.flatMap { MultiFFTAnalyzer(sampleRate: pipeline.spectrum.sampleRate, configuration: $0) }
+            mailbox.store(nil)
+        }
+    }
+
+    func latestMultiFFT(frozen: Bool) -> MultiFFTSnapshot? { multiFFTMailbox.read(allowStale: frozen) }
+
+    func setLegacySTFT(_ choice: LegacySTFT) {
+        guard choice != legacyChoice else { return }
+        legacyChoice = choice
+        queue.async { [pipeline] in pipeline.configureLegacySTFT(choice) }
     }
 
     func latest() -> MeterSnapshot? {
@@ -131,6 +168,15 @@ final class DSPWorker {
         s.waveform = Array(v[SnapshotSlots.waveform..<SnapshotSlots.breaks])
         s.breaks = v[SnapshotSlots.breaks]
         s.missingSeconds = v[SnapshotSlots.missing]
+        s.dcOffset = Array(v[SnapshotSlots.dcOffset..<SnapshotSlots.infrasonic])
+        s.infrasonic = Array(v[SnapshotSlots.infrasonic..<SnapshotSlots.healthStatus])
+        s.healthStatus = v[SnapshotSlots.healthStatus]
+        s.spatialField = Array(v[SnapshotSlots.spatialField..<(SnapshotSlots.spatialField + SpatialField.floats)])
+        s.spatialPoints = Array(v[SnapshotSlots.spatialPoints..<(SnapshotSlots.spatialPoints + SpatialPoints.floats)])
+        // The observations as far as they go: the header, the band counts and the observations it holds.
+        let o = SnapshotSlots.spatialObservations
+        let held = max(0, min(SpatialObservations.capacity, Int(v[o + SpatialObservations.Header.count])))
+        s.spatialObservations = Array(v[o..<(o + SpatialObservations.first + held * SpatialObservations.fields)])
         return s
     }
 
@@ -172,14 +218,22 @@ final class DSPWorker {
 final class HardwareObserver {
     private let devicesBlock: AudioObjectPropertyListenerBlock
     private let configurationBlock: AudioObjectPropertyListenerBlock
+    private let speakersBlock: AudioObjectPropertyListenerBlock
     private var watchedDevice: AudioDeviceID?
     private static let configurationSelectors: [AudioObjectPropertySelector] = [
         kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertyDeviceIsAlive
     ]
+    /// The speaker configuration (Audio MIDI Setup ▸ Configure Speakers), on either side of the device.
+    private static let speakerAddresses = [kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput].map { scope in
+        AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyPreferredChannelLayout, mScope: scope,
+                                   mElement: kAudioObjectPropertyElementMain)
+    }
 
-    init(devicesChanged: @escaping () -> Void, configurationChanged: @escaping () -> Void) {
+    init(devicesChanged: @escaping () -> Void, configurationChanged: @escaping () -> Void,
+         speakersChanged: @escaping () -> Void = {}) {
         devicesBlock = { _, _ in devicesChanged() }
         configurationBlock = { _, _ in configurationChanged() }
+        speakersBlock = { _, _ in speakersChanged() }
         var address = Self.address(kAudioHardwarePropertyDevices)
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, devicesBlock)
     }
@@ -190,12 +244,18 @@ final class HardwareObserver {
                 var address = Self.address(selector)
                 AudioObjectRemovePropertyListenerBlock(previous, &address, .main, configurationBlock)
             }
+            for var address in Self.speakerAddresses {
+                AudioObjectRemovePropertyListenerBlock(previous, &address, .main, speakersBlock)
+            }
         }
         watchedDevice = device
         if let device {
             for selector in Self.configurationSelectors {
                 var address = Self.address(selector)
                 AudioObjectAddPropertyListenerBlock(device, &address, .main, configurationBlock)
+            }
+            for var address in Self.speakerAddresses {
+                AudioObjectAddPropertyListenerBlock(device, &address, .main, speakersBlock)
             }
         }
     }
@@ -321,7 +381,16 @@ struct StatusMessage: Equatable {
 
 @MainActor
 final class MeterModel: ObservableObject {
-    @Published var floating = true
+    /// Always on top: the meter window and its panel windows float above other apps' windows. Off until turned on
+    /// (the toolbar's pin, Settings ▸ General), then kept. A key of its own: builds before 103 floated at every launch.
+    nonisolated static let floatingKey = "window.alwaysOnTop"
+    @Published var floating = UserDefaults.standard.bool(forKey: MeterModel.floatingKey) {
+        didSet {
+            guard floating != oldValue else { return }
+            UserDefaults.standard.set(floating, forKey: Self.floatingKey)
+            DiagnosticLog.event("Always on top: \(floating ? "on" : "off")")
+        }
+    }
     /// Set to open the Settings window (on the pane saved under `SettingsPane.defaultsKey`); the main window consumes it.
     @Published var showSettings = false
     /// Set to open the About window.
@@ -344,6 +413,14 @@ final class MeterModel: ObservableObject {
             }
         }
     }
+    /// The Immersive format of a DAW plugin's own bus (an immersive VST3 insert), which the panels draw instead of the
+    /// one chosen in Settings while that insert is the source (kept while it is away); nil for any other source.
+    @Published private(set) var pluginLayout: SpeakerLayout?
+    /// That bus's name as the plugin gives it: a 7.0.4 bus is named 7.0.4 and drawn in 7.1.4 with LFE off.
+    @Published private(set) var pluginLayoutName: String?
+    /// The Immersive format the panels draw, and its name.
+    var shownLayout: SpeakerLayout { pluginLayout ?? speakerLayout }
+    var shownLayoutName: String { pluginLayout == nil ? speakerLayout.name : pluginLayoutName ?? shownLayout.name }
     @Published private(set) var devices: [InputDevice] = []
     @Published private(set) var selectedID = SourceID.none
     private var snapshot = MeterSnapshot()
@@ -369,6 +446,7 @@ final class MeterModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(formatMode.rawValue, forKey: "formatMode")
             if formatMode != oldValue { DiagnosticLog.event("Monitoring mode: \(formatMode.rawValue)") }
+            configureSpectrumArchitecture()
             // Mono measures a single input, so entering or leaving it restarts the stream (like a routing change).
             let wasMono = (oldValue.fixed ?? automaticFormat) == .mono
             if wasMono != (format == .mono) && wantsCapture && running && demoStart == nil { restart() }
@@ -405,27 +483,68 @@ final class MeterModel: ObservableObject {
     @Published private(set) var spatialCeiling = MeterModel.stored("truePeakCeiling.spatial", -1)
     var loudnessTarget: Double { format == .spatial ? spatialTarget : stereoTarget }
     var truePeakCeiling: Double { format == .spatial ? spatialCeiling : stereoCeiling }
+    /// The standard chosen for each mode (`LoudnessStandard.id`). Settings from before standards had identities take
+    /// the first standard with their target and ceiling.
+    @Published private(set) var stereoStandardID = UserDefaults.standard.string(forKey: "loudnessStandard")
+    @Published private(set) var spatialStandardID = UserDefaults.standard.string(forKey: "loudnessStandard.spatial")
+
+    /// The standard in use for a mode, or nil when its target or ceiling was set by hand (Custom).
+    func standard(spatial: Bool) -> LoudnessStandard? {
+        let target = spatial ? spatialTarget : stereoTarget, ceiling = spatial ? spatialCeiling : stereoCeiling
+        if let chosen = LoudnessStandard.with(id: spatial ? spatialStandardID : stereoStandardID) {
+            return chosen.target == target && chosen.ceiling == ceiling ? chosen : nil
+        }
+        return LoudnessStandard.matching(target: target, ceiling: ceiling)
+    }
+    var loudnessStandard: LoudnessStandard? { standard(spatial: format == .spatial) }
 
     private static func stored(_ key: String, _ fallback: Double) -> Double {
         UserDefaults.standard.object(forKey: key) == nil ? fallback : UserDefaults.standard.double(forKey: key)
     }
 
-    /// Picks a standard for one mode; a known standard brings its own true-peak ceiling.
+    /// Sets one mode's loudness target alone (the panel's stepper); its ceiling stays.
     func setTarget(_ target: Double, spatial: Bool) {
-        let ceiling = LoudnessStandard.standard(target: target)?.ceiling
+        if spatial { spatialTarget = target } else { stereoTarget = target }
+        saveLoudness()
+    }
+
+    /// Picks a published standard for one mode: its target, its true-peak ceiling and how it judges.
+    func setStandard(_ standard: LoudnessStandard, spatial: Bool) {
         if spatial {
-            spatialTarget = target
-            if let ceiling { spatialCeiling = ceiling }
+            spatialTarget = standard.target
+            spatialCeiling = standard.ceiling
+            spatialStandardID = standard.id
         } else {
-            stereoTarget = target
-            if let ceiling { stereoCeiling = ceiling }
+            stereoTarget = standard.target
+            stereoCeiling = standard.ceiling
+            stereoStandardID = standard.id
         }
+        UserDefaults.standard.set(standard.id, forKey: spatial ? "loudnessStandard.spatial" : "loudnessStandard")
         saveLoudness()
     }
 
     func setCeiling(_ ceiling: Double, spatial: Bool) {
         if spatial { spatialCeiling = ceiling } else { stereoCeiling = ceiling }
         saveLoudness()
+    }
+
+    /// Takes up the settings the model keeps a copy of from user defaults again, after a settings preset has rewritten
+    /// them (`SettingsPresets`): the format, Mono, the mode, Always on top and both modes' loudness standards.
+    func reloadStoredSettings() {
+        let defaults = UserDefaults.standard
+        speakerLayout = defaults.string(forKey: "speakerLayout").flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
+        monoEnabled = defaults.bool(forKey: "showMonoMode")
+        if let mode = defaults.string(forKey: "formatMode").flatMap(FormatMode.init(rawValue:)), availableModes.contains(mode) {
+            formatMode = mode
+        }
+        floating = defaults.bool(forKey: Self.floatingKey)
+        stereoTarget = Self.stored("loudnessTarget", -18)
+        stereoCeiling = Self.stored("truePeakCeiling", -1)
+        spatialTarget = Self.stored("loudnessTarget.spatial", -18)
+        spatialCeiling = Self.stored("truePeakCeiling.spatial", -1)
+        stereoStandardID = defaults.string(forKey: "loudnessStandard")
+        spatialStandardID = defaults.string(forKey: "loudnessStandard.spatial")
+        spectrumStrip = CGFloat(defaults.double(forKey: "layout.spectrumStrip"))
     }
 
     private func saveLoudness() {
@@ -459,13 +578,77 @@ final class MeterModel: ObservableObject {
     /// The stereometer's style, chosen on the Soundstage header; plain, like the band resolutions.
     var stageStyle = StageStyle.stored
     /// The panels' display choices, made on each panel (`PanelSettingsButton`).
+    private let multiFFTPreview = MultiFFTPreviewSource()
+    private var multiFFTPanelUsers = 0
+    private var multiFFTLoggedState = ""
+    /// A pending stop of the engine. A panel that moves between the grid, the Dock and a window of its own
+    /// disappears before it reappears; the engine and its history survive that moment instead of refilling.
+    private var multiFFTTeardown: DispatchWorkItem?
+    static let multiFFTTeardownDelay = 0.4
+    private var multiFFTSettingsData = MultiFFTPreferences.storedData
+    private var multiFFTSettings = MultiFFTPreferences.stored
+    private var legacySTFTSettings = MultiFFTPreferences.legacySTFT
+
+    func multiFFTPanelVisible(_ visible: Bool) {
+        multiFFTPanelUsers = max(0, multiFFTPanelUsers + (visible ? 1 : -1))
+        configureSpectrumArchitecture()
+    }
+
+    func configureSpectrumArchitecture() {
+        let placement = PanelPlacement.shared
+        placement.setDockSupportsMultiFFT(format == .stereo && !sourceIsBridge)
+        let visible = multiFFTPanelUsers > 0 && (placement.isShown(.multiFFT) || placement.detached.contains(.multiFFT) || (placement.strip && placement.displayedStripPanels.contains(.multiFFT)))
+        let wanted = visible && format == .stereo ? multiFFTSettings : nil
+        if Diagnostics.enabled {
+            let state = "users \(multiFFTPanelUsers), shown \(placement.isShown(.multiFFT)), detached \(placement.detached.contains(.multiFFT)), dock \(placement.strip && placement.displayedStripPanels.contains(.multiFFT)), format \(format), bridge \(sourceIsBridge), wants \(wanted == nil ? "no engine" : wanted!.preset.rawValue)"
+            if state != multiFFTLoggedState { multiFFTLoggedState = state; Diagnostics.log("[multifft] \(state)") }
+        }
+        if wanted != nil {
+            multiFFTTeardown?.cancel(); multiFFTTeardown = nil
+            applyMultiFFT(wanted)
+        } else if multiFFTTeardown == nil {
+            let teardown = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.multiFFTTeardown = nil
+                self.applyMultiFFT(nil)
+            }
+            multiFFTTeardown = teardown
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.multiFFTTeardownDelay, execute: teardown)
+        }
+        guard let local = worker as? DSPWorker else { return }
+        let choice: LegacySTFT = format == .spatial || displayOptions.spectrogramAnalysis == .enhanced
+            ? .legacy : legacySTFTSettings
+        local.setLegacySTFT(choice)
+    }
+
+    private func applyMultiFFT(_ wanted: MultiFFTConfiguration?) {
+        if Diagnostics.demo, CommandLine.arguments.contains("--multifft-test-tone") { multiFFTPreview.configure(wanted) }
+        (worker as? DSPWorker)?.setMultiFFT(!sourceIsBridge ? wanted : nil)
+    }
+
+    func multiFFTFrame() -> MultiFFTSnapshot? {
+        guard format == .stereo, running else { return nil }
+        if Diagnostics.demo, CommandLine.arguments.contains("--multifft-test-tone") { return multiFFTPreview.latest() }
+        return (worker as? DSPWorker)?.latestMultiFFT(frozen: frozen)
+    }
+
     var displayOptions = DisplayOptions.stored
     /// `SpectrogramMode` of the newest column shown (plain: the panel settings read it when they open).
     private(set) var lastSpectrogramMode: Float = 0
+    /// The newest snapshot's spatial field status (`SpatialField.status`; −1 a plugin that sends none).
+    private(set) var lastSpatialFieldStatus: Float = 0
+    /// Whether the newest snapshot carried the analysis' own bins (`SpatialPoints`): 1 yes, 0 none (a Bridge plugin
+    /// before build 87 sends its field without them).
+    private(set) var lastSpatialPointsStatus: Float = 0
     /// Whether the source is a DAW plugin, which analyses (and so chooses the spectrogram's analysis) itself.
     var sourceIsBridge: Bool { selectedID.bridge != nil }
+    /// The newest snapshot's observations: status, source and the hash of the geometry they were computed with.
+    private(set) var lastObservations: (status: Float, source: SpatialObservations.Source, hash: UInt64) = (0, .none, 0)
+    /// The user's layout a plugin refused (its session and the layout's hash): the standard one is used meanwhile.
+    private var refusedGeometry: (session: String, hash: UInt64)?
     static func storedBands(_ key: String) -> StereoBands.Resolution {
-        StereoBands.Resolution(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .five
+        // The Soundstage's key may also name a single band ("five.2"; `BandChoice`).
+        BandChoice(rawValue: UserDefaults.standard.string(forKey: key) ?? "")?.resolution ?? .five
     }
     private var bandsObserver: NSObjectProtocol?
     private(set) var captureStarted: Date?
@@ -538,6 +721,9 @@ final class MeterModel: ObservableObject {
         capture?.stop()
     }
 
+    /// The app's model, for diagnostics that act outside the views (`--snapshot-report`).
+    static weak var diagnosticInstance: MeterModel?
+
     init() {
         speakerLayout = UserDefaults.standard.string(forKey: "speakerLayout").flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
         let savedMode = UserDefaults.standard.string(forKey: "formatMode")
@@ -585,6 +771,7 @@ final class MeterModel: ObservableObject {
         // A source is chosen but nothing started yet (the welcome may be showing): not a missing input.
         if selectedDevice != nil { status = .standby }
         readouts.attach(to: self)
+        Self.diagnosticInstance = self
         // The band switches write user defaults; follow them so every writer (the switches, a defaults change)
         // reaches the canvases.
         bandsObserver = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil,
@@ -598,6 +785,14 @@ final class MeterModel: ObservableObject {
                 if style != self.stageStyle { self.stageStyle = style }
                 let options = DisplayOptions.stored
                 if options != self.displayOptions { self.displayOptions = options }
+                // Every defaults write lands here, including each step of a divider drag: decode only a changed value.
+                let settingsData = MultiFFTPreferences.storedData
+                if settingsData != self.multiFFTSettingsData {
+                    self.multiFFTSettingsData = settingsData
+                    self.multiFFTSettings = MultiFFTPreferences.decode(settingsData)
+                }
+                self.legacySTFTSettings = MultiFFTPreferences.legacySTFT
+                self.configureSpectrumArchitecture()
             }
         }
         hardwareObserver = HardwareObserver(devicesChanged: { [weak self] in
@@ -610,6 +805,8 @@ final class MeterModel: ObservableObject {
                 self.refreshDevices()
                 if wasRunning && self.selectedID == previousID && self.selectedDevice != nil { self.restart() }
             }
+        }, speakersChanged: { [weak self] in
+            Task { @MainActor in self?.deviceSpeakersChanged() }
         })
         if bridge != nil {
             let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
@@ -631,7 +828,7 @@ final class MeterModel: ObservableObject {
             let elapsed = CACurrentMediaTime() - demoStart
             let sequence = Int(elapsed * DemoSignal.updateRate)
             if Float(sequence % 1_000_000 + 1) != snapshot.sequence {
-                snapshot = DemoSignal.snapshot(at: Double(sequence) / DemoSignal.updateRate, sequence: sequence)
+                snapshot = DemoSignal.snapshot(at: Double(sequence) / DemoSignal.updateRate, sequence: sequence, layout: shownLayout)
                 let format = demoDetector.update(rms: snapshot.channelRMS, deltaTime: Float(1 / DemoSignal.updateRate))
                 snapshot.detectedFormat = Float(format.rawValue)
             }
@@ -642,17 +839,81 @@ final class MeterModel: ObservableObject {
     }
 
     func canvasFrame() -> CanvasFrame {
+        configureSpectrumArchitecture()
         worker?.setSpatialSpectrum(format == .spatial)
+        // A DAW plugin sums every channel of its bus in the spectrum (and keeps each one's band energy for the
+        // immersive soundstage) while Immersive is shown, as the local analysis does.
+        bridge?.setSpectrum(everyChannel: format == .spatial)
+        // Which speakers share an image (the nebula's coherence setting), for the local analysis and the plugin's; and
+        // the speaker geometry both analyses and the dome use.
+        noteSpatialAnswer()
+        let geometry = displayGeometry(for: shownLayout)
+        worker?.setSpatialField(threshold: displayOptions.nebula.threshold, geometry: geometry)
+        bridge?.setCoherence(displayOptions.nebula.threshold)
+        bridge?.setSpatial(geometry)
         let mode: SpectrogramMode = displayOptions.spectrogramAnalysis == .enhanced ? .enhanced : .classic
         worker?.setSpectrogramMode(mode)
         bridge?.setSpectrogram(mode)
         let snapshot = pollSnapshot()
         lastSpectrogramMode = snapshot.spectrogramMode
+        if let status = snapshot.spatialField.first { lastSpatialFieldStatus = status }
+        if let status = snapshot.spatialPoints.first { lastSpatialPointsStatus = status }
+        lastObservations = snapshot.spatialObservations.count >= SpatialObservations.first
+            ? (snapshot.spatialObservations[SpatialObservations.Header.status],
+               SpatialObservations.Source(rawValue: snapshot.spatialObservations[SpatialObservations.Header.source]) ?? .none,
+               snapshot.spatialObservations.withUnsafeBufferPointer { SpatialObservations.hash($0.baseAddress!) })
+            : (0, .none, 0)
+        // The dome's camera lives with `DomeCamera`, which saves it to the defaults only when an interaction ends.
+        var options = displayOptions
+        DomeCamera.shared.apply(to: &options)
         return CanvasFrame(snapshot: snapshot, sampleRate: sampleRate, running: running, frozen: frozen,
                     activeRoles: routedRoles, epoch: epoch, spatial: format == .spatial, mono: format == .mono,
-                    layout: speakerLayout, spectrumStrip: spectrumStrip, truePeakEpoch: truePeakEpoch,
+                    layout: shownLayout,
+                    spectrumStrip: PanelPlacement.shared.splitsSpectrum ? SpectrogramLayout.split : spectrumStrip,
+                    truePeakEpoch: truePeakEpoch,
                     stageBands: stageBands, levelsBands: levelsBands, stageStyle: stageStyle,
-                    options: displayOptions)
+                    options: options, geometry: geometry)
+    }
+
+    /// The speaker geometry the dome draws and the analysis uses for `layout`: the user's layout for that format, or
+    /// the standard one where the source computes with it (a DAW plugin before build 98, or one that refused the
+    /// layout), so the speakers are always drawn with the geometry the observations were computed with.
+    func displayGeometry(for layout: SpeakerLayout) -> SpatialGeometry {
+        let configured = SpeakerLayoutStore.shared.geometry(for: layout, nebula: displayOptions.nebula)
+        guard let source = selectedBridgeSource,
+              !source.takesSpatialGeometry || (refusedGeometry?.session == source.sessionKey && refusedGeometry?.hash == configured.hash)
+        else { return configured }
+        var standard = SpatialGeometry.standard(roles: layout.roles, detail: configured.detail, window: configured.window)
+        // Another revision, so its acknowledgement is not taken for the refused one's.
+        standard.revision = configured.revision ^ 0x8000_0000
+        return standard
+    }
+
+    /// Why the dome shows the standard layout instead of the user's (a note in the panel's settings), or nil.
+    enum GeometryNotice { case pluginTooOld, pluginRefused, applying }
+    var geometryNotice: GeometryNotice? {
+        let configured = SpeakerLayoutStore.shared.geometry(for: shownLayout, nebula: displayOptions.nebula)
+        if let source = selectedBridgeSource {
+            if !configured.isStandard(roles: shownLayout.roles) && !source.takesSpatialGeometry { return .pluginTooOld }
+            if refusedGeometry?.session == source.sessionKey && refusedGeometry?.hash == configured.hash { return .pluginRefused }
+        }
+        // Observations of another geometry than the one drawn: on their way (a change just made), never drawn.
+        if lastObservations.status == 1, lastObservations.source == .measured, lastObservations.hash != displayGeometry(for: shownLayout).hash {
+            return .applying
+        }
+        return nil
+    }
+
+    /// A plugin's answer to the geometry it was sent: a refusal of the user's layout makes the dome (and the plugin)
+    /// use the standard one, with a note, until the layout changes.
+    private func noteSpatialAnswer() {
+        guard let source = selectedBridgeSource, let ack = source.spatialAck else { return }
+        let configured = SpeakerLayoutStore.shared.geometry(for: shownLayout, nebula: displayOptions.nebula)
+        if ack.revision == configured.revision, ack.outcome != SpatialConfigWire.Outcome.applied.rawValue,
+           refusedGeometry?.hash != configured.hash {
+            refusedGeometry = (source.sessionKey, configured.hash)
+            DiagnosticLog.event("The plugin refused the speaker layout (outcome \(ack.outcome)); showing the standard layout")
+        }
     }
 
     /// Roles that carry signal: routed and part of the current layout. Mono keeps only the input routed to L.
@@ -765,7 +1026,7 @@ final class MeterModel: ObservableObject {
             ? "\(Int(sampleRate / 1000))" : String(format: "%.1f", sampleRate / 1000)
         guard running || frozen else { return [(rate, "kHz")] }
         return [(rate, "kHz"), ("\(captureChannels)", "ch"),
-                (format == .spatial ? speakerLayout.name : (format == .mono ? "1.0" : "2.0"), "")]
+                (format == .spatial ? shownLayoutName : (format == .mono ? "1.0" : "2.0"), "")]
     }
 
     func reportRendererError(_ message: StatusMessage) {
@@ -898,14 +1159,48 @@ final class MeterModel: ObservableObject {
     private var deviceKey: String { selectedDevice?.key ?? (selectedID.output ? "none.output" : "none.input") }
     private func assignmentKey() -> String { "assign.\(deviceKey).\(speakerLayout.rawValue)" }
 
-    /// Restores this device's routing for the current layout. Without one, input n feeds the layout's n-th
-    /// role in SMPTE order; 5.1.2 also accepts the eight-role routing saved by 1.0.
+    /// The selected DAW plugin, while it is connected.
+    var selectedBridgeSource: BridgeSource? {
+        selectedID.bridge.flatMap { session in bridgeSources.first { $0.sessionKey == session && $0.compatible } }
+    }
+
+    /// Whether the routing and the Immersive format come from a DAW plugin's own immersive bus rather than Settings.
+    var layoutFromPlugin: Bool { pluginLayout != nil }
+
+    /// Follows the selected source: a DAW plugin's immersive bus (kept while that insert is away and its layout is
+    /// unknown), and nothing for mono and stereo plugins or any other source.
+    private func refreshPluginLayout() {
+        let layout: SpeakerLayout?, name: String?
+        if selectedID.bridge == nil {
+            (layout, name) = (nil, nil)
+        } else if let source = selectedBridgeSource, source.roles != nil {
+            (layout, name) = (source.immersiveLayout, source.layoutName.isEmpty ? nil : source.layoutName)
+        } else {
+            return
+        }
+        if layout != pluginLayout || name != pluginLayoutName {
+            pluginLayout = layout
+            pluginLayoutName = layout == nil ? nil : name
+            if let layout { DiagnosticLog.event("DAW plugin bus: \(name ?? layout.name), drawn in \(layout.name)") }
+        }
+    }
+
+    /// Restores this device's routing for the current layout. Without one, the device's speaker configuration in Audio
+    /// MIDI Setup routes it (`deviceAssignment`), or, without that, input n feeds the layout's n-th role in SMPTE
+    /// order; 5.1.2 also accepts the eight-role routing saved by 1.0. A DAW plugin's immersive bus routes itself: each
+    /// channel feeds its own speaker role.
     private func loadAssignment() {
+        refreshPluginLayout()
+        if pluginLayout != nil, let roles = selectedBridgeSource?.roles {
+            var routing = [Int32](repeating: -1, count: Role.count)
+            for (channel, role) in roles.enumerated() { routing[role] = Int32(channel) }
+            sourceForRole = routing
+            activeRoles = routing.map { $0 >= 0 }
+            return
+        }
         let count = Int(min(selectedDevice?.channels ?? 0, 64))
-        var routing = [Int32](repeating: -1, count: Role.count)
-        for (index, role) in speakerLayout.roles.enumerated() where index < count { routing[role] = Int32(index) }
-        let legacy = speakerLayout == .s512 ? UserDefaults.standard.array(forKey: "assign.\(deviceKey)") as? [Int] : nil
-        if let saved = UserDefaults.standard.array(forKey: assignmentKey()) as? [Int] ?? legacy {
+        var routing = defaultAssignment
+        if let saved = savedAssignment {
             for (role, source) in saved.enumerated() where role < Role.count {
                 routing[role] = source >= 0 && source < count ? Int32(source) : -1
             }
@@ -917,11 +1212,63 @@ final class MeterModel: ObservableObject {
 
     private func saveAssignment() { UserDefaults.standard.set(sourceForRole.map(Int.init), forKey: assignmentKey()) }
 
-    /// The routing `resetAssignment` restores for the current device and layout: input n to the n-th role.
-    var defaultAssignment: [Int32] {
+    /// The routing saved for this device and layout (5.1.2 also the eight-role routing saved by 1.0), if any.
+    private var savedAssignment: [Int]? {
+        let legacy = speakerLayout == .s512 ? UserDefaults.standard.array(forKey: "assign.\(deviceKey)") as? [Int] : nil
+        return UserDefaults.standard.array(forKey: assignmentKey()) as? [Int] ?? legacy
+    }
+
+    /// The selected device's speaker configuration in Audio MIDI Setup (`AudioDevices.speakerMap`), read when asked.
+    var deviceSpeakers: SpeakerMap? { selectedDevice.flatMap(AudioDevices.speakerMap) }
+
+    /// The routing Settings' reset stages, and a device without a saved routing gets: the device's speaker
+    /// configuration in Audio MIDI Setup, or input n to the n-th role in SMPTE order.
+    var defaultAssignment: [Int32] { deviceAssignment ?? smpteAssignment }
+    /// Each role from the channel the device's speaker configuration gives it (roles it does not describe stay
+    /// unrouted); nil without a configuration.
+    var deviceAssignment: [Int32]? {
+        deviceSpeakers.map { $0.routing(for: speakerLayout, channels: Int(min(selectedDevice?.channels ?? 0, 64))) }
+    }
+    /// Input n to the n-th role in SMPTE / ITU order (`SpeakerLayout.roles`).
+    var smpteAssignment: [Int32] { assignment(in: speakerLayout.roles) }
+    /// Input n to the n-th role in film order (`SpeakerLayout.filmRoles`), for Pro Tools and other film-order sources.
+    var filmAssignment: [Int32] { assignment(in: speakerLayout.filmRoles) }
+    /// Input n to the n-th role in VST3 order (`SpeakerLayout.vst3Roles`), for Nuendo, Cubase and other VST3 hosts.
+    var vst3Assignment: [Int32] { assignment(in: speakerLayout.vst3Roles) }
+
+    /// Where the current routing comes from, for the diagnostic log.
+    private var routingSource: String {
+        if pluginLayout != nil { return "from the DAW plugin's bus" }
+        if savedAssignment != nil { return "saved for this device and format" }
+        if let speakers = deviceSpeakers { return "from Audio MIDI Setup (\(speakers.name))" }
+        return "in SMPTE order"
+    }
+
+    /// Each routed role and its input (1-based), in the layout's display order: "L 1 · R 2 · C 3 …".
+    private var routingSummary: String {
+        let names = speakerLayout.speakers.compactMap { speaker -> String? in
+            let source = sourceForRole[speaker.role]
+            return source >= 0 ? "\(speaker.name) \(source + 1)" : nil
+        }
+        return names.isEmpty ? "nothing routed" : names.joined(separator: " · ")
+    }
+
+    /// The device's speaker configuration changed in Audio MIDI Setup: a routing that follows it (none saved) follows
+    /// the change at once.
+    private func deviceSpeakersChanged() {
+        objectWillChange.send()
+        guard pluginLayout == nil, selectedDevice != nil, savedAssignment == nil else { return }
+        let before = sourceForRole
+        loadAssignment()
+        guard sourceForRole != before else { return }
+        DiagnosticLog.event("Speaker configuration changed in Audio MIDI Setup: \(deviceSpeakers?.name ?? "none")")
+        if wantsCapture { restart() }
+    }
+
+    private func assignment(in order: [Int]) -> [Int32] {
         let count = Int(min(selectedDevice?.channels ?? 0, 64))
         var routing = [Int32](repeating: -1, count: Role.count)
-        for (index, role) in speakerLayout.roles.enumerated() where index < count { routing[role] = Int32(index) }
+        for (index, role) in order.enumerated() where index < count { routing[role] = Int32(index) }
         return routing
     }
 
@@ -939,14 +1286,6 @@ final class MeterModel: ObservableObject {
         activeRoles = next.map { $0 >= 0 }
         saveAssignment()
         if wantsCapture { restart() }
-    }
-
-    /// Puts the current layout back to input n → n-th role.
-    func resetAssignment() {
-        UserDefaults.standard.removeObject(forKey: assignmentKey())
-        if speakerLayout == .s512 { UserDefaults.standard.removeObject(forKey: "assign.\(deviceKey)") }
-        loadAssignment()
-        if wantsCapture && running && demoStart == nil { restart() }
     }
 
     func resume() {
@@ -1026,7 +1365,7 @@ final class MeterModel: ObservableObject {
         captureChannels = Int(capture.channels)
         carryOn(after: CACurrentMediaTime() - session.time)
         status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels),
-                            layout: speakerLayout.name)
+                            layout: shownLayoutName)
         Diagnostics.log("Capture resumed: \(status.text)")
         return true
     }
@@ -1044,7 +1383,7 @@ final class MeterModel: ObservableObject {
         captureChannels = format.channels
         carryOn(after: CACurrentMediaTime() - session.time)
         status = .bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
-                         channels: source.channels, layout: speakerLayout.name)
+                         channels: source.channels, layout: shownLayoutName)
         Diagnostics.log("DAW plugin capture resumed: \(status.text)")
         return true
     }
@@ -1100,7 +1439,7 @@ final class MeterModel: ObservableObject {
             if selectedID.bridge != nil {
                 // A DAW plugin that is not connected (yet): `pollBridge` starts it when it appears.
                 status = .bridge(name: waitingBridgeName, condition: waitingForLaunch ? unchosenPluginCondition : .disconnected,
-                             channels: 0, layout: speakerLayout.name)
+                             channels: 0, layout: shownLayoutName)
                 return
             }
             bridge?.select(nil)
@@ -1153,6 +1492,7 @@ final class MeterModel: ObservableObject {
             }
             worker.setSpatialSpectrum(format == .spatial)
             self.worker = worker
+            configureSpectrumArchitecture()
             sampleRate = capture.sampleRate
             captureChannels = Int(capture.channels)
             captureStarted = Date()
@@ -1164,8 +1504,9 @@ final class MeterModel: ObservableObject {
             }
             hardwareObserver?.watch(device.device)
             DiagnosticLog.event(String(format: "Stream: %.0f Hz, %d ch", capture.sampleRate, Int(capture.channels)))
+            DiagnosticLog.event("Routing \(routingSource): \(routingSummary)")
             status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels),
-                                layout: speakerLayout.name)
+                                layout: shownLayoutName)
             Diagnostics.log("Capture started: \(status.text)")
         } catch {
             status = .failure(StatusMessage { error.localizedDescription })
@@ -1243,17 +1584,19 @@ final class MeterModel: ObservableObject {
             return
         }
         guard let source = bridgeSources.first(where: { $0.sessionKey == device.bridgeSession && $0.compatible }) else {
-            status = .bridge(name: device.name, condition: .disconnected, channels: 0, layout: speakerLayout.name)
+            status = .bridge(name: device.name, condition: .disconnected, channels: 0, layout: shownLayoutName)
             return
         }
         bridge.select(source.session)
         guard source.hasUsableFormat else {
             // Subscribed, so it streams as soon as it has a format; `pollBridge` restarts then.
             status = .bridge(name: source.label(among: bridgeSources), condition: BridgeCondition(source),
-                             channels: source.channels, layout: speakerLayout.name)
+                             channels: source.channels, layout: shownLayoutName)
             return
         }
-        // The plugin analyses its own audio; this only shows its results (no pipeline, no audio here).
+        // The plugin analyses its own audio; this only shows its results (no pipeline, no audio here). Its bus's
+        // layout sets the routing and, for an immersive bus, the Immersive format drawn.
+        loadAssignment()
         streamID = streamID == 1_000_000 ? 1 : streamID + 1
         let inbox = ResultInbox(streamSeed: streamID * 1000)
         guard let worker = ResultWorker(inbox: inbox) else {
@@ -1271,11 +1614,11 @@ final class MeterModel: ObservableObject {
         droppedFrames = 0
         running = true
         remember(source)
-        DiagnosticLog.event(String(format: "DAW plugin results: %.0f Hz, %d ch, %@ %@ in %@, analysis generation %u",
-                                   source.sampleRate, source.channels, source.plugin, source.pluginVersion, source.hostName,
-                                   source.generation))
+        DiagnosticLog.event(String(format: "DAW plugin results: %.0f Hz, %d ch %@, %@ %@ in %@, analysis generation %u",
+                                   source.sampleRate, source.channels, source.layoutName, source.plugin, source.pluginVersion,
+                                   source.hostName, source.generation))
         status = .bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
-                         channels: source.channels, layout: speakerLayout.name)
+                         channels: source.channels, layout: shownLayoutName)
         Diagnostics.log("DAW plugin capture started: \(status.text)")
     }
 
@@ -1322,19 +1665,18 @@ final class MeterModel: ObservableObject {
         if let attached = attachedBridge {
             // Reconfigure whenever the audio the receiver would deliver no longer matches the pipeline.
             if attached.session != source.sessionKey || attached.epoch != source.formatEpoch || attached.channels != source.channels {
-                DiagnosticLog.event(String(format: "DAW plugin format changed: %.0f Hz, %d ch; analysis restarted",
-                                           source.sampleRate, source.channels))
-                if attached.channels != source.channels { loadAssignment() }
+                DiagnosticLog.event(String(format: "DAW plugin format changed: %.0f Hz, %d ch %@; analysis restarted",
+                                           source.sampleRate, source.channels, source.layoutName))
+                // The routing follows the new layout (startBridge loads it again once restarted).
                 restart()
                 return
             }
         } else if source.hasUsableFormat {
-            if selectedDevice?.channels != UInt32(source.channels) { loadAssignment() }
             restart()
             return
         }
         let next = MeterStatus.bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
-                                      channels: source.channels, layout: speakerLayout.name)
+                                      channels: source.channels, layout: shownLayoutName)
         if status != next { status = next }
     }
 
@@ -1382,7 +1724,7 @@ final class MeterModel: ObservableObject {
     private func findSaved() {
         let waiting = MeterStatus.bridge(name: waitingBridgeName,
                                          condition: waitingForLaunch ? unchosenPluginCondition : attachedBridge != nil ? .disconnectedHeld : .disconnected,
-                                         channels: 0, layout: speakerLayout.name)
+                                         channels: 0, layout: shownLayoutName)
         // Launched by a plugin's button: its request selects the insert; the saved one is not restored meanwhile.
         guard !waitingForLaunch, let saved = bridgeSaved else {
             if status != waiting { status = waiting }
@@ -1429,7 +1771,7 @@ final class MeterModel: ObservableObject {
         if !provisional { remember(source) }
         if continuing {
             status = .bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
-                             channels: source.channels, layout: speakerLayout.name)
+                             channels: source.channels, layout: shownLayoutName)
             return
         }
         loadAssignment()
@@ -1449,6 +1791,6 @@ final class MeterModel: ObservableObject {
         bridgeCandidates = sessions
         selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix + saved.persistent)
         status = .bridge(name: waitingBridgeName, condition: .ambiguous(sessions.count), channels: 0,
-                         layout: speakerLayout.name)
+                         layout: shownLayoutName)
     }
 }

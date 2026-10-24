@@ -4,12 +4,12 @@
 # with the source signal. Uses daw-reaper.sh (private REAPER profile, silent virtual output device).
 set -uo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
+source Bridge/scripts/release-version.sh
+app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
 logs=.build/bridge/validation
 failed=0
 # Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.
-if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v1.sock" ]] \
+if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v2.sock" ]] \
     && ! .build/bridge/tools/ResultProbe --seconds 0 > /dev/null 2>&1; then
     echo "Another Bridge receiver is running (Auraliscope Labs?): quit it first" >&2; exit 1
 fi

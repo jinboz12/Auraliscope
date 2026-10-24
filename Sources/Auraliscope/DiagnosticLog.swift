@@ -16,9 +16,7 @@ enum DiagnosticLog {
         }
         let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        // The Auraliscope Labs test builds run outside the sandbox, so they keep a folder of their own.
-        let labs = Bundle.main.bundleIdentifier?.hasSuffix(".Labs") == true
-        return library.appendingPathComponent(labs ? "Logs/Auraliscope Labs" : "Logs/Auraliscope", isDirectory: true)
+        return library.appendingPathComponent("Logs/Auraliscope", isDirectory: true)
     }()
 
     private static let queue = DispatchQueue(label: "Auraliscope.DiagnosticLog", qos: .utility)

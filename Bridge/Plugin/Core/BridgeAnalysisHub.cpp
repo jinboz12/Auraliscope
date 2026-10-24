@@ -111,6 +111,12 @@ void unregisterAnalysis(BridgeCore *core) {
     }
 }
 
+void withAnalysisHeld(const std::function<void()> &work) {
+    // The thread holds `lock` for a whole pass and releases it only while it waits for the next.
+    std::lock_guard<std::mutex> guard(hub().lock);
+    work();
+}
+
 bool analysisRunning() {
     AnalysisHub &h = hub();
     std::lock_guard<std::mutex> life(h.lifecycle);

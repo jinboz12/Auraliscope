@@ -25,8 +25,11 @@ package final class StreamAnalyzer {
     package let generation: UInt32
     package let formatEpoch: UInt32
     private let pipeline: MeterPipeline
-    private let roles: [Int]
+    /// Each channel's speaker role (`Role`), in the insert's channel order.
+    package let roles: [Int]
     private var values = [Float](repeating: 0, count: SnapshotSlots.total)
+    /// One value per channel, for the per-channel fields of a result.
+    private var channelValues = [Float](repeating: 0, count: Role.count)
 
     /// Ticks published in this generation, with and without audio.
     package private(set) var ticks: UInt64 = 0
@@ -54,24 +57,48 @@ package final class StreamAnalyzer {
     private var lastWaveSerial = 0
     private let waveformStride: Int
     package private(set) var sequence: UInt64 = 0
+    /// The observation frame the snapshot holds (`SnapshotSlots.spatialObservations`): a new number whenever its header
+    /// changes (a new transform's, or none), so a display that keeps observations is sent each frame once (`encode`).
+    package private(set) var observationFrame: UInt64 = 1
+    private var observationHeader = [Float](repeating: 0, count: SpatialObservations.headerFloats)
 
-    /// `channels` is 1 (mono: channel 1 is L) or 2 (L, R).
-    package init?(sampleRate: Double, channels: Int, generation: UInt32, formatEpoch: UInt32) {
-        guard (1...2).contains(channels) else { return nil }
-        let roles = channels == 1 ? [Role.left] : [Role.left, Role.right]
+    /// `roles` gives each channel's speaker role, in the insert's channel order: [L] for mono, [L, R] for stereo,
+    /// up to 16 distinct roles for an immersive bus (5.1, 7.1.4, 9.1.6…). Loudness weighs each channel by its role
+    /// (BS.1770: LFE excluded, side surrounds and wides +1.5 dB); the format detector decides Stereo or Immersive
+    /// from the programme, as it does for an audio device, starting from Immersive when the bus has positional
+    /// channels beyond L and R.
+    package init?(sampleRate: Double, roles: [Int], generation: UInt32, formatEpoch: UInt32) {
+        guard Self.validRoles(roles) else { return nil }
         let active = (0..<Role.count).map { roles.contains($0) }
-        guard let pipeline = MeterPipeline(sampleRate: sampleRate, activeRoles: active,
-                                           detector: FormatDetector(initial: channels == 1 ? .mono : .stereo, canDetectSpatial: false),
+        let immersive = roles.contains { FormatDetector.evidenceRoles.contains($0) }
+        let detector = FormatDetector(initial: immersive ? .spatial : roles.count == 1 ? .mono : .stereo, canDetectSpatial: immersive)
+        guard let pipeline = MeterPipeline(sampleRate: sampleRate, activeRoles: active, detector: detector,
                                            streamID: generation % 1_000_000) else { return nil }
         self.pipeline = pipeline
+        // Until a display configures the observations (SPATIAL_CONFIG), the bins go out as Build 87–97 sent them.
+        pipeline.spatialLegacyPoints = true
         self.roles = roles
         self.sampleRate = sampleRate
-        self.channels = channels
+        self.channels = roles.count
         self.generation = generation
         self.formatEpoch = formatEpoch
         spectrogramRing = [Float](repeating: -120, count: Self.spectrogramCapacity * MeterSnapshot.spectrogramBandCount)
-        waveformStride = channels * 2
-        waveformRing = [Float](repeating: 0, count: Self.waveformCapacity * channels * 2)
+        waveformStride = roles.count * 2
+        waveformRing = [Float](repeating: 0, count: Self.waveformCapacity * roles.count * 2)
+    }
+
+    /// `channels` is 1 (mono: channel 1 is L) or 2 (L, R).
+    package convenience init?(sampleRate: Double, channels: Int, generation: UInt32, formatEpoch: UInt32) {
+        guard (1...2).contains(channels) else { return nil }
+        self.init(sampleRate: sampleRate, roles: channels == 1 ? [Role.left] : [Role.left, Role.right],
+                  generation: generation, formatEpoch: formatEpoch)
+    }
+
+    /// One to 16 distinct speaker roles; a single channel is L (mono), and a bus of several carries L and R.
+    package static func validRoles(_ roles: [Int]) -> Bool {
+        guard (1...Role.count).contains(roles.count), roles.allSatisfy({ (0..<Role.count).contains($0) }),
+              Set(roles).count == roles.count else { return false }
+        return roles.count == 1 ? roles == [Role.left] : roles.contains(Role.left) && roles.contains(Role.right)
     }
 
     /// Frame (within this generation) at which audio tick `n` (1-based) ends: 1/60 s steps, rounded, so ticks
@@ -128,6 +155,46 @@ package final class StreamAnalyzer {
         set { pipeline.spectrum.spectrogramMode = newValue }
     }
 
+    /// What the spectrum and the waterfall sum, as the subscribed display shows Stereo (L and R) or Immersive
+    /// (every channel, which also gives every channel's band energy for the immersive soundstage). Takes effect
+    /// once every channel has a full transform window (≤ 170 ms), as on the desktop.
+    package var spatialSpectrum: Bool {
+        get { pipeline.spatialSpectrum }
+        set { pipeline.spatialSpectrum = newValue }
+    }
+
+    /// The spatial field's coherence threshold, as the subscribed display asks for it (SUBSCRIBE option 4).
+    package var spatialCoherence: Float {
+        get { pipeline.spatialCoherence }
+        set { pipeline.spatialCoherence = newValue }
+    }
+
+    /// Whether the subscribed display configured the spatial geometry (SPATIAL_CONFIG): from the next spatial transform
+    /// the results carry the observations (tag 58) computed with it, instead of the Build 87–97 bins (tag 54) of the
+    /// standard layout, which an unconfigured analysis makes instead of observations.
+    package private(set) var spatialConfigured = false
+    package var spatialGeometry: SpatialGeometry { pipeline.spatialGeometry }
+
+    /// Applies a display's SPATIAL_CONFIG payload to this bus: its geometry from the next spatial transform on (the
+    /// results already analysed keep the hash of the geometry they were made with, so the display can tell them
+    /// apart), and the observations instead of the bins. Nothing changes when the payload is refused.
+    package func configureSpatial(_ bytes: UnsafeRawBufferPointer) -> (outcome: SpatialConfigWire.Outcome, revision: UInt32, hash: UInt64) {
+        let decoded = SpatialConfigWire.decode(bytes, roles: roles)
+        guard let geometry = decoded.geometry else { return (decoded.outcome, 0, 0) }
+        pipeline.spatialGeometry = geometry
+        pipeline.spatialLegacyPoints = false
+        spatialConfigured = true
+        return (.applied, geometry.revision, geometry.hash)
+    }
+
+    /// The display that configured it went away: the standard layout and the Build 87–97 bins again, for whichever
+    /// display subscribes next.
+    package func resetSpatial() {
+        pipeline.spatialGeometry = SpatialGeometry.standard(roles: roles)
+        pipeline.spatialLegacyPoints = true
+        spatialConfigured = false
+    }
+
     /// Pausing keeps everything measured so far and accumulates nothing until resumed; resuming carries on without
     /// a break, as Auraliscope's Pause Capture does.
     package func setMeasuring(_ on: Bool) { measuring = on }
@@ -148,6 +215,11 @@ package final class StreamAnalyzer {
             pipeline.publish(into: $0.baseAddress!, now: Double(ticks) / MeterPipeline.tickRate)
         }
         published = true
+        let header = SnapshotSlots.spatialObservations
+        if !observationHeader.elementsEqual(values[header..<(header + SpatialObservations.headerFloats)]) {
+            observationHeader.replaceSubrange(0..., with: values[header..<(header + SpatialObservations.headerFloats)])
+            observationFrame += 1
+        }
         let spectrogramSerial = values[SnapshotSlots.spectrogramSerial]
         if spectrogramSerial != lastSpectrogramSerial {
             lastSpectrogramSerial = spectrogramSerial
@@ -198,14 +270,19 @@ package final class StreamAnalyzer {
         /// Serials of the newest columns carried (unchanged from the `after` arguments when none were).
         package var spectrogramThrough: UInt64 = 0
         package var waveformThrough: UInt64 = 0
+        /// The observation frame (`observationFrame`) the receiver holds after this result: the one it carried, the
+        /// `afterObservations` argument when it was left out, 0 when the result carried none (the bins, or no field).
+        package var observationsThrough: UInt64 = 0
     }
 
     /// Writes one RESULT payload: the latest state, and the columns of each series after `afterSpectrogram` /
     /// `afterWaveform` (serials already sent) that are still held, oldest first, up to `maxSpectrogram` /
-    /// `maxWaveform` columns. Returns 0 bytes if nothing was published yet or `capacity` is too small.
+    /// `maxWaveform` columns. The observations (tag 58) are left out when `afterObservations` is the frame the snapshot
+    /// holds: the receiver keeps the observations it was sent last, and 0 (none held, or a receiver that does not keep
+    /// them) has them in every result. Returns 0 bytes if nothing was published yet or `capacity` is too small.
     package func encode(into buffer: UnsafeMutableRawPointer, capacity: Int, subscription: UInt32, layout: UInt32,
-                        afterSpectrogram: UInt64, afterWaveform: UInt64, maxSpectrogram: Int = 24,
-                        maxWaveform: Int = WaveformEnvelope.publishedColumns * 4) -> Encoded {
+                        afterSpectrogram: UInt64, afterWaveform: UInt64, afterObservations: UInt64 = 0,
+                        maxSpectrogram: Int = 24, maxWaveform: Int = WaveformEnvelope.publishedColumns * 4) -> Encoded {
         var result = Encoded(spectrogramThrough: afterSpectrogram, waveformThrough: afterWaveform)
         guard published else { return result }
         sequence += 1
@@ -217,6 +294,7 @@ package final class StreamAnalyzer {
         w.f64(ResultTag.sampleRate.rawValue, sampleRate)
         w.u32(ResultTag.channels.rawValue, UInt32(channels))
         w.u32(ResultTag.layout.rawValue, layout)
+        w.u8s(ResultTag.roles.rawValue, roles.map { UInt8($0) })
         w.u64(ResultTag.sequence.rawValue, sequence)
         w.u64(ResultTag.tick.rawValue, ticks)
         w.f64(ResultTag.tickRate.rawValue, MeterPipeline.tickRate)
@@ -230,18 +308,17 @@ package final class StreamAnalyzer {
         values.withUnsafeBufferPointer { v in
             let base = v.baseAddress!
             func perChannel(_ tag: ResultTag, _ slot: Int) {
-                var channelValues = (Float(0), Float(0))
-                channelValues.0 = base[slot + roles[0]]
-                if channels > 1 { channelValues.1 = base[slot + roles[1]] }
-                withUnsafePointer(to: &channelValues) {
-                    $0.withMemoryRebound(to: Float.self, capacity: 2) { w.f32s(tag.rawValue, $0, count: channels) }
-                }
+                for (channel, role) in roles.enumerated() { channelValues[channel] = base[slot + role] }
+                channelValues.withUnsafeBufferPointer { w.f32s(tag.rawValue, $0.baseAddress!, count: channels) }
             }
             perChannel(.peak, SnapshotSlots.peaks)
             perChannel(.rms, SnapshotSlots.rms)
             perChannel(.truePeak, SnapshotSlots.truePeaks)
             perChannel(.heldPeak, SnapshotSlots.heldPeaks)
             perChannel(.heldTruePeak, SnapshotSlots.heldTruePeaks)
+            perChannel(.dcOffset, SnapshotSlots.dcOffset)
+            perChannel(.infrasonic, SnapshotSlots.infrasonic)
+            w.f32(ResultTag.healthStatus.rawValue, base[SnapshotSlots.healthStatus])
             w.f32(ResultTag.momentary.rawValue, base[SnapshotSlots.momentary])
             w.f32(ResultTag.shortTerm.rawValue, base[SnapshotSlots.shortTerm])
             w.f32(ResultTag.integrated.rawValue, base[SnapshotSlots.integrated])
@@ -265,6 +342,29 @@ package final class StreamAnalyzer {
             }
             w.f32s(ResultTag.bandPower.rawValue, power)
             w.u32(ResultTag.detectedFormat.rawValue, UInt32(max(0, base[SnapshotSlots.format])))
+            w.u32(ResultTag.spectrumChannels.rawValue, pipeline.analysedSpatial ? 1 : 0)
+            // The spatial field while the display shows Immersive (every channel analysed).
+            if pipeline.spatialSpectrum {
+                let field = base + SnapshotSlots.spatialField
+                w.bytes(ResultTag.spatialField.rawValue, count: SpatialFieldWire.size(field, channels: channels)) { out in
+                    SpatialFieldWire.encode(field, roles: roles, into: out)
+                }
+                // The bins while they are what the newest transform made (an unconfigured plugin, or a configured one
+                // until its first transform with the display's geometry); otherwise the observations, once per frame.
+                let observations = base + SnapshotSlots.spatialObservations, points = base + SnapshotSlots.spatialPoints
+                if !spatialConfigured || (observations[SpatialObservations.Header.status] != 1 && points[SpatialPoints.status] == 1) {
+                    w.bytes(ResultTag.spatialPoints.rawValue, count: SpatialPointsWire.size(points)) { out in
+                        SpatialPointsWire.encode(points, into: out)
+                    }
+                } else if afterObservations != observationFrame {
+                    w.bytes(ResultTag.spatialObservations.rawValue, count: SpatialObservationsWire.size(observations)) { out in
+                        SpatialObservationsWire.encode(observations, into: out)
+                    }
+                    result.observationsThrough = observationFrame
+                } else {
+                    result.observationsThrough = afterObservations
+                }
+            }
         }
 
         // Spectrogram columns after the last sent that are still held.

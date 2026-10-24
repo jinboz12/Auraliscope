@@ -5,8 +5,8 @@
 # permission (the app is pointed at a DAW source from launch). Logs go to .build/bridge/validation/app-*.txt.
 set -uo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
-app="$ABR_DIST/Auraliscope LABS.app/Contents/MacOS/Auraliscope"
+source Bridge/scripts/release-version.sh
+app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
 harness=.build/bridge/tools/HostHarness
 vst3="$ABR_DIST/Auraliscope Bridge.vst3"
 au="$ABR_DIST/Auraliscope Bridge.component"
@@ -41,7 +41,7 @@ finish() {  # finish <label>
     local verdict=PASS
     (( app_result != 0 || host_result != 0 )) && { verdict=FAIL; failed=1; }
     echo "== $label: $verdict (app $app_result, test host $host_result)"
-    grep -hE '\[bridge-selftest\] (stream|peak|unanalysed|plugin|conditions|FAIL|disconnected|integrated|after|ambiguous|still|choosing|held|returned|compared|  |pause|resume|reset|while|controls)' "$logs/app-$label.txt" | sed 's/^/   /'
+    grep -hE '\[bridge-selftest\] (stream|bus|peak|unanalysed|plugin|conditions|FAIL|disconnected|integrated|after|ambiguous|still|choosing|held|returned|compared|  |pause|resume|reset|while|controls)' "$logs/app-$label.txt" | sed 's/^/   /'
     grep -hE 'phase|PASS|FAIL' "$logs/host-$label.txt" 2>/dev/null | sed 's/^/   /'
 }
 rm -f $logs/app-*.txt(N) $logs/host-*.txt(N)
@@ -112,6 +112,20 @@ host before-labs --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --name
 sleep 5
 start_app before-labs --bridge-selftest Harness --expect-peak-db -6.02,-12.04 --expect-analysed-min 5 --compare-reference
 finish before-labs
+
+# 12. An immersive VST3 bus (7.1.4): Labs shows the plugin's own format (not the one chosen in Settings), Auto picks
+#     Immersive, each of the 12 channels reads its level on its own speaker (VST3 Ls Rs on the rear pair, Sl Sr on the
+#     side pair), and nothing appears on a speaker the bus does not have.
+start_app immersive --bridge-selftest Harness --expect-layout 7.1.4 --expect-format spatial --expect-channels 12 --expect-rate 48000 \
+    --expect-peak-db -6.02,-12.04,-15.56,-18.06,-20.00,-21.58,-22.92,-24.08,-25.11,-26.02,-26.85,-27.60 -formatMode auto
+host immersive --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --name Harness --phases live:9
+finish immersive
+
+# 13. 7.0.4 (no LFE): drawn in 7.1.4 with LFE off, and named as the plugin names it.
+start_app immersive-704 --bridge-selftest Harness --expect-layout 7.0.4 --expect-format spatial --expect-channels 11 \
+    --expect-peak-db -6.02,-12.04,-15.56,-18.06,-20.00,-21.58,-22.92,-24.08,-25.11,-26.02,-26.85 -formatMode auto
+host immersive-704 --format vst3 --bundle "$vst3" --layout 7.0.4 --rate 48000 --name Harness --phases live:9
+finish immersive-704
 
 echo; (( failed )) && echo "Some app-level checks FAILED" || echo "All app-level checks passed"
 exit $failed

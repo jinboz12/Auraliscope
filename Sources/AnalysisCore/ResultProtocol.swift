@@ -92,6 +92,15 @@ package struct WireWriter {
             if let base = buffer.baseAddress { f32s(tag, base, count: buffer.count) } else { field(tag, .f32, elements: 0) { _ in } }
         }
     }
+    /// `count` raw bytes that `fill` writes.
+    package mutating func bytes(_ tag: UInt16, count: Int, _ fill: (UnsafeMutableRawPointer) -> Void) {
+        field(tag, .bytes, elements: count, fill)
+    }
+    package mutating func u8s(_ tag: UInt16, _ values: [UInt8]) {
+        field(tag, .u8, elements: values.count) { destination in
+            for (i, value) in values.enumerated() { destination.storeBytes(of: value, toByteOffset: i, as: UInt8.self) }
+        }
+    }
 }
 
 /// One field as read: its tag, kind, element count and value bytes (inside the payload).
@@ -116,6 +125,16 @@ package struct WireField {
         return (0..<count).map {
             Float(bitPattern: UInt32(littleEndian: value.loadUnaligned(fromByteOffset: 4 * $0, as: UInt32.self)))
         }
+    }
+    /// The bytes, when this is a u8 field of at most `limit` elements.
+    package func u8s(limit: Int) -> [UInt8]? {
+        guard kind == .u8, count <= limit else { return nil }
+        return Array(value)
+    }
+    /// The raw bytes, when this is a bytes field of at most `limit` bytes.
+    package func bytes(limit: Int) -> [UInt8]? {
+        guard kind == .bytes, count <= limit else { return nil }
+        return Array(value)
     }
 }
 
@@ -154,9 +173,9 @@ package struct WireReader: Sequence, IteratorProtocol {
 }
 
 /// Tags of a RESULT payload, analysis schema 1. Per-channel arrays hold one value per channel, in the insert's
-/// channel order (mono: 1; stereo: L, R). Levels are linear amplitude (1 = full scale); loudness is in LUFS, with
-/// −100 for "no value yet" (and −1 for a loudness range not yet measurable); spectra and band levels in dBFS, with
-/// −120 for silence.
+/// channel order (mono: 1; stereo: L, R; immersive: the bus's order, each channel's speaker role in `roles`).
+/// Levels are linear amplitude (1 = full scale); loudness is in LUFS, with −100 for "no value yet" (and −1 for a
+/// loudness range not yet measurable); spectra and band levels in dBFS, with −120 for silence.
 package enum ResultTag: UInt16 {
     // Stream and timing
     case subscription = 1          // u32: the SUBSCRIBE this result answers
@@ -164,8 +183,10 @@ package enum ResultTag: UInt16 {
     case generation = 3            // u32: analysis generation: a new one after a reset or a format change
     case formatEpoch = 4           // u32: the plugin's format epoch the generation analyses
     case sampleRate = 5            // f64: Hz
-    case channels = 6              // u32: 1 or 2
+    case channels = 6              // u32: 1–16 (1 or 2 before build 77)
     case layout = 7                // u32: ABR_LAYOUT_*
+    case roles = 18                // u8[channels]: each channel's speaker role (`Role`; build 77 and later, absent
+                                   // before: mono L, stereo L R)
     case sequence = 8              // u64: results encoded in this generation (latest state; gaps are harmless)
     case tick = 9                  // u64: analysis ticks in this generation, the one this state closes
     case tickRate = 10             // f64: ticks per second of audio (60)
@@ -191,6 +212,20 @@ package enum ResultTag: UInt16 {
     case bandPower = 49            // f32[channels × 5]: each channel's mean square per stereo band
     case detectedFormat = 50       // u32: 0 stereo, 1 spatial, 2 mono
     case spectrumFine = 51         // f32[128]: dBFS per fine band (each `spectrum` band halved), from the same transform
+    case spectrumChannels = 52     // u32: what the newest spectrum and spectrogram column sum: 0 L and R, 1 every
+                                   // channel (SUBSCRIBE option 3; build 77 and later)
+    case spatialField = 53         // bytes: the spatial field (`SpatialFieldWire`) while every channel is analysed
+                                   // (build 80 and later)
+    case spatialPoints = 54        // bytes: the same transform's bins, each at its amplitude-weighted centre of
+                                   // gravity of the speakers (`SpatialPointsWire`), with tag 53 (build 87 and later)
+                                   // until the observations (tag 58) of a configured geometry are in force
+    case spatialObservations = 58  // bytes: the same transform's observations with the configured geometry's hash
+                                   // (`SpatialObservationsWire`), with tag 53, once the display has sent SPATIAL_CONFIG
+                                   // (build 98 and later); to a display that keeps them (WELCOME capability 1), only
+                                   // in a result whose frame it has not been sent (after build 98)
+    case dcOffset = 55             // f32[channels]: each channel's DC offset, linear, 1 s mean (build 90 and later)
+    case infrasonic = 56           // f32[channels]: each channel's mean square below 20 Hz without DC, linear
+    case healthStatus = 57         // f32: 1 settled, 0.5 settling (the 1 s integrators have not run a full second)
     // Ordered visual updates: the spectrogram and the waveform
     case spectrogramFirst = 60     // u64: serial of the first column carried (serials start at 1 per generation)
     case spectrogramRows = 61      // u32: values per column (512)
@@ -236,6 +271,8 @@ package struct ResultMessage {
     package var sampleRate: Double = 0
     package var channels = 0
     package var layout: UInt32 = 0
+    /// As sent (tag 18); empty from a plugin before build 77. `channelRoles` is what to use.
+    package var roles: [Int] = []
     package var sequence: UInt64 = 0
     package var tick: UInt64 = 0
     package var tickRate: Double = 60
@@ -258,6 +295,19 @@ package struct ResultMessage {
     package var bandPoints: [Float] = []
     package var bandPower: [Float] = []
     package var detectedFormat: UInt32 = 0
+    /// nil from a plugin that does not say (before build 77): its spectrum is L and R.
+    package var spectrumChannels: UInt32?
+    /// The spatial field as sent (`SpatialFieldWire`); nil from a plugin before build 80 or while only L and R are
+    /// analysed.
+    package var spatialField: [UInt8]?
+    /// The bins as sent (`SpatialPointsWire`); nil from a plugin before build 87 or while only L and R are analysed.
+    package var spatialPoints: [UInt8]?
+    /// The observations as sent (`SpatialObservationsWire`); nil from a plugin before build 98, before the display's
+    /// SPATIAL_CONFIG, while only L and R are analysed, or when the display was sent this frame already (it keeps it).
+    package var spatialObservations: [UInt8]?
+    /// DC offset and infrasonic mean square per channel, and their status; empty from a plugin before build 90.
+    package var dcOffset: [Float] = [], infrasonic: [Float] = []
+    package var healthStatus: Float = 0
     package var spectrogramFirst: UInt64 = 0
     package var spectrogramRows = ResultMessage.spectrogramRows
     package var spectrogram: [Float] = []
@@ -283,11 +333,20 @@ package struct ResultMessage {
     package var spectrogramColumns: Int { spectrogramRows > 0 ? spectrogram.count / spectrogramRows : 0 }
     package var waveformColumns: Int { channels > 0 ? waveform.count / (channels * 2) : 0 }
 
+    /// Each channel's speaker role: as sent, or for a plugin before build 77, L for mono and L, R for stereo. nil
+    /// when the roles do not describe the channels (another count, a repeated or unknown role).
+    package var channelRoles: [Int]? {
+        if roles.isEmpty { return channels == 1 ? [Role.left] : channels == 2 ? [Role.left, Role.right] : nil }
+        return roles.count == channels && StreamAnalyzer.validRoles(roles) ? roles : nil
+    }
+
     /// Carries what every result must, within the protocol's limits: a schema this code reads, a generation, a
-    /// real rate, 1–2 channels, per-channel levels of that many channels, and whole columns.
+    /// real rate, 1–16 channels with their speaker roles, per-channel levels of that many channels, and whole
+    /// columns.
     package var valid: Bool {
         schema == StreamAnalyzer.schemaVersion && generation != 0 && sampleRate >= 8_000 && sampleRate <= 384_000
-            && (1...2).contains(channels) && [peak, rms, truePeak, heldPeak, heldTruePeak].allSatisfy { $0.count == channels }
+            && (1...Role.count).contains(channels) && channelRoles != nil
+            && [peak, rms, truePeak, heldPeak, heldTruePeak].allSatisfy { $0.count == channels }
             && spectrogram.count == spectrogramColumns * spectrogramRows && waveform.count == waveformColumns * channels * 2
             && !malformed
     }
@@ -295,7 +354,7 @@ package struct ResultMessage {
     package static func decode(_ payload: UnsafeRawBufferPointer) -> ResultMessage {
         var m = ResultMessage()
         var reader = WireReader(payload)
-        let perChannel = 2
+        let perChannel = Role.count
         let groups = StereoBands.groups.count
         func take<T>(_ value: T?, _ assign: (T) -> Void) {
             if let value { assign(value) } else { m.rejectedFields += 1 }
@@ -310,6 +369,7 @@ package struct ResultMessage {
             case .sampleRate: take(field.f64) { m.sampleRate = $0 }
             case .channels: take(field.u32) { m.channels = Int(min($0, 64)) }
             case .layout: take(field.u32) { m.layout = $0 }
+            case .roles: take(field.u8s(limit: perChannel)) { m.roles = $0.map(Int.init) }
             case .sequence: take(field.u64) { m.sequence = $0 }
             case .tick: take(field.u64) { m.tick = $0 }
             case .tickRate: take(field.f64) { m.tickRate = $0 }
@@ -331,6 +391,9 @@ package struct ResultMessage {
             case .loudnessRange: take(field.f32) { m.loudnessRange = $0 }
             case .spectrum: take(field.f32s(limit: MeterSnapshot.bandCount)) { m.spectrum = $0 }
             case .spectrumFine: take(field.f32s(limit: MeterSnapshot.fineBandCount)) { m.spectrumFine = $0 }
+            case .dcOffset: take(field.f32s(limit: perChannel)) { m.dcOffset = $0 }
+            case .infrasonic: take(field.f32s(limit: perChannel)) { m.infrasonic = $0 }
+            case .healthStatus: take(field.f32) { m.healthStatus = $0 }
             case .dominant: take(field.f32s(limit: 2)) { m.dominant = $0 }
             case .notes: take(field.f32s(limit: 2 * SpectrumAnalyzer.maxNotes)) { m.notes = $0 }
             case .correlation: take(field.f32) { m.correlation = $0 }
@@ -341,6 +404,12 @@ package struct ResultMessage {
             case .bandPoints: take(field.f32s(limit: StereoBands.scopeFloats)) { m.bandPoints = $0 }
             case .bandPower: take(field.f32s(limit: perChannel * StereoBands.count)) { m.bandPower = $0 }
             case .detectedFormat: take(field.u32) { m.detectedFormat = $0 }
+            case .spectrumChannels: take(field.u32) { m.spectrumChannels = $0 }
+            case .spatialField:
+                take(field.bytes(limit: SpatialFieldWire.headerBytes + SpatialField.bandCount * perChannel
+                                 + SpatialField.bandCount * SpatialField.coherentSlots * SpatialFieldWire.componentBytes)) { m.spatialField = $0 }
+            case .spatialPoints: take(field.bytes(limit: SpatialPointsWire.largest)) { m.spatialPoints = $0 }
+            case .spatialObservations: take(field.bytes(limit: SpatialObservationsWire.largest)) { m.spatialObservations = $0 }
             case .spectrogramFirst: take(field.u64) { m.spectrogramFirst = $0 }
             case .spectrogramRows:
                 take(field.u32.flatMap { $0 == UInt32(spectrogramRows) ? Int($0) : nil }) { m.spectrogramRows = $0 }

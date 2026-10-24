@@ -24,6 +24,7 @@ struct CaptureRecord {
     uint32_t reserved;
     uint64_t position;           // stream position of the first frame (live frames processed in this session)
     double sampleRate;           // of this record's format epoch
+    uint64_t roles;              // … and its channels' speaker roles (ChannelLayout::packedRoles)
 };
 static_assert(sizeof(CaptureRecord) % 4 == 0, "records keep samples 4-byte aligned");
 

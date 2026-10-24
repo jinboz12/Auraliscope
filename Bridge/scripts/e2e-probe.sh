@@ -7,7 +7,7 @@
 #   e2e-probe.sh [label-pattern]     run only the cases whose label matches (e.g. 'vst3-stereo-48k')
 set -uo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
 tools=.build/bridge/tools
 logs=.build/bridge/validation
 mkdir -p "$logs"
@@ -47,7 +47,34 @@ run au-3-instances    "Multi 3" 2 "" --format au --bundle "$au" --channels 2 --r
 run vst3-enhanced     Harness 0 "--enhanced-after 2" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
 run au-enhanced-96k   Harness 0 "--enhanced-after 2" --format au --bundle "$au" --channels 2 --rate 96000 --block 512 --name Harness $live
 run vst3-before-labs  Harness 0 "--subscribe-after 3" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live
+# Immersive VST3 buses: every channel on its speaker role (Ls Rs are the rear pair beside Sl Sr; a lone top-side pair
+# is the x.x.2 pair), the layout named, and with --immersive-after the spectrum summing every channel.
+run vst3-7.1.4-48k    Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --expect-layout 7.1.4 --immersive-after 3" \
+    --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --block 256 --name Harness $live
+run vst3-5.1-96k      Harness 0 "--expect-roles 0,1,2,3,4,5 --expect-layout 5.1" \
+    --format vst3 --bundle "$vst3" --layout 5.1 --rate 96000 --block 512 --name Harness $live
+run vst3-7.1.2-44k1   Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7 --expect-layout 7.1.2 --immersive-after 2" \
+    --format vst3 --bundle "$vst3" --layout 7.1.2 --rate 44100 --block 128 --name Harness $live
+run vst3-9.1.6-96k    Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15,12,13,10,11 --expect-layout 9.1.6 --immersive-after 2" \
+    --format vst3 --bundle "$vst3" --layout 9.1.6 --rate 96000 --block 1024 --name Harness $live
+run vst3-stereo-to-7.1.4 Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --expect-layout 7.1.4 --immersive-after 1" \
+    --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness --phases live:2,layout=7.1.4:5
+run vst3-7.1.4-controls Harness 0 "--controls --seconds 3" --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --block 256 \
+    --name Harness --phases live:12
 run au-controls       Harness 0 "--controls --seconds 3" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness --phases live:12
+# The display's speaker geometry (SPATIAL_CONFIG, build 98): acknowledged, the observations (tag 58) with its hash and never
+# an earlier one, every tone at its configured speaker, equal to the local analysis with it; changed again and after a
+# reconnection; and an older plugin (BRIDGE_PREVIOUS: the previous build's VST3) left on the standard layout's bins.
+run vst3-7.1.4-geometry Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --immersive-after 1 --geometry below --geometry-after 2 --reconfigure-after 4" \
+    --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --block 256 --name Harness $live
+run vst3-9.1.6-meters-96k Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15,12,13,10,11 --immersive-after 1 --geometry meters --geometry-after 2 --reconnect-after 4" \
+    --format vst3 --bundle "$vst3" --layout 9.1.6 --rate 96000 --block 512 --name Harness $live
+run au-stereo-geometry Harness 0 "--immersive-after 1 --geometry meters --geometry-after 2 --reconfigure-after 4" \
+    --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live
+if [[ -n "${BRIDGE_PREVIOUS:-}" ]]; then
+    run vst3-previous-build Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --immersive-after 1 --geometry below --geometry-after 2 --expect-legacy" \
+        --format vst3 --bundle "$BRIDGE_PREVIOUS" --layout 7.1.4 --rate 48000 --block 256 --name Harness $live
+fi
 run vst3-editor-close Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live \
     --editor-snapshot "$logs/editor-vst3.png" --editor-seconds 2
 run au-editor-close   Harness 0 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live \

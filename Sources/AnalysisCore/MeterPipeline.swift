@@ -35,7 +35,20 @@ package enum SnapshotSlots {
     package static let spectrumFine = missing + 1
     /// `SpectrogramMode` of the newest waterfall column.
     package static let spectrogramMode = spectrumFine + MeterSnapshot.fineBandCount
-    package static let total = spectrogramMode + 1
+    /// The Immersive soundstage's spatial field (`SpatialField`), status 0 while it does not describe the audio.
+    package static let spatialField = spectrogramMode + 1
+    /// The same transform's bins, each where a spatial analyser places it (`SpatialPoints`), status 0 likewise.
+    package static let spatialPoints = spatialField + SpatialField.floats
+    /// `SignalHealthMeter`: each role's DC offset, then its infrasonic mean square, then the status (1 settled, 0.5
+    /// settling, 0 not measured: a plugin before build 90).
+    package static let signalHealth = spatialPoints + SpatialPoints.floats
+    package static let dcOffset = signalHealth
+    package static let infrasonic = signalHealth + Role.count
+    package static let healthStatus = signalHealth + 2 * Role.count
+    /// Radiant's observations of the same transform (`SpatialObservations`), with the geometry's hash and the window's
+    /// time; status 0 likewise. The bins above are the Build 87–97 form, filled instead only for a display that reads them.
+    package static let spatialObservations = healthStatus + 1
+    package static let total = spatialObservations + SpatialObservations.floats
 }
 
 /// Every analysis the DSP queue runs, from mapped PCM to one packed snapshot. Owned by one thread.
@@ -74,8 +87,26 @@ package final class MeterPipeline {
 
     package let loudness: LoudnessAnalyzer
     package let spectrum: SpectrumAnalyzer
+    package var multiFFT: MultiFFTAnalyzer?
+    private var legacySTFT = LegacySTFT.legacy
+    /// Display-only FFT. The original longer FFT still owns pitch/notes and stereo-band measurements.
+    private var displaySpectrum: SpectrumAnalyzer?
+    private var displayBands = [Float](repeating: -120, count: MeterSnapshot.bandCount)
+
+    package func configureLegacySTFT(_ choice: LegacySTFT) {
+        guard choice != legacySTFT else { return }
+        if choice == .legacy { displaySpectrum = nil }
+        else {
+            guard let next = SpectrumAnalyzer(sampleRate: sampleRate, sharedFFTSize: choice.rawValue) else { return }
+            displaySpectrum = next
+        }
+        legacySTFT = choice
+        displayBands = .init(repeating: -120, count: MeterSnapshot.bandCount)
+    }
+
     package let waveform: WaveformEnvelope
     package let splitter: StereoBandSplitter
+    package let health: SignalHealthMeter
     private var detector: FormatDetector
     private let streamID: Float
     private let sampleRate: Double
@@ -85,9 +116,29 @@ package final class MeterPipeline {
     /// Spatial monitoring: spectrum and waterfall sum every routed role; otherwise they show L and R.
     /// Set by the owner; takes effect once every routed role has a full FFT window (≤ 170 ms).
     package var spatialSpectrum = false {
-        didSet { spectrum.recordsSpatial = spatialSpectrum }
+        didSet {
+            spectrum.recordsSpatial = spatialSpectrum
+            spectrum.buildsSpatialField = spatialSpectrum
+        }
     }
-    private var analysedSpatial = false
+    /// The spatial field's coherence threshold (`SpatialFieldAnalyzer.coherenceThreshold`), set by the display.
+    package var spatialCoherence: Float {
+        get { spectrum.spatialField.coherenceThreshold }
+        set { spectrum.spatialField.coherenceThreshold = newValue }
+    }
+    /// The speakers' places and the observations' mapping and detail (`SpatialGeometry`), as the display shows them.
+    package var spatialGeometry: SpatialGeometry {
+        get { spectrum.spatialField.geometry }
+        set { spectrum.spatialField.geometry = newValue }
+    }
+    /// Writes the Build 87–97 bins (`SnapshotSlots.spatialPoints`) instead of the observations, for a display that reads
+    /// only those; from the next spatial transform.
+    package var spatialLegacyPoints: Bool {
+        get { spectrum.spatialField.legacyPoints }
+        set { spectrum.spatialField.legacyPoints = newValue }
+    }
+    /// Whether the newest spectrum (and the waterfall column made from it) summed every routed role.
+    package private(set) var analysedSpatial = false
     /// Newest slice at `head`; older ones behind it.
     private var slices = [LevelSlice](repeating: LevelSlice(), count: MeterPipeline.staleTicks)
     private var head = 0
@@ -122,6 +173,7 @@ package final class MeterPipeline {
               let loudness = LoudnessAnalyzer(sampleRate: sampleRate, activeRoles: activeRoles),
               let splitter = StereoBandSplitter(sampleRate: sampleRate) else { return nil }
         self.splitter = splitter
+        health = SignalHealthMeter(sampleRate: sampleRate, activeRoles: activeRoles)
         self.spectrum = spectrum
         self.loudness = loudness
         waveform = WaveformEnvelope(sampleRate: sampleRate, activeRoles: activeRoles)
@@ -171,7 +223,10 @@ package final class MeterPipeline {
         loudness.consume(block)
         waveform.consume(block)
         spectrum.consume(block)
+        displaySpectrum?.consume(block)
+        multiFFT?.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
         splitter.consume(left: block.channel(Role.left), right: block.channel(Role.right), count: block.count)
+        health.consume(block)
     }
 
     /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing
@@ -179,7 +234,10 @@ package final class MeterPipeline {
     package func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
         loudness.interrupt()
         spectrum.interrupt()
+        displaySpectrum?.interrupt()
+        multiFFT?.interrupt()
         splitter.interrupt()
+        health.interrupt()
         correlationSums = (0, 0, 0)
         integrateBands(fresh: nil)
         let missing = Double(lostFrames) / sampleRate + Double(idleMilliseconds) / 1000
@@ -330,9 +388,34 @@ package final class MeterPipeline {
         writeBands(into: v)
         splitter.writePoints(into: v + SnapshotSlots.bandPoints, silent: stale)
         for i in 0..<StereoBands.roleFloats { v[SnapshotSlots.roleBandPower + i] = roleBands[i] }
-        for i in 0..<MeterSnapshot.bandCount { v[SnapshotSlots.spectrum + i] = bands[i] }
-        let fine = stale || !spectrum.ready ? nil : spectrum.fineSpectrum
+        let display = !spatialSpectrum && spectrum.spectrogramMode == .classic ? displaySpectrum : nil
+        if let display, !stale, display.ready, fresh {
+            _ = display.refreshSpectrum(into: &displayBands)
+        }
+        let shownBands = display == nil ? bands : !stale && display!.ready ? displayBands : nil
+        for i in 0..<MeterSnapshot.bandCount { v[SnapshotSlots.spectrum + i] = shownBands?[i] ?? -120 }
+        let visual = display ?? spectrum
+        let fine = stale || !visual.ready ? nil : visual.fineSpectrum
         for i in 0..<MeterSnapshot.fineBandCount { v[SnapshotSlots.spectrumFine + i] = fine?[i] ?? -120 }
+        // The spatial field of the newest Spatial transform; status 0 (and nothing in it) otherwise. Its bins or its
+        // observations, whichever that transform made (`legacyPoints` as it was then: a change applies from the next).
+        let field = v + SnapshotSlots.spatialField, points = v + SnapshotSlots.spatialPoints
+        let observations = v + SnapshotSlots.spatialObservations
+        if stale || !spectrum.ready || !analysedSpatial || !spectrum.spatialFieldBuilt {
+            field.update(repeating: 0, count: SpatialField.floats)
+            points.update(repeating: 0, count: SpatialPoints.floats)
+            observations.update(repeating: 0, count: SpatialObservations.first)
+        } else {
+            field.update(from: spectrum.spatialField.fieldValues, count: SpatialField.floats)
+            if spectrum.spatialField.pointValues[SpatialPoints.status] == 1 {
+                points.update(from: spectrum.spatialField.pointValues, count: SpatialPoints.floats)
+            } else {
+                points.update(repeating: 0, count: SpatialPoints.floats)
+            }
+            let source = spectrum.spatialField.observationValues
+            let count = max(0, min(SpatialObservations.capacity, Int(source[SpatialObservations.Header.count])))
+            observations.update(from: source, count: SpatialObservations.first + count * SpatialObservations.fields)
+        }
         v[SnapshotSlots.peakFrequency] = dominant.frequency
         v[SnapshotSlots.peakLevel] = dominant.level
         if stale || !spectrum.ready {
@@ -343,10 +426,10 @@ package final class MeterPipeline {
 
         // Waterfall column and format detector at 30 Hz, on strictly consecutive 1/30 s windows as before.
         if tick % Self.windowTicks == 0 {
-            if stale || !spectrum.ready {
+            if stale || !visual.ready {
                 for i in column.indices { column[i] = -120 }
             } else {
-                spectrum.spectrogram(into: &column)
+                visual.spectrogram(into: &column)
             }
             spectrogramSerial = spectrogramSerial % 999_999 + 1
             let strict = (0..<Self.windowTicks).reduce(0) { $0 + slices[slice($1)].frames }
@@ -376,5 +459,6 @@ package final class MeterPipeline {
         waveform.write(into: v + SnapshotSlots.waveform)
         v[SnapshotSlots.breaks] = Float(breaks)
         v[SnapshotSlots.missing] = Float(missingSeconds)
+        health.write(into: v + SnapshotSlots.signalHealth)
     }
 }

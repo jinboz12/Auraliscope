@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -27,6 +28,32 @@
 #include "RecordRing.h"
 
 namespace abr {
+
+// An insert's channels: how many, and each one's speaker role (ABR_ROLE_*, in the bus's channel order), with the
+// layout's name. Mono is [L], stereo [L R]; an immersive bus has up to ABR_MAX_CHANNELS distinct roles.
+struct ChannelLayout {
+    uint32_t channels = 0;
+    uint8_t roles[ABR_MAX_CHANNELS] = {};
+    char name[16] = {};
+
+    static ChannelLayout mono();
+    static ChannelLayout stereo();
+    // Mono for 1 channel, stereo for 2; anything else has no roles (and is not analysed).
+    static ChannelLayout standard(uint32_t channels);
+    // From a role list; `name` is the layout's (e.g. "7.1.4"), or derived from the roles when empty.
+    static ChannelLayout speakers(const uint8_t *roles, uint32_t channels, const char *name = "");
+    // The analysable layouts: [L], or up to ABR_MAX_CHANNELS distinct roles including L and R.
+    bool valid() const;
+    // ABR_LAYOUT_MONO, _STEREO or _SPEAKERS (ABR_LAYOUT_UNKNOWN when not valid).
+    uint32_t kind() const;
+    // Four bits per channel, channel 0 lowest: carried with every captured block.
+    uint64_t packedRoles() const;
+    bool operator==(const ChannelLayout &other) const;
+    bool operator!=(const ChannelLayout &other) const { return !(*this == other); }
+};
+
+// A role's short name as Auraliscope shows it within `layout` (the surrounds are Lss/Rss beside rear surrounds).
+const char *roleName(uint32_t role, const ChannelLayout &layout);
 
 // What the host said about its transport for one block (all optional).
 struct HostTransport {
@@ -43,6 +70,7 @@ struct CoreStatus {
     uint32_t state = ABR_STATE_INACTIVE;
     double sampleRate = 0;
     uint32_t channels = 0;
+    ChannelLayout layout;
     uint32_t formatEpoch = 0;
     uint32_t maxBlockFrames = 0;
     uint64_t framesProcessed = 0;
@@ -71,9 +99,13 @@ public:
     BridgeCore(const BridgeCore &) = delete;
     BridgeCore &operator=(const BridgeCore &) = delete;
 
-    // Host threads, while not processing. A sample-rate or channel change starts a new format epoch (and a new
-    // analysis generation); reactivating with the same format keeps the analysis and marks a break instead.
-    void configure(double sampleRate, uint32_t channels, uint32_t maxBlockFrames);
+    // Host threads, while not processing. A sample-rate or channel-layout change starts a new format epoch (and a
+    // new analysis generation); reactivating with the same format keeps the analysis and marks a break instead.
+    void configure(double sampleRate, const ChannelLayout &layout, uint32_t maxBlockFrames);
+    // Mono or stereo.
+    void configure(double sampleRate, uint32_t channels, uint32_t maxBlockFrames) {
+        configure(sampleRate, ChannelLayout::standard(channels), maxBlockFrames);
+    }
     void setActive(bool active);
     void setOffline(bool offline);
     // Any thread.
@@ -120,8 +152,13 @@ private:
     struct Ack {
         uint32_t id, code, outcome, generation, measurement;
     };
+    struct SpatialAck {
+        uint32_t revision, outcome, generation;
+        uint64_t hash, frames;
+    };
 
     uint32_t effectiveState() const noexcept;
+    void growRing(uint32_t channels);
     void queue(uint16_t type, const void *payload, uint32_t length);
     void queueHello();
     void queueStatus(uint64_t nowNs);
@@ -131,7 +168,9 @@ private:
     void sendResult();
     void sendAcks();
     void runCommands();
-    bool startGeneration(double sampleRate, uint32_t channels, uint32_t epoch);
+    void runSpatial();
+    void applySpatial(const uint8_t *bytes, uint32_t length);
+    bool startGeneration(double sampleRate, uint32_t channels, uint64_t roles, uint32_t epoch);
 
     const uint32_t format_;
     uint8_t sessionId_[16];
@@ -143,13 +182,14 @@ private:
     uint32_t identityFlags_ = 0;
     std::string sourceName_, trackName_, channelID_;
     double sampleRate_ = 0;
-    uint32_t channels_ = 0;
+    ChannelLayout layout_;
     uint32_t maxBlockFrames_ = 0;
     bool everActive_ = false;
     // Epoch (high 32 bits) and channel count (low 32) in one word, so the audio thread never pairs an epoch with
     // another epoch's channel count.
     std::atomic<uint64_t> formatWord_{0};
     std::atomic<double> rtSampleRate_{0};
+    std::atomic<uint64_t> rtRoles_{0};          // ChannelLayout::packedRoles of the configured layout
     std::atomic<bool> active_{false};
     std::atomic<bool> offline_{false};
     std::atomic<bool> bypassed_{false};
@@ -158,8 +198,9 @@ private:
     std::atomic<bool> identityChanged_{false};  // a new identity must reach Auraliscope in a new HELLO
     std::atomic<bool> focusRequested_{false};   // "Show in Auraliscope", sent once connected
 
-    // Audio thread state.
-    RecordRing ring_;
+    // Audio thread state. The ring grows with the channel count (configure, while the host is not processing and
+    // the analysis thread is held off it); the sender and UI threads read its fill level under `configLock_`.
+    std::unique_ptr<RecordRing> ring_;
     uint64_t position_ = 0;
     uint32_t reasons_ = ABR_AUDIO_STREAM_START;  // pending for the next captured block
     uint32_t idleMs_ = 0;
@@ -179,6 +220,8 @@ private:
     AbrAnalyzer *analyzer_ = nullptr;
     uint32_t analyzerEpoch_ = 0;
     uint32_t analyzerChannels_ = 0;
+    uint64_t analyzerRoles_ = 0;
+    double analyzerRate_ = 0;
     bool freshGeneration_ = false;  // no audio analysed yet in this generation: nothing to break from
     bool forceResult_ = false;      // state changed without a tick (command, new generation): send it anyway
     uint32_t encodedSubscription_ = 0;
@@ -201,21 +244,39 @@ private:
     std::vector<Command> commands_;              // reserved up front; bounded
     std::vector<Ack> acks_;
     // The newest RESULT, encoded by the analysis thread for the sender: replaced while unsent, so a slow receiver
-    // gets the latest state, and the columns it has not had are carried again until one is sent.
+    // gets the latest state, and the columns (and the observation frame) it has not had are carried again until one
+    // is sent.
     std::mutex mailboxLock_;
     std::unique_ptr<uint8_t[]> mailbox_;
     uint32_t mailboxBytes_ = 0;
     uint32_t mailboxSubscription_ = 0;
     uint32_t mailboxGeneration_ = 0;
-    uint64_t mailboxSpectrogram_ = 0, mailboxWaveform_ = 0;
-    // Columns delivered to the current subscription (serials of `sentGeneration_`), under `mailboxLock_`.
+    uint64_t mailboxSpectrogram_ = 0, mailboxWaveform_ = 0, mailboxObservations_ = 0;
+    // Columns delivered to the current subscription (serials of `sentGeneration_`), and the observation frame it holds
+    // (0: none), under `mailboxLock_`.
     uint32_t sentSubscription_ = 0, sentGeneration_ = 0;
-    uint64_t sentSpectrogram_ = 0, sentWaveform_ = 0;
+    uint64_t sentSpectrogram_ = 0, sentWaveform_ = 0, sentObservations_ = 0;
+    // The display's spatial geometry (SPATIAL_CONFIG): kept by the sender thread as it arrives, applied by the analysis
+    // thread at its next pass and to every later generation, its outcome acknowledged by the sender; a disconnection
+    // asks for the standard layout again. Under `spatialLock_` (the applied copy: analysis thread only).
+    std::mutex spatialLock_;
+    uint8_t spatialPending_[ABR_SPATIAL_CONFIG_MAX];
+    uint32_t spatialPendingBytes_ = 0;
+    bool spatialPendingReset_ = false;
+    SpatialAck spatialAcks_[4];
+    uint32_t spatialAckCount_ = 0;
+    uint8_t spatialApplied_[ABR_SPATIAL_CONFIG_MAX];
+    uint32_t spatialAppliedBytes_ = 0;
 
     // Sender thread state (the atomics are also read by other threads).
     std::atomic<uint32_t> subscription_{0};     // 0: not sending results
     std::atomic<uint32_t> spectrogramMode_{0};  // the subscriber's waterfall analysis (ABR_SUBSCRIBE_SPECTROGRAM)
+    std::atomic<uint32_t> spectrumChannels_{0}; // what its spectrum sums (ABR_SUBSCRIBE_SPECTRUM)
+    std::atomic<uint32_t> spatialCoherence_{0}; // its spatial field's coherence threshold, ‰ (ABR_SUBSCRIBE_COHERENCE)
     std::atomic<bool> connected_{false};
+    // The display keeps a RESULT's observations until one carries new ones (WELCOME, ABR_DISPLAY_KEEPS_OBSERVATIONS):
+    // each frame is sent to it once. Otherwise (a display of build 98) every result carries them.
+    std::atomic<bool> displayKeepsObservations_{false};
     std::atomic<bool> receiverTooOld_{false};
     std::atomic<bool> receiverTooNew_{false};
     std::atomic<uint64_t> resultsSent_{0};
@@ -238,6 +299,9 @@ void registerCore(BridgeCore *core);
 void unregisterCore(BridgeCore *core);
 void registerAnalysis(BridgeCore *core);
 void unregisterAnalysis(BridgeCore *core);
+// Runs `work` while the analysis thread is between passes (it waits for a pass in progress): no instance is being
+// analysed meanwhile. Not from the analysis thread.
+void withAnalysisHeld(const std::function<void()> &work);
 
 // Identities claimed by live instances of this binary in this process (see BridgeCore::restoreState).
 // `claimIdentity` returns false, and changes nothing, when another instance holds `id`.

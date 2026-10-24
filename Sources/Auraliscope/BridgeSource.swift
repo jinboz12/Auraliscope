@@ -36,6 +36,11 @@ struct BridgeSource: Equatable {
     let formatEpoch: UInt32
     let sampleRate: Double
     let channels: Int
+    /// Each channel's speaker role (`Role`), in the bus's order, as the plugin reported it (an immersive bus); empty
+    /// for mono and stereo from a plugin before build 77.
+    let reportedRoles: [Int]
+    /// The layout as the plugin names it ("Stereo", "5.1", "7.1.4"); empty from a plugin before build 77.
+    let layoutName: String
     let secondsSinceMessage: Double
     /// Since the host last gave the insert live audio (the plugin's own clock, aged by the report's delay); nil
     /// before it ever did.
@@ -64,6 +69,13 @@ struct BridgeSource: Equatable {
     let acksReceived: UInt32
     let lastAck: BridgeAck
     let capabilities: UInt32
+    /// The newest spatial geometry sent to it (its revision), and its newest answer (SPATIAL_ACK): which revision, the
+    /// hash it applied, and what came of it (ABR_SPATIAL_*); nil before any.
+    let spatialRevisionSent: UInt32
+    struct SpatialAnswer: Equatable { var revision: UInt32; var hash: UInt64; var outcome: UInt32 }
+    let spatialAck: SpatialAnswer?
+    /// Whether it applies the display's speaker geometry (build 98 and later).
+    var takesSpatialGeometry: Bool { capabilities & UInt32(ABR_CAPABILITY_SPATIAL_CONFIG) != 0 }
     /// Grows each time the user clicks "Show in Auraliscope Labs" in this instance's window.
     let focusRequests: UInt32
     /// Unique per accepted connection: changes when the same live insert reconnects.
@@ -111,8 +123,22 @@ struct BridgeSource: Equatable {
         return parts.joined(separator: " · ")
     }
 
-    /// A format the analysis can be configured for: mono or stereo at a real sample rate.
-    var hasUsableFormat: Bool { formatEpoch > 0 && (1...2).contains(channels) && sampleRate >= 8_000 }
+    /// Each channel's speaker role: as reported, or L for mono and L, R for stereo; nil when the plugin measures no
+    /// layout the display can show.
+    var roles: [Int]? {
+        if reportedRoles.isEmpty { return channels == 1 ? [Role.left] : channels == 2 ? [Role.left, Role.right] : nil }
+        return reportedRoles.count == channels && StreamAnalyzer.validRoles(reportedRoles) ? reportedRoles : nil
+    }
+
+    /// An immersive bus (positional channels beyond L and R): the smallest Immersive format holding every one of its
+    /// speakers, which the displays draw (a 7.0.4 bus is drawn in 7.1.4 with LFE off). nil for mono and stereo.
+    var immersiveLayout: SpeakerLayout? {
+        guard let roles, roles.count > 2 else { return nil }
+        return SpeakerLayout.containing(roles)
+    }
+
+    /// A format the analysis can be configured for: a layout it measures at a real sample rate.
+    var hasUsableFormat: Bool { formatEpoch > 0 && roles != nil && sampleRate >= 8_000 }
 
     static func hex(_ bytes: [UInt8]) -> String { bytes.map { String(format: "%02X", $0) }.joined() }
 
@@ -147,6 +173,8 @@ struct BridgeSource: Equatable {
         formatEpoch = info.format_epoch
         sampleRate = info.sample_rate
         channels = Int(info.channels)
+        reportedRoles = withUnsafeBytes(of: info.roles) { Array($0.prefix(Int(min(info.role_count, 16)))).map(Int.init) }
+        layoutName = Self.string(info.layout_name)
         secondsSinceMessage = info.seconds_since_message
         secondsSinceAudio = info.plugin_seconds_since_audio < 0 ? nil : info.plugin_seconds_since_audio + info.seconds_since_message
         secondsSinceResult = info.seconds_since_result < 0 ? nil : info.seconds_since_result
@@ -166,6 +194,9 @@ struct BridgeSource: Equatable {
         lastAck = BridgeAck(id: info.last_ack_id, command: info.last_ack_command, outcome: info.last_ack_outcome,
                             generation: info.last_ack_generation, measurement: info.last_ack_measurement)
         capabilities = info.capabilities
+        spatialRevisionSent = info.spatial_revision_sent
+        spatialAck = info.spatial_acks_received > 0
+            ? SpatialAnswer(revision: info.spatial_ack_revision, hash: info.spatial_ack_hash, outcome: info.spatial_ack_outcome) : nil
         focusRequests = info.focus_requests
         connectionSerial = info.connection_serial
     }
@@ -302,6 +333,35 @@ final class BridgeReceiver {
         abr_server_set_spectrogram(server, mode.rawValue)
     }
     private var spectrogram = SpectrogramMode.classic
+
+    /// Whether every subscription's spectrum sums every channel of the bus (the display shows Immersive) or L and R;
+    /// a change reaches the subscribed instance at once.
+    func setSpectrum(everyChannel: Bool) {
+        guard everyChannel != spectrumEveryChannel else { return }
+        spectrumEveryChannel = everyChannel
+        abr_server_set_spectrum(server, everyChannel ? 1 : 0)
+    }
+    private var spectrumEveryChannel = false
+
+    /// The spatial field's coherence threshold every subscription asks for (0 to 1); a change reaches the subscribed
+    /// instance at once.
+    func setCoherence(_ threshold: Float) {
+        let thousandths = UInt32(max(50, min(950, (threshold * 1000).rounded())))
+        guard thousandths != coherence else { return }
+        coherence = thousandths
+        abr_server_set_coherence(server, thousandths)
+    }
+    private var coherence: UInt32 = 0
+
+    /// The speaker geometry every subscription is sent (SPATIAL_CONFIG), to plugins that take it; a change reaches the
+    /// subscribed instance at once. Its results carry the geometry's hash once applied.
+    func setSpatial(_ geometry: SpatialGeometry) {
+        guard geometry != spatial else { return }
+        spatial = geometry
+        let bytes = SpatialConfigWire.encode(geometry)
+        bytes.withUnsafeBufferPointer { abr_server_set_spatial_config(server, $0.baseAddress, UInt32($0.count), geometry.revision) }
+    }
+    private var spatial: SpatialGeometry?
 
     /// Delivers the selected instance's results into `inbox` until `detach`. The inbox must outlive the attachment.
     func attach(_ inbox: ResultInbox) {

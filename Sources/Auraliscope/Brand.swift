@@ -45,12 +45,9 @@ struct BrandLogo: View {
     }
 }
 
-/// The name this build shows: the Auraliscope LABS prototype, installed beside Auraliscope.
+/// The name this build shows: Auraliscope (the 2.0 beta, with the DAW Bridge).
 enum AppName {
-    static let labsSuffix = "LABS"
-    static let full = "Auraliscope " + labsSuffix
-    /// Shown at the foot of the main window (and of the Bridge plugin's window).
-    static let prototypeNote = "Prototype experiment only"
+    static let full = "Auraliscope"
 }
 
 /// Logo plus "AURALISCOPE" in the heading voice (SF Pro Expanded, semibold, uppercase, tracked). Every window
@@ -67,11 +64,9 @@ struct BrandMark: View {
             // Title case, as the app's name appears everywhere else on the system. Lowercase letters read
             // smaller than capitals at one point size, so the name is set a little larger, with the light
             // tracking that mixed case wants (the wide spacing suited the former all-caps wordmark).
-            // This build is the Auraliscope LABS prototype: "LABS" in ochre, as on the Bridge plugin's badge.
-            (Text(verbatim: "Auraliscope").foregroundColor(color)
-             + Text(verbatim: " " + AppName.labsSuffix).foregroundColor(Theme.ochre))
-                .font(.system(size: size * 1.18, weight: .semibold).width(.expanded))
-                .tracking(Tracking.wordmark * size / 13)
+            Text(verbatim: "Auraliscope").foregroundColor(color)
+                .font(.wordmark(size * 1.18))
+                .tracking(Tracking.wordmark(size: size * 1.18))
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)

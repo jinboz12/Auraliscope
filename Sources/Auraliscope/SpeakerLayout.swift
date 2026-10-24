@@ -17,7 +17,8 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
     case s70 = "7.0", s71 = "7.1", s712 = "7.1.2", s714 = "7.1.4", s716 = "7.1.6"
     case s914 = "9.1.4", s916 = "9.1.6"
 
-    static let standard = SpeakerLayout.s512
+    /// Until a format is chosen (and stored as "speakerLayout"), Immersive shows the largest one.
+    static let standard = SpeakerLayout.s916
     var id: String { rawValue }
     var name: String { rawValue }
 
@@ -47,6 +48,43 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The same roles in film order, as Pro Tools and other film-style hosts send them: L C R, the wides, the (side)
+    /// surrounds, the rear surrounds, then the LFE, then the heights as in SMPTE order (5.1: L C R Ls Rs LFE).
+    var filmRoles: [Int] {
+        let front = [Role.left, Role.center, Role.right, Role.leftWide, Role.rightWide, Role.leftSurround, Role.rightSurround,
+                     Role.leftRearSurround, Role.rightRearSurround, Role.lfe].filter(contains)
+        return front + roles.filter { !front.contains($0) }
+    }
+
+    /// The same roles in VST3 order, as Nuendo, Cubase and other VST3 hosts send a bus: by the VST3 speaker's bit, so
+    /// L R C LFE, then the rear surrounds of a 7.x or 9.x bed (VST3's Ls Rs; a 5.x bed's surrounds), its side surrounds
+    /// (Sl Sr), the heights as top front, top rear, top middle (Tsl Tsr), and the wides last (9.1.6: L R C LFE Lrs Rrs
+    /// Lss Rss Ltf Rtf Ltr Rtr Ltm Rtm Lw Rw). The Bridge plugin maps the same speakers (`layoutFor` in BridgeVST3.cpp).
+    var vst3Roles: [Int] {
+        let rear = contains(Role.leftRearSurround)
+        func bit(_ role: Int) -> Int {
+            switch role {
+            case Role.left: return 0
+            case Role.right: return 1
+            case Role.center: return 2
+            case Role.lfe: return 3
+            case Role.leftSurround: return rear ? 9 : 4
+            case Role.rightSurround: return rear ? 10 : 5
+            case Role.leftRearSurround: return 4
+            case Role.rightRearSurround: return 5
+            case Role.leftTopFront: return 12
+            case Role.rightTopFront: return 14
+            case Role.leftTopRear: return 15
+            case Role.rightTopRear: return 17
+            case Role.leftTopMiddle: return 24
+            case Role.rightTopMiddle: return 25
+            case Role.leftWide: return 59
+            default: return 60  // Rw
+            }
+        }
+        return roles.sorted { bit($0) < bit($1) }
+    }
+
     var channelCount: Int { roles.count }
     var hasLFE: Bool { roles.contains(Role.lfe) }
     var heightCount: Int { speakers.filter { $0.group == .height }.count }
@@ -54,6 +92,12 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
     private var sideAzimuth: Double { roles.contains(Role.leftRearSurround) ? 90 : 110 }
 
     func contains(_ role: Int) -> Bool { roles.contains(role) }
+
+    /// The layout with the fewest channels that holds every one of `roles` (9.1.6 holds all 16), the first in
+    /// `allCases` order among equals; nil only for roles outside `Role`.
+    static func containing(_ roles: [Int]) -> SpeakerLayout? {
+        allCases.filter { layout in roles.allSatisfy(layout.contains) }.min { $0.channelCount < $1.channelCount }
+    }
 
     /// Display order for meters and waveform lanes: front (with wides), LFE, surrounds, then heights.
     var speakers: [Speaker] { Self.speakerTable[self]! }
@@ -75,26 +119,32 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
         [SpeakerGroup.front, .lfe, .surround, .height].filter { group in speakers.contains { $0.group == group } }
     }
 
+    /// Positions come from the analysis' own table (`SpeakerGeometry`), so the spatial field and the speakers drawn
+    /// around it agree.
     private static func speaker(_ role: Int, side: Double) -> Speaker {
+        let azimuth = SpeakerGeometry.azimuth(role: role, sidesAtNinety: side == 90)
         switch role {
-        case Role.left: return Speaker(role: role, name: "L", group: .front, azimuth: -30)
-        case Role.right: return Speaker(role: role, name: "R", group: .front, azimuth: 30)
-        case Role.center: return Speaker(role: role, name: "C", group: .front, azimuth: 0)
+        case Role.left: return Speaker(role: role, name: "L", group: .front, azimuth: azimuth)
+        case Role.right: return Speaker(role: role, name: "R", group: .front, azimuth: azimuth)
+        case Role.center: return Speaker(role: role, name: "C", group: .front, azimuth: azimuth)
         case Role.lfe: return Speaker(role: role, name: "LFE", group: .lfe, azimuth: nil)
-        case Role.leftSurround: return Speaker(role: role, name: side == 90 ? "Lss" : "Ls", group: .surround, azimuth: -side)
-        case Role.rightSurround: return Speaker(role: role, name: side == 90 ? "Rss" : "Rs", group: .surround, azimuth: side)
-        case Role.leftTopFront: return Speaker(role: role, name: "Ltf", group: .height, azimuth: -45)
-        case Role.rightTopFront: return Speaker(role: role, name: "Rtf", group: .height, azimuth: 45)
-        case Role.leftRearSurround: return Speaker(role: role, name: "Lrs", group: .surround, azimuth: -150)
-        case Role.rightRearSurround: return Speaker(role: role, name: "Rrs", group: .surround, azimuth: 150)
-        case Role.leftWide: return Speaker(role: role, name: "Lw", group: .front, azimuth: -60)
-        case Role.rightWide: return Speaker(role: role, name: "Rw", group: .front, azimuth: 60)
-        case Role.leftTopMiddle: return Speaker(role: role, name: "Ltm", group: .height, azimuth: -90)
-        case Role.rightTopMiddle: return Speaker(role: role, name: "Rtm", group: .height, azimuth: 90)
-        case Role.leftTopRear: return Speaker(role: role, name: "Ltr", group: .height, azimuth: -135)
-        default: return Speaker(role: role, name: "Rtr", group: .height, azimuth: 135)
+        case Role.leftSurround: return Speaker(role: role, name: side == 90 ? "Lss" : "Ls", group: .surround, azimuth: azimuth)
+        case Role.rightSurround: return Speaker(role: role, name: side == 90 ? "Rss" : "Rs", group: .surround, azimuth: azimuth)
+        case Role.leftTopFront: return Speaker(role: role, name: "Ltf", group: .height, azimuth: azimuth)
+        case Role.rightTopFront: return Speaker(role: role, name: "Rtf", group: .height, azimuth: azimuth)
+        case Role.leftRearSurround: return Speaker(role: role, name: "Lrs", group: .surround, azimuth: azimuth)
+        case Role.rightRearSurround: return Speaker(role: role, name: "Rrs", group: .surround, azimuth: azimuth)
+        case Role.leftWide: return Speaker(role: role, name: "Lw", group: .front, azimuth: azimuth)
+        case Role.rightWide: return Speaker(role: role, name: "Rw", group: .front, azimuth: azimuth)
+        case Role.leftTopMiddle: return Speaker(role: role, name: "Ltm", group: .height, azimuth: azimuth)
+        case Role.rightTopMiddle: return Speaker(role: role, name: "Rtm", group: .height, azimuth: azimuth)
+        case Role.leftTopRear: return Speaker(role: role, name: "Ltr", group: .height, azimuth: azimuth)
+        default: return Speaker(role: role, name: "Rtr", group: .height, azimuth: azimuth)
         }
     }
+
+    /// Whether this layout's side surrounds sit at ±90° (`SpeakerGeometry`).
+    var sidesAtNinety: Bool { sideAzimuth == 90 }
 
     /// Name of a role inside this layout (used by routing and labels).
     func name(of role: Int) -> String { Self.speaker(role, side: sideAzimuth).name }

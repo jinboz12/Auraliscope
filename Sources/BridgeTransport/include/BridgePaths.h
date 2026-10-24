@@ -3,7 +3,7 @@
 
 // Where the application listens, shared by both ends so they can never disagree.
 //
-// `~/Library/Application Support/Auraliscope Bridge/bridge-v1.sock`, in the real home folder of the current user
+// `~/Library/Application Support/Auraliscope Bridge/bridge-v2.sock`, in the real home folder of the current user
 // (not a sandbox container's HOME). The folder is created 0700 by the application, and both ends check their
 // peer's user ID, so another account on the Mac can neither connect nor listen in its place.
 //
@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #define ABR_SOCKET_FOLDER "/Library/Application Support/Auraliscope Bridge"
-#define ABR_SOCKET_NAME "bridge-v1.sock"
+#define ABR_SOCKET_NAME "bridge-v2.sock"
 
 // Writes the folder to `buffer`; returns 0 on success. Allocation-free except inside getpwuid_r's own buffer.
 static inline int abr_socket_folder(char *buffer, size_t size) {

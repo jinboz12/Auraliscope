@@ -1,7 +1,8 @@
 // Auraliscope Bridge as a VST3 audio effect: a thin wrapper over BridgeCore.
 //
 // One component (processor and controller together, SingleComponentEffect), one audio input and one output bus
-// with the same arrangement, mono or stereo. The only parameter is the host-visible bypass.
+// with the same arrangement: mono, stereo, or an immersive bed from 3.0 to 9.1.6 (see `layoutFor`). The only
+// parameter is the host-visible bypass.
 //
 //   bypass     kIsBypass parameter: audio still passes (the plugin is transparent), transmission stops
 //   offline    ProcessSetup::processMode == kOffline: audio passes, nothing is transmitted
@@ -39,7 +40,57 @@ using namespace Steinberg::Vst;
 namespace {
 
 constexpr ParamID kBypassID = 0;
-const FUID kBridgeUID(0x03A87F06, 0x69544B23, 0xB85B74F8, 0x248F8E42);
+// A test build to load next to an installed Bridge (build-dev-vst3.sh) has a class ID and name of its own.
+#ifndef ABR_VST3_UID
+#define ABR_VST3_UID 0x03A87F06, 0x69544B23, 0xB85B74F8, 0x248F8E42
+#endif
+#ifndef ABR_VST3_NAME
+#define ABR_VST3_NAME "Auraliscope Bridge"
+#endif
+const FUID kBridgeUID(ABR_VST3_UID);
+
+// The arrangements the Bridge measures, as Auraliscope speaker roles in the bus's channel order (VST3 orders a
+// bus's channels by speaker bit, lowest first): mono, stereo, and every bed with L and R whose speakers all have a
+// role: centre, LFE, surrounds, wides and up to six heights (3.0 to 9.1.6, with or without LFE). In a bed that has
+// side speakers (Sl Sr: 7.x, 9.x) its Ls Rs are the rear pair; a .2 bed's one height pair, top front or top side, is
+// Auraliscope's x.x.2 pair; top side beside other heights is top middle. Speakers without a role (Lc Rc, Cs, Tc, Tfc,
+// Trc, Lfe2, bottom, proximity, Ambisonics) make the arrangement unsupported: measuring only some of its channels
+// would misstate its loudness, so the host keeps the plugin on an arrangement it can measure.
+bool layoutFor(SpeakerArrangement arrangement, abr::ChannelLayout &layout) {
+    if (arrangement == SpeakerArr::kMono) { layout = abr::ChannelLayout::mono(); return true; }
+    if (arrangement == SpeakerArr::kStereo) { layout = abr::ChannelLayout::stereo(); return true; }
+    const int32 count = SpeakerArr::getChannelCount(arrangement);
+    if (count < 3 || count > int32(ABR_MAX_CHANNELS)) return false;
+    const bool sides = (arrangement & (kSpeakerSl | kSpeakerSr)) != 0;
+    const bool upper = (arrangement & (kSpeakerTfl | kSpeakerTfr | kSpeakerTrl | kSpeakerTrr)) != 0;
+    uint8_t roles[ABR_MAX_CHANNELS] = {};
+    for (int32 index = 0; index < count; ++index) {
+        int role = -1;
+        switch (SpeakerArr::getSpeaker(arrangement, index)) {
+        case kSpeakerL: role = ABR_ROLE_L; break;
+        case kSpeakerR: role = ABR_ROLE_R; break;
+        case kSpeakerC: role = ABR_ROLE_C; break;
+        case kSpeakerLfe: role = ABR_ROLE_LFE; break;
+        case kSpeakerLs: role = sides ? ABR_ROLE_LRS : ABR_ROLE_LS; break;
+        case kSpeakerRs: role = sides ? ABR_ROLE_RRS : ABR_ROLE_RS; break;
+        case kSpeakerSl: role = ABR_ROLE_LS; break;
+        case kSpeakerSr: role = ABR_ROLE_RS; break;
+        case kSpeakerLw: role = ABR_ROLE_LW; break;
+        case kSpeakerRw: role = ABR_ROLE_RW; break;
+        case kSpeakerTfl: role = ABR_ROLE_LTF; break;
+        case kSpeakerTfr: role = ABR_ROLE_RTF; break;
+        case kSpeakerTsl: role = upper ? ABR_ROLE_LTM : ABR_ROLE_LTF; break;
+        case kSpeakerTsr: role = upper ? ABR_ROLE_RTM : ABR_ROLE_RTF; break;
+        case kSpeakerTrl: role = ABR_ROLE_LTR; break;
+        case kSpeakerTrr: role = ABR_ROLE_RTR; break;
+        default: break;
+        }
+        if (role < 0) return false;
+        roles[index] = uint8_t(role);
+    }
+    layout = abr::ChannelLayout::speakers(roles, uint32_t(count));
+    return layout.valid();
+}
 
 // The view keeps the core alive through its own reference, and reaches the component only through `nameEdited`,
 // which holds a counted reference too: a host that releases the component before the view cannot leave either
@@ -95,15 +146,16 @@ public:
         return kResultOk;
     }
 
-    // Mono or stereo, the same on both sides.
+    // Any arrangement `layoutFor` measures, the same on both sides. Offered a measurable input with another output,
+    // the plugin takes the input's arrangement on both sides and declines, so the host reads that back.
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement *inputs, int32 numIns, SpeakerArrangement *outputs,
                                           int32 numOuts) override {
-        if (numIns != 1 || numOuts != 1 || inputs[0] != outputs[0]
-            || (inputs[0] != SpeakerArr::kMono && inputs[0] != SpeakerArr::kStereo)) return kResultFalse;
+        abr::ChannelLayout layout;
+        if (numIns != 1 || numOuts != 1 || !inputs || !outputs || !layoutFor(inputs[0], layout)) return kResultFalse;
         removeAudioBusses();
         addAudioInput(STR16("Input"), inputs[0]);
-        addAudioOutput(STR16("Output"), outputs[0]);
-        return kResultTrue;
+        addAudioOutput(STR16("Output"), inputs[0]);
+        return inputs[0] == outputs[0] ? kResultTrue : kResultFalse;
     }
 
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
@@ -119,8 +171,10 @@ public:
         if (state) {
             SpeakerArrangement arrangement = SpeakerArr::kStereo;
             getBusArrangement(kInput, 0, arrangement);
-            core_->configure(processSetup.sampleRate, uint32(SpeakerArr::getChannelCount(arrangement)),
-                             uint32(processSetup.maxSamplesPerBlock));
+            abr::ChannelLayout layout;
+            if (!layoutFor(arrangement, layout))
+                layout = abr::ChannelLayout::standard(uint32(SpeakerArr::getChannelCount(arrangement)));
+            core_->configure(processSetup.sampleRate, layout, uint32(processSetup.maxSamplesPerBlock));
             core_->setOffline(offline_);
         }
         core_->setActive(state);
@@ -228,6 +282,6 @@ private:
 }  // namespace
 
 BEGIN_FACTORY_DEF("JINBOZ", "", "")
-    DEF_CLASS2(INLINE_UID_FROM_FUID(kBridgeUID), PClassInfo::kManyInstances, kVstAudioEffectClass, "Auraliscope Bridge",
+    DEF_CLASS2(INLINE_UID_FROM_FUID(kBridgeUID), PClassInfo::kManyInstances, kVstAudioEffectClass, ABR_VST3_NAME,
                0, "Fx|Analyzer", ABR_PLUGIN_VERSION, kVstVersionString, BridgeVST3::createInstance)
 END_FACTORY

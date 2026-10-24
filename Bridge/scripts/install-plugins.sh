@@ -5,7 +5,7 @@
 # Then restarts the per-user Audio Unit registrar so hosts and auval see the change without logging out.
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
 vst3_dir="$HOME/Library/Audio/Plug-Ins/VST3"
 au_dir="$HOME/Library/Audio/Plug-Ins/Components"
 if [[ "${1:-}" == "--uninstall" ]]; then

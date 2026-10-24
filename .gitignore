@@ -21,6 +21,9 @@ SoundmeterIcon/soundmeter Exports/*
 # DAW Bridge prototype: fetched SDKs and prototype outputs
 Bridge/ThirdParty/
 experimental-dist/
+output/
+__pycache__/
+*.pyc
 
 # macOS metadata files written on external volumes
 ._*

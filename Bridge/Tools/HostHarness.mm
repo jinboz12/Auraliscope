@@ -5,19 +5,23 @@
 // the instances between live processing, host bypass, offline render, idle (no process calls) and new formats,
 // so the receiving side (Auraliscope Labs or the probe) can be checked against a known sequence.
 //
-//   HostHarness --format vst3|au [--bundle <path.vst3|path.component>] [--channels 1|2] [--rate 48000] [--block 256]
-//               [--instances n] [--copies n] [--name <base>] [--id <32 hex>] [--phases live:4,bypass:2,live:2]
-//               [--editor-snapshot <file.png>] [--editor-seconds s] [--cycles n]
+//   HostHarness --format vst3|au [--bundle <path.vst3|path.component>] [--channels 1|2] [--layout <name>] [--rate 48000]
+//               [--block 256] [--instances n] [--copies n] [--name <base>] [--id <32 hex>]
+//               [--phases live:4,bypass:2,live:2] [--editor-snapshot <file.png>] [--editor-seconds s] [--cycles n]
+//   HostHarness --format vst3 --bundle <path.vst3> --check-arrangements 1
 //
+// --layout (VST3): the bus's speaker arrangement by name (see `kLayouts`: 5.1, 7.1, 7.1.2, 7.1.4, 9.1.6…) instead of
+// mono or stereo. --check-arrangements: offers the plugin every arrangement of `kLayouts` and checks which it takes.
 // Phases: live:s, bypass:s, offline:s, idle:s, rate=<hz>:s (reconfigure, then live), ch=<n>:s (likewise),
-// reidentify:s (every instance is given its own state back with a new identity, as a host restoring a project
-// into already-running plugins does; each reconnects under the same session, then live).
+// layout=<name>:s (likewise), reidentify:s (every instance is given its own state back with a new identity, as a host
+// restoring a project into already-running plugins does; each reconnects under the same session, then live).
 // --copies n: after the instances, n more restored from instance 1's saved state while it is live, as a host
 // duplicating a track does.
 // --cycles n: the whole run (load, play the phases, open and close the editor, unload) n times over in one
 // process, reporting its footprint, threads and open files after each unload, so leaks show as growth.
-// Instance i plays L = 0.5·2⁻ⁱ·sin(2π·997·n/fs) and R = 0.25·2⁻ⁱ·sin(2π·1499·n/fs), n counting live frames
-// only (bypassed, offline and idle blocks do not advance it), so its stream position equals n.
+// Instance i plays, on channel c, 0.5/(c+1)·2⁻ⁱ·sin(2π·(997 + 502c)·n/fs): L = 0.5 at 997 Hz, R = 0.25 at 1499 Hz,
+// the third channel 0.167 at 2001 Hz and so on, n counting live frames only (bypassed, offline and idle blocks do not
+// advance it), so its stream position equals n.
 
 #import <AudioToolbox/AudioToolbox.h>
 #import <AudioUnit/AUCocoaUIView.h>
@@ -57,7 +61,8 @@ void *moduleHandle = nullptr;
 namespace {
 
 struct Options {
-    std::string format = "vst3", bundle, name = "Harness", id, snapshot;
+    std::string format = "vst3", bundle, name = "Harness", id, snapshot, layout;
+    bool checkArrangements = false;
     uint32_t channels = 2, block = 256, instances = 1, copies = 0, cycles = 1;
     double rate = 48000, editorSeconds = 2;
     std::string phases = "live:5";
@@ -82,13 +87,46 @@ struct Phase {
     double seconds = 1;
     double rate = 0;        // > 0: reconfigure to this rate first
     uint32_t channels = 0;  // > 0: reconfigure to this channel count first
+    std::string layout;     // not empty: reconfigure to this speaker arrangement first
     std::string label;
 };
 
+constexpr uint32_t kMaxChannels = 16;
+
 float signal(uint32_t instance, uint32_t channel, uint64_t n, double rate) {
     const double scale = std::ldexp(1.0, -int(instance));
-    const double frequency = channel == 0 ? 997.0 : 1499.0, amplitude = (channel == 0 ? 0.5 : 0.25) * scale;
+    const double frequency = 997.0 + 502.0 * channel, amplitude = 0.5 / (channel + 1) * scale;
     return float(amplitude * std::sin(2 * M_PI * frequency * double(n) / rate));
+}
+
+// VST3 speaker arrangements by name: those Auraliscope Bridge measures (`accepted`), and some it must decline
+// because they have speakers it has no role for (measuring only some channels would misstate the loudness).
+struct NamedLayout {
+    const char *name;
+    Vst::SpeakerArrangement arrangement;
+    bool accepted;
+};
+const NamedLayout kLayouts[] = {
+    {"mono", Vst::SpeakerArr::kMono, true}, {"stereo", Vst::SpeakerArr::kStereo, true},
+    {"3.0", Vst::SpeakerArr::k30Cine, true}, {"4.0", Vst::SpeakerArr::k40Music, true}, {"5.0", Vst::SpeakerArr::k50, true},
+    {"5.1", Vst::SpeakerArr::k51, true}, {"6.0", Vst::SpeakerArr::k60Music, true}, {"7.0", Vst::SpeakerArr::k70Music, true},
+    {"7.1", Vst::SpeakerArr::k71Music, true}, {"5.0.2", Vst::SpeakerArr::k50_2, true}, {"5.1.2", Vst::SpeakerArr::k51_2, true},
+    {"5.1.2ts", Vst::SpeakerArr::k51_2_TS, true}, {"5.0.4", Vst::SpeakerArr::k50_4, true}, {"5.1.4", Vst::SpeakerArr::k51_4, true},
+    {"4.0.4", Vst::SpeakerArr::k40_4, true}, {"7.0.2", Vst::SpeakerArr::k70_2, true}, {"7.1.2", Vst::SpeakerArr::k71_2, true},
+    {"7.1.2tf", Vst::SpeakerArr::k71_2_TF, true}, {"7.0.4", Vst::SpeakerArr::k70_4, true}, {"7.1.4", Vst::SpeakerArr::k71_4, true},
+    {"7.0.6", Vst::SpeakerArr::k70_6, true}, {"7.1.6", Vst::SpeakerArr::k71_6, true}, {"9.0.4", Vst::SpeakerArr::k90_4_W, true},
+    {"9.1.4", Vst::SpeakerArr::k91_4_W, true}, {"9.0.6", Vst::SpeakerArr::k90_6_W, true}, {"9.1.6", Vst::SpeakerArr::k91_6_W, true},
+    {"lcrs", Vst::SpeakerArr::k40Cine, false}, {"6.1cine", Vst::SpeakerArr::k61Cine, false},
+    {"7.1cine", Vst::SpeakerArr::k71Cine, false}, {"7.1fullrear", Vst::SpeakerArr::k71CineFullRear, false},
+    {"auro11.1", Vst::SpeakerArr::k111, false}, {"7.2.3", Vst::SpeakerArr::k72_3, false},
+    {"9.1.4itu", Vst::SpeakerArr::k91_4, false}, {"22.2", Vst::SpeakerArr::k222, false},
+    {"ambi1", Vst::SpeakerArr::kAmbi1stOrderACN, false}, {"ambi3", Vst::SpeakerArr::kAmbi3rdOrderACN, false},
+    {"surround-pair", Vst::SpeakerArr::kStereoSurround, false},
+};
+
+const NamedLayout *namedLayout(const std::string &name) {
+    for (const NamedLayout &layout : kLayouts) if (name == layout.name) return &layout;
+    return nullptr;
 }
 
 std::string stateText(const Options &options, uint32_t instance) {
@@ -103,6 +141,8 @@ class Instance {
 public:
     virtual ~Instance() = default;
     virtual bool configure(double rate, uint32_t channels, uint32_t block) = 0;
+    // A named speaker arrangement for the next configure (VST3 only); 0 for mono or stereo by channel count.
+    virtual void setArrangement(uint64_t arrangement) {}
     virtual void setMode(Mode mode) = 0;
     // Processes `in` into `out` (planar). Returns false on a host-side error.
     virtual bool process(float *const *in, float *const *out, uint32_t channels, uint32_t frames, uint64_t sampleTime) = 0;
@@ -170,9 +210,22 @@ public:
         component_->setState(&stream);
     }
 
+    void setArrangement(uint64_t arrangement) override { arrangement_ = arrangement; }
+
+    // Offers `in`/`out`; returns whether the plugin took them, and what it reports afterwards.
+    bool offer(Vst::SpeakerArrangement in, Vst::SpeakerArrangement out, Vst::SpeakerArrangement &nowIn,
+               Vst::SpeakerArrangement &nowOut) {
+        if (active_) { processor_->setProcessing(false); component_->setActive(false); active_ = false; }
+        const bool taken = processor_->setBusArrangements(&in, 1, &out, 1) == kResultTrue;
+        processor_->getBusArrangement(Vst::kInput, 0, nowIn);
+        processor_->getBusArrangement(Vst::kOutput, 0, nowOut);
+        return taken;
+    }
+
     bool configure(double rate, uint32_t channels, uint32_t block) override {
         if (active_) { processor_->setProcessing(false); component_->setActive(false); active_ = false; }
-        Vst::SpeakerArrangement arrangement = channels == 1 ? Vst::SpeakerArr::kMono : Vst::SpeakerArr::kStereo;
+        Vst::SpeakerArrangement arrangement = arrangement_ ? arrangement_
+            : channels == 1 ? Vst::SpeakerArr::kMono : Vst::SpeakerArr::kStereo;
         if (processor_->setBusArrangements(&arrangement, 1, &arrangement, 1) != kResultTrue) return false;
         component_->activateBus(Vst::kAudio, Vst::kInput, 0, true);
         component_->activateBus(Vst::kAudio, Vst::kOutput, 0, true);
@@ -248,8 +301,35 @@ private:
     bool active_ = false, offline_ = false, bypass_ = false, pendingBypass_ = false;
     double rate_ = 48000;
     uint32_t channels_ = 2, block_ = 256;
+    Vst::SpeakerArrangement arrangement_ = 0;
 };
 VST3::Hosting::Module::Ptr VST3Instance::module;
+
+// Offers the plugin every arrangement of `kLayouts`, in and out alike, then one input with another output; prints
+// what it took and what it reports. Returns the number of unexpected answers.
+int checkArrangements(const Options &options) {
+    VST3Instance instance(options, 0);
+    if (!instance.ok()) return 1;
+    int unexpected = 0;
+    for (const NamedLayout &layout : kLayouts) {
+        Vst::SpeakerArrangement in = 0, out = 0;
+        const bool taken = instance.offer(layout.arrangement, layout.arrangement, in, out);
+        const bool ok = taken == layout.accepted && (!taken || (in == layout.arrangement && out == layout.arrangement));
+        if (!ok) ++unexpected;
+        std::printf("[harness] arrangement %-13s %2d ch: %-8s (expected %s)%s\n", layout.name,
+                    Vst::SpeakerArr::getChannelCount(layout.arrangement), taken ? "taken" : "declined",
+                    layout.accepted ? "taken" : "declined", ok ? "" : "  FAIL");
+    }
+    // A measurable input with another output: declined, the buses offered as input = output = that input.
+    Vst::SpeakerArrangement in = 0, out = 0;
+    const bool taken = instance.offer(Vst::SpeakerArr::k71_4, Vst::SpeakerArr::kStereo, in, out);
+    const bool ok = !taken && in == Vst::SpeakerArr::k71_4 && out == Vst::SpeakerArr::k71_4;
+    if (!ok) ++unexpected;
+    std::printf("[harness] 7.1.4 in, stereo out: %s, now %d in / %d out%s\n", taken ? "taken" : "declined",
+                Vst::SpeakerArr::getChannelCount(in), Vst::SpeakerArr::getChannelCount(out), ok ? "" : "  FAIL");
+    std::printf("[harness] arrangements: %s (%d unexpected)\n", unexpected ? "FAIL" : "PASS", unexpected);
+    return unexpected;
+}
 
 // ---- AU -------------------------------------------------------------------------------------------------------
 
@@ -440,6 +520,7 @@ std::vector<Phase> parsePhases(const std::string &text) {
         else if (kind == "reidentify") phase.reidentify = true;
         else if (kind.rfind("rate=", 0) == 0) phase.rate = std::atof(kind.c_str() + 5);
         else if (kind.rfind("ch=", 0) == 0) phase.channels = uint32_t(std::atoi(kind.c_str() + 3));
+        else if (kind.rfind("layout=", 0) == 0) phase.layout = kind.substr(7);
         phases.push_back(phase);
         start = end + 1;
     }
@@ -489,9 +570,27 @@ int main(int argc, const char *argv[]) {
             else if (key == "--editor-snapshot") options.snapshot = value;
             else if (key == "--editor-seconds") options.editorSeconds = std::atof(value.c_str());
             else if (key == "--click-connect") options.clickConnect = value == "1";
+            else if (key == "--layout") options.layout = value;
+            else if (key == "--check-arrangements") options.checkArrangements = value == "1";
             else { std::fprintf(stderr, "unknown option %s\n", key.c_str()); return 2; }
         }
         [NSApplication sharedApplication];
+        if (options.checkArrangements) return checkArrangements(options) == 0 ? 0 : 1;
+        for (const Phase &phase : parsePhases(options.phases)) {
+            if (!phase.layout.empty() && !namedLayout(phase.layout)) {
+                std::fprintf(stderr, "unknown layout %s\n", phase.layout.c_str());
+                return 2;
+            }
+        }
+        if (!options.layout.empty()) {
+            const NamedLayout *layout = namedLayout(options.layout);
+            if (!layout || options.format != "vst3") {
+                std::fprintf(stderr, "--layout %s: a VST3 arrangement of kLayouts\n", options.layout.c_str());
+                return 2;
+            }
+            options.channels = uint32_t(Vst::SpeakerArr::getChannelCount(layout->arrangement));
+        }
+        const uint64_t initialArrangement = options.layout.empty() ? 0 : namedLayout(options.layout)->arrangement;
 
         std::atomic<long> mismatches{0}, errors{0};
         for (uint32_t cycle = 0; cycle < options.cycles; ++cycle) @autoreleasepool {
@@ -518,24 +617,37 @@ int main(int argc, const char *argv[]) {
             }
             double rate = options.rate;
             uint32_t channels = options.channels;
-            for (auto &instance : instances)
+            for (auto &instance : instances) {
+                instance->setArrangement(initialArrangement);
                 if (!instance->configure(rate, channels, options.block)) { std::fprintf(stderr, "configure failed\n"); return 1; }
-            std::printf("[harness] %s, %u instance(s) \"%s\", %.0f Hz, %u ch, block %u\n", options.format.c_str(),
-                        options.instances, options.name.c_str(), rate, channels, options.block);
+            }
+            std::printf("[harness] %s, %u instance(s) \"%s\", %.0f Hz, %u ch%s%s, block %u\n", options.format.c_str(),
+                        options.instances, options.name.c_str(), rate, channels, options.layout.empty() ? "" : " ",
+                        options.layout.c_str(), options.block);
             std::fflush(stdout);
 
             std::atomic<bool> done{false};
             std::thread audio([&] {
                 makeRealTime(options.block / rate);
-                std::vector<std::vector<float>> in(2, std::vector<float>(options.block)), out(2, std::vector<float>(options.block));
-                float *inputs[2] = {in[0].data(), in[1].data()}, *outputs[2] = {out[0].data(), out[1].data()};
+                std::vector<std::vector<float>> in(kMaxChannels, std::vector<float>(options.block)),
+                    out(kMaxChannels, std::vector<float>(options.block));
+                float *inputs[kMaxChannels], *outputs[kMaxChannels];
+                for (uint32_t c = 0; c < kMaxChannels; ++c) { inputs[c] = in[c].data(); outputs[c] = out[c].data(); }
                 std::vector<uint64_t> position(instances.size(), 0);
                 uint64_t sampleTime = 0;
                 for (const Phase &phase : parsePhases(options.phases)) {
-                    if (phase.rate > 0 || phase.channels > 0) {
+                    if (phase.rate > 0 || phase.channels > 0 || !phase.layout.empty()) {
                         if (phase.rate > 0) rate = phase.rate;
+                        uint64_t arrangement = 0;
                         if (phase.channels > 0) channels = phase.channels;
-                        for (auto &instance : instances) instance->configure(rate, channels, options.block);
+                        if (const NamedLayout *layout = phase.layout.empty() ? nullptr : namedLayout(phase.layout)) {
+                            arrangement = layout->arrangement;
+                            channels = uint32_t(Vst::SpeakerArr::getChannelCount(layout->arrangement));
+                        }
+                        for (auto &instance : instances) {
+                            if (phase.channels > 0 || arrangement) instance->setArrangement(arrangement);
+                            if (!instance->configure(rate, channels, options.block)) errors++;
+                        }
                         std::fill(position.begin(), position.end(), 0);  // a new format epoch: compare from its start
                     }
                     if (phase.reidentify)

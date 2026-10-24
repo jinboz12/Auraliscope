@@ -1,3 +1,14 @@
+# 2.0 RC licensing update — 2026-10-21
+
+The earlier license conflict recorded below is resolved in the RC source: original code and project documentation
+now use GPL-3.0-only. README, COPYRIGHT.md, the app About panel and package scripts use the same policy.
+Official compiled packages may be sold; downstream GPL use, modification and redistribution remain permitted.
+See SOURCE_DISTRIBUTION.md and ASSET_RIGHTS.md. Pearl public redistribution is confirmed by JINBOZ, and Milk Frog is identified by JINBOZ as public-domain material. Third-party SDK MIT and Apache-2.0 notices are retained.
+
+The review below is historical (Build 55), not a review of the current feature set or proof of current ownership.
+
+---
+
 # Intellectual property and third-party rights review (1.2)
 
 Reviewed for Auraliscope 1.2 rc 1 (build 55), 2026-09-27. This is an engineering review of where the code and

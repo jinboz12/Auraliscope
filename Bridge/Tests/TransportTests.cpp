@@ -54,25 +54,62 @@ static const int64_t kWorstProcessNs = 200000;
         std::printf("\n");                                                       \
     } while (0)
 
-// The deterministic test signal, a function of the stream position alone: L and R differ in frequency and level,
-// so a swapped, duplicated or scaled channel cannot pass. Stereo integrated loudness −7.76 LUFS; mono (L only)
-// −9.03 LUFS; peaks −6.021 and −12.041 dBFS.
+// The deterministic test signal, a function of the stream position alone: every channel differs in frequency and
+// level (channel c: 0.5/(c+1) at 997 + 502c Hz), so a swapped, duplicated or scaled channel cannot pass. Stereo
+// integrated loudness −7.76 LUFS; mono (L only) −9.03 LUFS; peaks −6.021 and −12.041 dBFS; a 7.1.4 bus −6.33 LUFS.
 static float signal(uint32_t channel, uint64_t n, double rate) {
-    const double frequency = channel == 0 ? 997.0 : 1499.0, amplitude = channel == 0 ? 0.5 : 0.25;
+    const double frequency = 997.0 + 502.0 * channel, amplitude = 0.5 / (channel + 1);
     return float(amplitude * std::sin(2 * M_PI * frequency * double(n) / rate));
 }
 
 static double db(float linear) { return 20 * std::log10(std::max(1e-9, double(linear))); }
 
+// SPATIAL_CONFIG built here from Bridge/PROTOCOL.md alone (not by the analysis core that reads it): per role azimuth,
+// elevation, distance and inclusion, the mapping, detail and window, and the FNV-1a hash of their canonical bytes.
+static std::vector<uint8_t> spatialConfig(const float azimuth[16], const float elevation[16], const float distance[16],
+                                          uint32_t mapping, uint32_t detail, uint32_t revision, uint64_t &hash) {
+    std::vector<uint8_t> canonical = {uint8_t(mapping), uint8_t(detail), 0, 0};
+    auto put = [&](float v) { uint32_t b; std::memcpy(&b, &v, 4); for (int i = 0; i < 4; ++i) canonical.push_back(uint8_t(b >> (8 * i))); };
+    uint8_t included[16];
+    for (int role = 0; role < 16; ++role) {
+        put(azimuth[role]); put(elevation[role]); put(distance[role]);
+        included[role] = 1;
+        canonical.push_back(1);
+    }
+    hash = 0xCBF29CE484222325ull;
+    for (uint8_t b : canonical) { hash ^= b; hash *= 0x00000100000001B3ull; }
+    if (hash == 0) hash = 1;
+    std::vector<uint8_t> payload(512);
+    AbrWriter w = abr_writer(payload.data(), payload.size());
+    abr_put_u32(&w, 10, 1);
+    abr_put_u32(&w, 1, revision);
+    abr_put_u64(&w, 2, hash);
+    abr_put_u32(&w, 3, mapping);
+    abr_put_field(&w, 4, ABR_KIND_F32, 16, azimuth);
+    abr_put_field(&w, 5, ABR_KIND_F32, 16, elevation);
+    abr_put_field(&w, 6, ABR_KIND_F32, 16, distance);
+    abr_put_field(&w, 7, ABR_KIND_U8, 16, included);
+    abr_put_u32(&w, 8, detail);
+    abr_put_u32(&w, 9, 0);
+    payload.resize(w.used);
+    return payload;
+}
+
 // A RESULT, read field by field (ResultProtocol.swift, schema 1).
 struct Result {
     uint32_t subscription = 0, schema = 0, generation = 0, epoch = 0, channels = 0, measurement = 0, flags = 0;
-    uint32_t breaks = 0, lastReasons = 0;
+    uint32_t breaks = 0, lastReasons = 0, layout = 0, roleCount = 0, spectrumChannels = 0;
+    uint8_t roles[ABR_MAX_CHANNELS] = {};
     double rate = 0, missing = 0;
     uint64_t sequence = 0, tick = 0, timelineEnd = 0, framesAnalysed = 0;
     uint64_t specFirst = 0, specLatest = 0, specDropped = 0, waveFirst = 0, waveLatest = 0, waveDropped = 0;
     uint32_t specColumns = 0, waveColumns = 0;
-    float peak[2] = {}, rms[2] = {}, heldTruePeak[2] = {};
+    // Spatial: the bins (tag 54) or the observations (tag 58): the hash of the geometry they were computed with, and
+    // their frame (status, serial, window end).
+    bool bins = false, observations = false;
+    uint64_t observationHash = 0, observationEnd = 0;
+    uint32_t observationStatus = 0, observationSerial = 0;
+    float peak[ABR_MAX_CHANNELS] = {}, rms[ABR_MAX_CHANNELS] = {}, heldTruePeak[ABR_MAX_CHANNELS] = {};
     float momentary = -100, shortTerm = -100, integrated = -100, range = -1, correlation = -2, dominant = 0;
     int unknownKinds = 0;
     steady_clock::time_point arrived;
@@ -95,6 +132,11 @@ struct Result {
             case 4: abr_field_u32(&f, &r.epoch); break;
             case 5: abr_field_f64(&f, &r.rate); break;
             case 6: abr_field_u32(&f, &r.channels); break;
+            case 7: abr_field_u32(&f, &r.layout); break;
+            case 18:
+                if (f.kind == ABR_KIND_U8 && f.count <= ABR_MAX_CHANNELS) { std::memcpy(r.roles, f.value, f.count); r.roleCount = f.count; }
+                break;
+            case 52: abr_field_u32(&f, &r.spectrumChannels); break;
             case 8: abr_field_u64(&f, &r.sequence); break;
             case 9: abr_field_u64(&f, &r.tick); break;
             case 11: abr_field_u64(&f, &r.timelineEnd); break;
@@ -104,9 +146,9 @@ struct Result {
             case 15: abr_field_u32(&f, &r.breaks); break;
             case 16: abr_field_f64(&f, &r.missing); break;
             case 17: abr_field_u32(&f, &r.lastReasons); break;
-            case 20: for (uint32_t i = 0; i < f.count && i < 2; ++i) r.peak[i] = f32(f, i); break;
-            case 21: for (uint32_t i = 0; i < f.count && i < 2; ++i) r.rms[i] = f32(f, i); break;
-            case 24: for (uint32_t i = 0; i < f.count && i < 2; ++i) r.heldTruePeak[i] = f32(f, i); break;
+            case 20: for (uint32_t i = 0; i < f.count && i < ABR_MAX_CHANNELS; ++i) r.peak[i] = f32(f, i); break;
+            case 21: for (uint32_t i = 0; i < f.count && i < ABR_MAX_CHANNELS; ++i) r.rms[i] = f32(f, i); break;
+            case 24: for (uint32_t i = 0; i < f.count && i < ABR_MAX_CHANNELS; ++i) r.heldTruePeak[i] = f32(f, i); break;
             case 30: r.momentary = f32(f); break;
             case 31: r.shortTerm = f32(f); break;
             case 32: r.integrated = f32(f); break;
@@ -121,6 +163,16 @@ struct Result {
             case 72: r.waveColumns = r.channels ? f.count / (2 * r.channels) : 0; break;
             case 73: abr_field_u64(&f, &r.waveLatest); break;
             case 74: abr_field_u64(&f, &r.waveDropped); break;
+            case 54: r.bins = true; break;
+            case 58:
+                r.observations = true;
+                if (f.kind == ABR_KIND_BYTES && f.count >= 32) {
+                    r.observationStatus = f.value[1];
+                    r.observationHash = abr_get64(f.value + 8);
+                    r.observationEnd = abr_get64(f.value + 16);
+                    r.observationSerial = abr_get32(f.value + 28);
+                }
+                break;
             default: break;
             }
         }
@@ -158,7 +210,42 @@ struct Collector {
         std::lock_guard<std::mutex> guard(lock);
         return results;
     }
+    // The newest result that carried observations: what a display that keeps them shows.
+    Result newestObservations() {
+        std::lock_guard<std::mutex> guard(lock);
+        for (auto it = results.rbegin(); it != results.rend(); ++it) if (it->observations) return *it;
+        return Result{};
+    }
 };
+
+// A display that keeps the observations, over results of one subscription and generation from the first that carried
+// them: each frame arrives once (no result repeats the frame of the last one that carried observations), and after
+// every result the newest frame received is the plugin's newest. A frame is made every second 1/60 s tick, so the
+// newest ends less than two ticks before the frames a result says were analysed; a display left with an older one
+// (a frame counted as sent that was not) would be two ticks further behind. Idle results (no new audio) and frames of
+// no observations (status 0) are not timed. Returns how many results carried observations.
+static size_t observationFrames(const std::vector<Result> &results, double rate, size_t &repeats, size_t &behind,
+                                uint64_t &lag) {
+    const uint64_t twoTicks = uint64_t(std::llround(2 * rate / 60));
+    size_t carried = 0;
+    repeats = behind = 0;
+    lag = 0;
+    const Result *newest = nullptr;
+    for (const auto &r : results) {
+        if (r.observations) {
+            if (newest && r.observationSerial == newest->observationSerial && r.observationEnd == newest->observationEnd
+                && r.observationStatus == newest->observationStatus && r.observationHash == newest->observationHash)
+                ++repeats;
+            newest = &r;
+            ++carried;
+        }
+        if (!newest || newest->observationStatus != 1 || (r.flags & 1)) continue;
+        const uint64_t since = r.framesAnalysed > newest->observationEnd ? r.framesAnalysed - newest->observationEnd : 0;
+        lag = std::max(lag, since);
+        if (since >= twoTicks) ++behind;
+    }
+    return carried;
+}
 
 static bool waitFor(const std::function<bool()> &condition, double seconds) {
     const auto end = steady_clock::now() + duration<double>(seconds);
@@ -448,6 +535,206 @@ int main() {
         const Result r = monoCollector.last();
         CHECK(r.channels == 1 && r.rate == 44100 && std::fabs(db(r.peak[0]) + 6.021) < 0.01 && std::fabs(r.integrated + 9.03f) < 0.05,
               "1 ch at %.0f Hz: peak %.3f dBFS, integrated %.2f LUFS", r.rate, db(r.peak[0]), r.integrated);
+    }
+
+    std::printf("Immersive bus\n");
+    {
+        // A 7.1.4 bus as the VST3 wrapper configures it: L R C LFE, Ls Rs as the rear pair (Lrs Rrs) beside the side
+        // pair Sl Sr (Ls Rs), then Tfl Tfr Trl Trr. Configuring it grows the ring while the analysis thread runs.
+        const uint8_t roles[12] = {ABR_ROLE_L, ABR_ROLE_R, ABR_ROLE_C, ABR_ROLE_LFE, ABR_ROLE_LRS, ABR_ROLE_RRS,
+                                   ABR_ROLE_LS, ABR_ROLE_RS, ABR_ROLE_LTF, ABR_ROLE_RTF, ABR_ROLE_LTR, ABR_ROLE_RTR};
+        auto bus = std::make_unique<abr::BridgeCore>(ABR_FORMAT_TEST);
+        bus->setSourceName("Atmos bed");
+        bus->configure(48000, 2, 256);
+        bus->setActive(true);
+        {
+            FakeHost warm(*bus, 2, 48000, 256);
+            std::this_thread::sleep_for(milliseconds(400));
+        }
+        bus->setActive(false);
+        bus->configure(48000, abr::ChannelLayout::speakers(roles, 12), 256);
+        bus->setActive(true);
+        AbrSourceInfo info{};
+        CHECK(waitFor([&] { return findSource(server, "Atmos bed", info) && info.role_count == 12; }, 3) && info.channels == 12
+                  && info.layout == ABR_LAYOUT_SPEAKERS && std::memcmp(info.roles, roles, 12) == 0
+                  && std::strcmp(info.layout_name, "7.1.4") == 0,
+              "STATUS: %u ch, layout %u, every channel's role, named \"%s\"", info.channels, info.layout, info.layout_name);
+        Collector immersive;
+        abr_server_set_spectrum(server, 1);
+        abr_server_select(server, info.session_id);
+        abr_server_attach(server, Collector::sink, &immersive);
+        FakeHost host(*bus, 12, 48000, 256);
+        waitFor([&] { return immersive.count() >= 150; }, 6);
+        host.stop();
+        abr_server_detach(server);
+        const Result r = immersive.last();
+        bool levels = r.channels == 12 && r.roleCount == 12 && r.layout == ABR_LAYOUT_SPEAKERS;
+        for (uint32_t c = 0; c < 12 && levels; ++c)
+            levels = r.roles[c] == roles[c] && std::fabs(db(r.peak[c]) - db(0.5f / float(c + 1))) < 0.01;
+        CHECK(levels, "results: 12 channels in the bus's order, each with its role and its own level (%.3f … %.3f dBFS)",
+              db(r.peak[0]), db(r.peak[11]));
+        CHECK(std::fabs(r.integrated + 6.33f) < 0.05 && r.spectrumChannels == 1,
+              "integrated %.2f LUFS (BS.1770 weights by role); the spectrum sums every channel, as asked", r.integrated);
+        CHECK(host.altered.load() == 0 && bus->status().framesDropped == 0, "output equals input on all 12 channels; nothing unanalysed");
+        CHECK(host.worstNs.load() < kWorstProcessNs, "worst process() call with 12 channels %.1f µs", host.worstNs.load() / 1000.0);
+        // The display's speaker geometry (SPATIAL_CONFIG): applied on the analysis thread, acknowledged with the hash
+        // computed here, and the results switch from the bins to observations carrying it; then a second geometry.
+        {
+            float azimuth[16] = {-35, 35, 0, 0, -100, 100, -50, 50, -40, 40, -150, 150, -90, 90, -135, 135};
+            float elevation[16] = {0, 0, 0, 0, 0, 0, 0, 0, 40, 40, 0, 0, 45, 45, -25, -25};
+            float distance[16];
+            for (int i = 0; i < 16; ++i) distance[i] = 2.0f + 0.1f * float(i);
+            uint64_t hash = 0, second = 0;
+            const auto first = spatialConfig(azimuth, elevation, distance, 1, 20, 41, hash);
+            azimuth[0] = -28;
+            const auto next = spatialConfig(azimuth, elevation, distance, 0, 12, 42, second);
+            Collector spatial;
+            abr_server_set_spectrum(server, 1);
+            abr_server_attach(server, Collector::sink, &spatial);
+            FakeHost geometryHost(*bus, 12, 48000, 256);
+            waitFor([&] { return spatial.count() >= 20; }, 4);
+            const bool binsFirst = spatial.last().bins && !spatial.last().observations;
+            abr_server_set_spatial_config(server, first.data(), uint32_t(first.size()), 41);
+            AbrSourceInfo acked{};
+            const bool applied = waitFor([&] { return findSource(server, "Atmos bed", acked) && acked.spatial_ack_revision == 41; }, 3);
+            // The server keeps the observations between results (WELCOME, ABR_DISPLAY_KEEPS_OBSERVATIONS): about every
+            // second result carries them, so the newest that did is what it shows.
+            waitFor([&] { return spatial.newestObservations().observationHash == hash; }, 3);
+            const bool switched = spatial.newestObservations().observationHash == hash && !spatial.last().bins;
+            abr_server_set_spatial_config(server, next.data(), uint32_t(next.size()), 42);
+            waitFor([&] { return findSource(server, "Atmos bed", acked) && acked.spatial_ack_revision == 42; }, 3);
+            waitFor([&] { return spatial.newestObservations().observationHash == second; }, 3);
+            const bool secondSeen = spatial.newestObservations().observationHash == second;
+            // Other content under the same revision (a caller that did not count the change): sent again all the same.
+            azimuth[1] = 30;
+            uint64_t third = 0;
+            const auto again = spatialConfig(azimuth, elevation, distance, 0, 16, 42, third);
+            abr_server_set_spatial_config(server, again.data(), uint32_t(again.size()), 42);
+            const bool resent = waitFor([&] { return findSource(server, "Atmos bed", acked) && acked.spatial_ack_hash == third; }, 3);
+            waitFor([&] { return spatial.newestObservations().observationHash == third; }, 3);
+            // The receiving thread stalls 1.5 s inside the sink while the plugin goes on: its mailbox is replaced unsent
+            // many times, and only results actually sent count as delivered frames.
+            std::this_thread::sleep_for(milliseconds(500));
+            spatial.sleepOnceMs = 1500;
+            waitFor([&] { return spatial.sleepOnceMs.load() == 0; }, 4);
+            std::this_thread::sleep_for(milliseconds(800));
+            geometryHost.stop();
+            abr_server_detach(server);
+            abr_server_set_spatial_config(server, nullptr, 0, 0);
+            // Never back: after the first result with the newest hash, none carries an earlier one, nor the bins again.
+            const auto all = spatial.all();
+            size_t at = all.size();
+            for (size_t i = 0; i < all.size(); ++i) if (all[i].observations && all[i].observationHash == third) { at = i; break; }
+            bool regressed = false;
+            for (size_t i = at; i < all.size(); ++i)
+                regressed = regressed || all[i].bins || (all[i].observations && all[i].observationHash != third);
+            const std::vector<Result> tail(all.begin() + std::min(at, all.size()), all.end());
+            size_t repeats = 0, behind = 0;
+            uint64_t lag = 0;
+            const size_t carried = observationFrames(tail, 48000, repeats, behind, lag);
+            CHECK(binsFirst, "before any geometry: the bins of the standard layout (tag 54)");
+            CHECK(applied && secondSeen && acked.spatial_acks_received >= 3 && acked.spatial_ack_outcome == ABR_SPATIAL_APPLIED
+                      && acked.spatial_ack_hash == third && (acked.capabilities & ABR_CAPABILITY_SPATIAL_CONFIG),
+                  "SPATIAL_CONFIG acknowledged three times (revision %u, hash %016llx, computed independently here)",
+                  acked.spatial_ack_revision, (unsigned long long)acked.spatial_ack_hash);
+            CHECK(resent, "a configuration with other content under the same revision is sent again and applied");
+            CHECK(switched && at < all.size() && !regressed,
+                  "the results switch to observations with each geometry's hash, and never back (%zu results)", all.size());
+            CHECK(carried > 30 && carried < tail.size() * 3 / 4 && repeats == 0,
+                  "each observation frame is sent once: %zu of %zu results carried them, none repeating a frame",
+                  carried, tail.size());
+            CHECK(behind == 0,
+                  "…and after every result, across a 1.5 s receiver stall, the display holds the plugin's newest frame (at "
+                  "most %llu frames behind the analysis; a frame every 1600)", (unsigned long long)lag);
+            CHECK(geometryHost.altered.load() == 0 && geometryHost.worstNs.load() < kWorstProcessNs,
+                  "audio unchanged and the audio thread untouched while the geometry changes (worst %.1f µs)",
+                  geometryHost.worstNs.load() / 1000.0);
+        }
+        // Back to stereo: a new generation of 2 channels, L and R.
+        bus->setActive(false);
+        bus->configure(48000, 2, 256);
+        bus->setActive(true);
+        Collector back;
+        abr_server_set_spectrum(server, 0);
+        abr_server_attach(server, Collector::sink, &back);
+        FakeHost stereoHost(*bus, 2, 48000, 256);
+        waitFor([&] { return back.count() >= 30 && back.last().channels == 2; }, 4);
+        stereoHost.stop();
+        abr_server_detach(server);
+        abr_server_select(server, nullptr);
+        const Result s2 = back.last();
+        CHECK(s2.channels == 2 && s2.layout == ABR_LAYOUT_STEREO && s2.generation > r.generation && s2.spectrumChannels == 0
+                  && std::fabs(db(s2.peak[1]) + 12.041) < 0.01,
+              "reconfigured to stereo: generation %u, %u ch, layout %u, R %.3f dBFS", s2.generation, s2.channels, s2.layout,
+              db(s2.peak[1]));
+    }
+
+    std::printf("A display of build 98\n");
+    {
+        // A raw receiver whose WELCOME announces no capabilities, as build 98's does: it shows only the observations
+        // of the newest result, so every result must carry them.
+        char rawPath[256];
+        std::snprintf(rawPath, sizeof rawPath, "%s/display98.sock", folder);
+        RawReceiver raw(rawPath);
+        setenv("AURALISCOPE_BRIDGE_SOCKET", rawPath, 1);
+        const uint8_t roles[12] = {ABR_ROLE_L, ABR_ROLE_R, ABR_ROLE_C, ABR_ROLE_LFE, ABR_ROLE_LRS, ABR_ROLE_RRS,
+                                   ABR_ROLE_LS, ABR_ROLE_RS, ABR_ROLE_LTF, ABR_ROLE_RTF, ABR_ROLE_LTR, ABR_ROLE_RTR};
+        auto bus = std::make_unique<abr::BridgeCore>(ABR_FORMAT_TEST);
+        bus->configure(48000, abr::ChannelLayout::speakers(roles, 12), 256);
+        bus->setActive(true);
+        pollfd ready{raw.listener, POLLIN, 0};
+        const int client = poll(&ready, 1, 3000) > 0 ? accept(raw.listener, nullptr, nullptr) : -1;
+        uint8_t welcome[64];
+        abr_put32(welcome, ABR_PROTOCOL_VERSION);
+        abr_put32(welcome + 4, 0);
+        AbrWriter w = abr_writer(welcome + 8, sizeof welcome - 8);
+        abr_put_u32(&w, ABR_WELCOME_SCHEMA, ABR_ANALYSIS_SCHEMA);
+        RawReceiver::send(client, ABR_MSG_WELCOME, welcome, uint32_t(8 + w.used));
+        uint8_t subscribe[64];
+        w = abr_writer(subscribe, sizeof subscribe);
+        abr_put_u32(&w, ABR_SUBSCRIBE_SUBSCRIPTION, 7);
+        abr_put_u32(&w, ABR_SUBSCRIBE_SPECTRUM, 1);
+        RawReceiver::send(client, ABR_MSG_SUBSCRIBE, subscribe, uint32_t(w.used));
+        float azimuth[16] = {-30, 30, 0, 0, -110, 110, -90, 90, -45, 45, -150, 150, -90, 90, -135, 135};
+        float elevation[16] = {0, 0, 0, 0, 0, 0, 0, 0, 45, 45, 0, 0, 45, 45, 45, 45};
+        float distance[16] = {};
+        uint64_t hash = 0;
+        const auto config = spatialConfig(azimuth, elevation, distance, 0, 20, 5, hash);
+        RawReceiver::send(client, ABR_MSG_SPATIAL_CONFIG, config.data(), uint32_t(config.size()));
+        FakeHost host(*bus, 12, 48000, 256);
+        std::vector<Result> results;
+        std::vector<uint8_t> in;
+        const auto end = steady_clock::now() + milliseconds(2500);
+        while (client >= 0 && steady_clock::now() < end) {
+            pollfd readable{client, POLLIN, 0};
+            if (poll(&readable, 1, 50) <= 0) continue;
+            uint8_t buffer[65536];
+            const ssize_t n = recv(client, buffer, sizeof buffer, 0);
+            if (n <= 0) break;
+            in.insert(in.end(), buffer, buffer + n);
+            size_t offset = 0;
+            while (in.size() - offset >= sizeof(AbrHeader)) {
+                AbrHeader header;
+                std::memcpy(&header, in.data() + offset, sizeof header);
+                if (in.size() - offset < sizeof header + header.length) break;
+                if (header.type == ABR_MSG_RESULT) results.push_back(Result::read(in.data() + offset + sizeof header, header.length));
+                offset += sizeof header + header.length;
+            }
+            in.erase(in.begin(), in.begin() + offset);
+        }
+        host.stop();
+        if (client >= 0) close(client);
+        bus.reset();
+        setenv("AURALISCOPE_BRIDGE_SOCKET", path, 1);
+        size_t at = results.size(), every = 0, later = 0;
+        for (size_t i = 0; i < results.size(); ++i) if (results[i].observations && results[i].observationHash == hash) { at = i; break; }
+        for (size_t i = at; i < results.size(); ++i) {
+            if (results[i].flags & 1) continue;  // idle, after the host stopped
+            ++later;
+            if (results[i].observations && results[i].observationHash == hash) ++every;
+        }
+        CHECK(at < results.size() && later > 30 && every == later,
+              "its geometry applied, every result from then on carries the observations (%zu of %zu)", every, later);
     }
 
     std::printf("Slow receiver\n");

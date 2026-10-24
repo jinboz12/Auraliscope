@@ -9,8 +9,12 @@ private func analyzer(_ pointer: OpaquePointer) -> StreamAnalyzer {
 }
 
 @_cdecl("abr_analyzer_create")
-func abrAnalyzerCreate(_ sampleRate: Double, _ channels: UInt32, _ generation: UInt32, _ formatEpoch: UInt32) -> OpaquePointer? {
-    guard let analyzer = StreamAnalyzer(sampleRate: sampleRate, channels: Int(channels), generation: generation,
+func abrAnalyzerCreate(_ sampleRate: Double, _ channels: UInt32, _ roles: UnsafePointer<UInt8>?, _ generation: UInt32,
+                       _ formatEpoch: UInt32) -> OpaquePointer? {
+    guard (1...UInt32(Role.count)).contains(channels) else { return nil }
+    let channelRoles = roles.map { pointer in (0..<Int(channels)).map { Int(pointer[$0]) } }
+        ?? (channels == 1 ? [Role.left] : [Role.left, Role.right])
+    guard let analyzer = StreamAnalyzer(sampleRate: sampleRate, roles: channelRoles, generation: generation,
                                         formatEpoch: formatEpoch) else { return nil }
     return OpaquePointer(Unmanaged.passRetained(analyzer).toOpaque())
 }
@@ -52,6 +56,31 @@ func abrAnalyzerSetSpectrogramMode(_ pointer: OpaquePointer, _ mode: UInt32) {
     analyzer(pointer).spectrogramMode = SpectrogramMode(rawValue: mode) ?? .classic
 }
 
+@_cdecl("abr_analyzer_set_spectrum_channels")
+func abrAnalyzerSetSpectrumChannels(_ pointer: OpaquePointer, _ channels: UInt32) {
+    analyzer(pointer).spatialSpectrum = channels == 1
+}
+
+@_cdecl("abr_analyzer_set_spatial_coherence")
+func abrAnalyzerSetSpatialCoherence(_ pointer: OpaquePointer, _ thousandths: UInt32) {
+    analyzer(pointer).spatialCoherence = thousandths == 0 ? SpatialField.defaultThreshold : Float(thousandths) / 1000
+}
+
+@_cdecl("abr_analyzer_configure_spatial")
+func abrAnalyzerConfigureSpatial(_ pointer: OpaquePointer, _ bytes: UnsafeRawPointer?, _ length: UInt32,
+                                 _ revision: UnsafeMutablePointer<UInt32>?, _ hash: UnsafeMutablePointer<UInt64>?) -> UInt32 {
+    guard let bytes else { return SpatialConfigWire.Outcome.invalid.rawValue }
+    let result = analyzer(pointer).configureSpatial(UnsafeRawBufferPointer(start: bytes, count: Int(length)))
+    revision?.pointee = result.revision
+    hash?.pointee = result.hash
+    return result.outcome.rawValue
+}
+
+@_cdecl("abr_analyzer_reset_spatial")
+func abrAnalyzerResetSpatial(_ pointer: OpaquePointer) {
+    analyzer(pointer).resetSpatial()
+}
+
 @_cdecl("abr_analyzer_ticks")
 func abrAnalyzerTicks(_ pointer: OpaquePointer) -> UInt64 {
     analyzer(pointer).ticks
@@ -60,12 +89,15 @@ func abrAnalyzerTicks(_ pointer: OpaquePointer) -> UInt64 {
 @_cdecl("abr_analyzer_encode")
 func abrAnalyzerEncode(_ pointer: OpaquePointer, _ buffer: UnsafeMutableRawPointer, _ capacity: UInt32,
                        _ subscription: UInt32, _ layout: UInt32, _ afterSpectrogram: UInt64, _ afterWaveform: UInt64,
-                       _ spectrogramThrough: UnsafeMutablePointer<UInt64>?,
-                       _ waveformThrough: UnsafeMutablePointer<UInt64>?) -> UInt32 {
+                       _ afterObservations: UInt64, _ spectrogramThrough: UnsafeMutablePointer<UInt64>?,
+                       _ waveformThrough: UnsafeMutablePointer<UInt64>?,
+                       _ observationsThrough: UnsafeMutablePointer<UInt64>?) -> UInt32 {
     let encoded = analyzer(pointer).encode(into: buffer, capacity: Int(capacity), subscription: subscription, layout: layout,
-                                           afterSpectrogram: afterSpectrogram, afterWaveform: afterWaveform)
+                                           afterSpectrogram: afterSpectrogram, afterWaveform: afterWaveform,
+                                           afterObservations: afterObservations)
     spectrogramThrough?.pointee = encoded.spectrogramThrough
     waveformThrough?.pointee = encoded.waveformThrough
+    observationsThrough?.pointee = encoded.observationsThrough
     return UInt32(encoded.bytes)
 }
 
@@ -83,6 +115,13 @@ func abrAnalyzerSummary(_ pointer: OpaquePointer, _ summary: UnsafeMutablePointe
     s.seconds_analysed = Double(a.framesAnalysed) / a.sampleRate
     s.peak = (v[SnapshotSlots.peaks + Role.left], a.channels > 1 ? v[SnapshotSlots.peaks + Role.right] : 0)
     s.held_true_peak = (v[SnapshotSlots.heldTruePeaks + Role.left], a.channels > 1 ? v[SnapshotSlots.heldTruePeaks + Role.right] : 0)
+    // The loudest channel, for a bus whose channels the window cannot list one by one.
+    let loudestPeak = a.roles.max { v[SnapshotSlots.peaks + $0] < v[SnapshotSlots.peaks + $1] } ?? Role.left
+    let loudestTruePeak = a.roles.max { v[SnapshotSlots.heldTruePeaks + $0] < v[SnapshotSlots.heldTruePeaks + $1] } ?? Role.left
+    s.loudest_peak = v[SnapshotSlots.peaks + loudestPeak]
+    s.loudest_peak_role = UInt32(loudestPeak)
+    s.loudest_held_true_peak = v[SnapshotSlots.heldTruePeaks + loudestTruePeak]
+    s.loudest_held_true_peak_role = UInt32(loudestTruePeak)
     s.momentary = v[SnapshotSlots.momentary]
     s.short_term = v[SnapshotSlots.shortTerm]
     s.integrated = v[SnapshotSlots.integrated]

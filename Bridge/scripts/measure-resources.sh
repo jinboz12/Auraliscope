@@ -7,7 +7,7 @@
 #   measure-resources.sh <baseline.vst3> [seconds]
 set -uo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/prototype-version.sh
+source Bridge/scripts/release-version.sh
 baseline="$1"
 seconds="${2:-20}"
 current="$ABR_DIST/Auraliscope Bridge.vst3"

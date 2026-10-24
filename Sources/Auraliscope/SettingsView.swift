@@ -328,16 +328,43 @@ final class SettingsDraft: ObservableObject {
     }
 }
 
+/// One set of measures for every Settings page, so each starts its title, sections, rows and notes at the same
+/// places: one text column from the page title down to the last note, whichever page is shown and whether or not
+/// it scrolls.
+enum SettingsMetrics {
+    /// The page's margin either side of its column, and the widest the column grows.
+    static let gutter: CGFloat = 28
+    static let column: CGFloat = 640
+    /// Inside a card: every row's and note's inset from its edge, and a row's height.
+    static let inset: CGFloat = 16
+    static let row: CGFloat = 40
+    /// Between sections, and from a section's title to its card.
+    static let sectionGap: CGFloat = 24
+    static let titleGap: CGFloat = 8
+    static let radius: CGFloat = 16
+}
+
 /// Settings as a page of its own: a sidebar of five panes and a scrolling detail column of grouped cards, with
-/// Revert and Apply along its foot.
+/// Revert and Apply along its foot. The window's night sky (`WindowBackdrop`) runs under the title bar, the sidebar and
+/// the cards, which are the meter's glass panels.
 struct SettingsView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var draft = SettingsDraft.shared
     @ObservedObject private var l10n = Localizer.shared
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(SettingsPane.defaultsKey) private var paneName = SettingsPane.general.rawValue
+    @Namespace private var selection
 
     private var pane: SettingsPane { SettingsPane(rawValue: paneName) ?? .general }
+    /// The top of the page, scrolled to when the pane changes.
+    private static let top = "settingsTop"
+
+    /// Another pane: the sidebar's selection glides to it and its page rises into place.
+    private func show(_ item: SettingsPane) {
+        guard item != pane else { return }
+        withAnimation(reduceMotion ? .easeOut(duration: 0.15) : Motion.page) { paneName = item.rawValue }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -345,32 +372,31 @@ struct SettingsView: View {
                 .frame(width: 200)
                 .layoutPriority(1)
                 .frame(maxHeight: .infinity)
-                .background(Theme.windowTop.opacity(0.9))
-            Rectangle().fill(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.11)).frame(width: 0.5)
-            GeometryReader { geometry in
+                .background { Theme.sidebarTint.ignoresSafeArea() }
+            Rectangle().fill(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.11)).frame(width: 0.5).ignoresSafeArea()
+            ScrollViewReader { scroller in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text(pane.title)
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(Theme.ink)
-                            .padding(.leading, 4)
-                        switch pane {
-                        case .general: GeneralPane(model: model)
-                        case .audio: AudioPane(model: model)
-                        case .channels: ChannelsPane(model: model)
-                        case .appearance: AppearancePane()
-                        }
+                    // The page takes the width the scroll view offers, and its scroller floats over the gutter
+                    // (`OverlayScrollers`), so the column has the same margins on every page, scrolling or not. A width
+                    // of its own made a page that scrolls sit half a scroller to the left of one that does not.
+                    ZStack(alignment: .topLeading) {
+                        Color.clear.frame(height: 0).id(Self.top)
+                        page(pane)
+                            .id(pane)
+                            .transition(reduceMotion ? .opacity
+                                        : .asymmetric(insertion: .opacity.combined(with: .offset(y: 14)), removal: .opacity))
                     }
                     .disabled(draft.outcome == .checking)
-                    .frame(width: min(640, max(0, geometry.size.width - 52)), alignment: .leading)
-                    .padding(.horizontal, 26)
+                    .frame(maxWidth: SettingsMetrics.column, alignment: .leading)
+                    .padding(.horizontal, SettingsMetrics.gutter)
                     .padding(.top, 20)
-                    .padding(.bottom, 26)
+                    .padding(.bottom, 28)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(OverlayScrollers())
                 }
-                .frame(width: geometry.size.width)
+                // Another page opens at its top, not at the previous page's scroll position.
+                .onChange(of: paneName) { _ in scroller.scrollTo(Self.top, anchor: .top) }
             }
-            // The detail column owns its viewport width even when a control has a wide intrinsic size.
             .frame(minWidth: 0, maxWidth: .infinity)
             .clipped()
             // Revert and Apply appear only while there are changes to apply (and briefly with the result).
@@ -380,9 +406,9 @@ struct SettingsView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: draft.dirty || draft.outcome != nil)
-            .background(Theme.windowBottom)
+            .animation(Motion.page, value: draft.dirty || draft.outcome != nil)
         }
+        .background { WindowBackdrop() }
         .onAppear {
             draft.attach(model)
             if CommandLine.arguments.contains("--test-settings-draft") { draft.checkRegression(model: model) }
@@ -394,6 +420,22 @@ struct SettingsView: View {
         .tint(Theme.action)
     }
 
+    /// A pane's page: its title on the column's text edge, then its sections.
+    private func page(_ pane: SettingsPane) -> some View {
+        VStack(alignment: .leading, spacing: SettingsMetrics.sectionGap) {
+            PageTitle(pane.title)
+                .padding(.leading, SettingsMetrics.inset)
+                .padding(.bottom, -6)
+            switch pane {
+            case .general: GeneralPane(model: model)
+            case .audio: AudioPane(model: model)
+            case .channels: ChannelsPane(model: model)
+            case .appearance: AppearancePane()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 4) {
             BrandMark(size: 10)
@@ -401,7 +443,7 @@ struct SettingsView: View {
                 .padding(.top, 40)
                 .padding(.bottom, 14)
             HStack(spacing: 8) {
-                StatusDot(running: model.running)
+                StatusDot(running: model.running, pulse: true)
                 Text(model.captureStateTitle.uppercased(with: l10n.locale))
                     .font(.system(size: 10, weight: .bold).width(.expanded)).tracking(l10n.tracking(0.8))
                     .foregroundStyle(Theme.secondary)
@@ -419,15 +461,15 @@ struct SettingsView: View {
             // theme's accent. The arrow keys still move between panes.
             VStack(spacing: 2) {
                 ForEach(SettingsPane.allCases) { item in
-                    SidebarRow(item: item, selected: item == pane) { paneName = item.rawValue }
+                    SidebarRow(item: item, selected: item == pane, selection: selection) { show(item) }
                 }
             }
             .modifier(QuietFocus())
             .onMoveCommand { direction in
                 let all = SettingsPane.allCases, index = all.firstIndex(of: pane) ?? 0
                 switch direction {
-                case .up: paneName = all[max(0, index - 1)].rawValue
-                case .down: paneName = all[min(all.count - 1, index + 1)].rawValue
+                case .up: show(all[max(0, index - 1)])
+                case .down: show(all[min(all.count - 1, index + 1)])
                 default: break
                 }
             }
@@ -444,7 +486,7 @@ struct SettingsView: View {
             .help(L("Start every measurement over: Integrated loudness, Range, peaks and the loudness history"))
             .padding(.horizontal, 2)
             Button { openWindow(id: "about") } label: {
-                Label(L("About Auraliscope LABS"), systemImage: "info.circle")
+                Label(L("About Auraliscope"), systemImage: "info.circle")
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
@@ -454,6 +496,38 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .padding(.horizontal, 10)
+    }
+}
+
+/// Gives the enclosing scroll view overlay scrollers, which float over the content and show while it scrolls, even
+/// when System Settings shows scroll bars always (a mouse is attached): a legacy scroller takes room from the page, so
+/// a page that scrolls would be narrower than one that does not. AppKit puts the system's style back when that
+/// preference changes, so it is set again then.
+struct OverlayScrollers: NSViewRepresentable {
+    func makeNSView(context: Context) -> Probe { Probe() }
+    func updateNSView(_ view: Probe, context: Context) { view.apply() }
+
+    final class Probe: NSView {
+        private var observer: NSObjectProtocol?
+        deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+            guard observer == nil else { return }
+            observer = NotificationCenter.default.addObserver(forName: NSScroller.preferredScrollerStyleDidChangeNotification,
+                                                              object: nil, queue: .main) { [weak self] _ in
+                // After the scroll view has taken the new system style.
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.apply() } }
+            }
+        }
+
+        func apply() {
+            guard let scrollView = enclosingScrollView, scrollView.scrollerStyle != .overlay else { return }
+            scrollView.scrollerStyle = .overlay
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
@@ -468,19 +542,28 @@ private struct QuietFocus: ViewModifier {
     }
 }
 
-/// A pane in the Settings sidebar: its symbol and name, on the accent when selected.
+/// A pane in the Settings sidebar: its symbol and name, on the accent when selected. The selection is one plate that
+/// glides from row to row; the symbol bounces as its pane is chosen.
 private struct SidebarRow: View {
     let item: SettingsPane
     let selected: Bool
+    let selection: Namespace.ID
     let select: () -> Void
     @ObservedObject private var theme = ThemeSettings.shared
+    @State private var hovering = false
+    @State private var taps = 0
 
     var body: some View {
-        Button(action: select) {
+        Button {
+            taps += 1
+            select()
+        } label: {
             // Symbols in a fixed column, so every name starts at the same x.
             HStack(spacing: 8) {
                 Image(systemName: item.symbol)
                     .font(.system(size: 14))
+                    .symbolVariant(selected ? .fill : .none)
+                    .modifier(SymbolMotion(bounce: taps))
                     .frame(width: 20)
                 Text(item.title)
             }
@@ -490,13 +573,19 @@ private struct SidebarRow: View {
                 .padding(.horizontal, 8)
                 .frame(height: 30)
                 .background {
+                    let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
                     if selected {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.action)
+                        shape.fill(Theme.action)
+                            .shadow(color: Theme.glow(Theme.action, 0.45), radius: 8, y: 2)
+                            .matchedGeometryEffect(id: "pane", in: selection)
+                    } else if hovering {
+                        shape.fill(Theme.controlHover)
                     }
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScale())
+        .onHover { inside in withAnimation(Motion.hover) { hovering = inside } }
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -507,8 +596,13 @@ private struct GeneralPane: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var l10n = Localizer.shared
     @ObservedObject private var draft = SettingsDraft.shared
+    @AppStorage(CanvasDriver.frameRateKey) private var frameRate = 0
 
     var body: some View {
+        SettingsSection(title: L("PRESETS")) {
+            SettingsPresetsSection(model: model)
+            SettingsNote(L("A preset keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout, to load again later. The source and its routing stay with your devices."))
+        }
         SettingsSection(title: L("LANGUAGE")) {
             SettingsRow(title: L("Language")) {
                 Picker(L("Language"), selection: draft.binding(\.language, live: { l10n.language })) {
@@ -521,12 +615,54 @@ private struct GeneralPane: View {
             SettingsNote(L("Language previews immediately, including the menu bar, while metering carries on. Apply keeps it; Revert restores your previous language. Units, channel labels and standards keep their console and DAW notation."))
         }
         SettingsSection(title: L("WINDOW")) {
-            SettingsRow(title: L("Full screen")) {
-                Button(L("Toggle Full Screen")) { MainWindow.toggleFullScreen() }
-                    .glassButton()
+            SettingsRow(title: L("Always on top")) {
+                Toggle(L("Always on top"), isOn: $model.floating)
+                    .toggleStyle(.switch).controlSize(.small).labelsHidden()
             }
-            SettingsNote(L("Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen."))
+            SettingsNote(L("Keeps the meter window, and any panel in a window of its own, above other apps' windows. Off until you turn it on, here or with the pin in the toolbar; it pauses in full screen."))
+            SettingsDivider()
+            SettingsRow(title: L("Full screen")) {
+                Button { MainWindow.toggleFullScreen() } label: {
+                    Label(L("Toggle Full Screen"), systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .glassButton()
+            }
+            SettingsNote(L("Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F)."))
+            SettingsDivider()
+            SettingsRow(title: L("Dock mode")) {
+                Button { PanelPlacement.shared.toggleStrip() } label: {
+                    Label(L("Dock Mode"), systemImage: "dock.rectangle")
+                }
+                .glassButton()
+            }
+            SettingsNote(L("Dock mode lays the panels in one row along the bottom of the screen (⌥⌘S)."))
+            SettingsDivider()
+            SettingsRow(title: L("Layout")) {
+                Button { LayoutPresets.shared.apply(LayoutPresets.builtIns[0]) } label: {
+                    Label(L("Reset Layout"), systemImage: "rectangle.split.2x2")
+                }
+                .glassButton()
+            }
+            SettingsNote(L("Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own."))
         }
+        SettingsSection(title: L("PERFORMANCE")) {
+            SettingsRow(title: L("Display frame rate")) {
+                Picker(L("Display frame rate"), selection: Binding(get: { frameRate }, set: { rate in
+                    frameRate = rate
+                    CanvasDriver.shared.restart()
+                    DiagnosticLog.event("Frame rate: \(rate)")
+                })) {
+                    Text(L("Automatic")).tag(0)
+                    Text(verbatim: "120 fps").tag(120)
+                    Text(verbatim: "60 fps").tag(60)
+                    Text(verbatim: "30 fps").tag(30)
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            SettingsNote(L("How often the meters redraw. Automatic follows the display: 120 fps on a ProMotion display, 60 on others, 30 in Low Power Mode. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Takes effect at once."))
+        }
+        SettingsNote(L("Hidden panels stop drawing. Measurements continue; the optional Multi-FFT engine stops when its panel closes."))
         SettingsSection(title: L("STARTUP")) {
             SettingsRow(title: L("Show welcome at launch")) {
                 Toggle(L("Show welcome at launch"), isOn: draft.binding(\.welcome, live: {
@@ -534,6 +670,26 @@ private struct GeneralPane: View {
                 }))
                 .toggleStyle(.switch).controlSize(.small).labelsHidden()
             }
+        }
+        SettingsSection(title: L("UPDATES")) {
+            PrereleaseUpdatesRow()
+            GitHubUpdateView()
+        }
+        SettingsSection(title: L("FEEDBACK")) {
+            SettingsRow(title: L("Website")) {
+                Link(destination: URL(string: "https://jinbozmusic.com")!) {
+                    Label { Text(verbatim: "jinbozmusic.com") } icon: { Image(systemName: "globe") }
+                }
+                .glassButton()
+            }
+            SettingsDivider()
+            SettingsRow(title: "Discord") {
+                Link(destination: URL(string: "https://discord.gg/J5sd8qbtNW")!) {
+                    Label(L("Join the Discord"), systemImage: "bubble.left.and.bubble.right")
+                }
+                .glassButton()
+            }
+            SettingsNote(L("Questions, bug reports and ideas are welcome. Diagnostic logs (Help ▸ Show Diagnostic Logs) help with a bug report."))
         }
     }
 }
@@ -569,7 +725,7 @@ private struct AudioPane: View {
                 .labelsHidden()
                 .frame(maxWidth: 280)
             }
-            Divider()
+            SettingsDivider()
             SettingsRow(title: L("Source")) {
                 HStack(spacing: 6) {
                     Picker(L("Source"), selection: source) {
@@ -617,7 +773,7 @@ private struct AudioPane: View {
                         .help(L("Refresh devices"))
                 }
             }
-            Divider()
+            SettingsDivider()
             SettingsRow(title: L("Status")) {
                 Text(model.status.text)
                     .font(.system(size: 11)).foregroundStyle(Theme.secondary)
@@ -625,13 +781,13 @@ private struct AudioPane: View {
                     .help(model.status.text)
             }
             if model.silentOutput {
-                Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
+                Label(L("Only digital silence has arrived so far. If an app is playing to this output, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."),
                       systemImage: "speaker.slash")
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !model.incompatibleBridgePlugins.isEmpty {
-                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope LABS, then reopen the project.",
+                Label(L("An Auraliscope Bridge of another version is connected (%@). Install the Bridge that comes with this Auraliscope, then reopen the project.",
                         model.incompatibleBridgePlugins.map { $0.hostName }.joined(separator: ", ")),
                       systemImage: "exclamationmark.triangle")
                     .font(.system(size: 11)).foregroundStyle(Theme.ochre)
@@ -642,21 +798,23 @@ private struct AudioPane: View {
                 SettingsNote(L("At launch, Auraliscope meters the current macOS default output, what your Mac is playing (the default input before macOS 14.2)."))
             } else {
                 SettingsNote(model.bridgeError.map { L("DAW plugin receiver unavailable: %@", $0) }
-                    ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported."))
-                SettingsNote(L("Each insert measures its own audio inside the DAW; Auraliscope LABS shows its results. The plugin window's button also chooses its insert here."))
+                    ?? L("DAW plugins: insert Auraliscope Bridge (VST3 or AU) on a track, bus or master in your DAW; each instance appears here under its name. Mono and stereo inserts are supported, and in VST3 immersive buses up to 9.1.6."))
+                SettingsNote(L("Each insert measures its own audio inside the DAW; Auraliscope shows its results. The plugin window's button also chooses its insert here."))
             }
         }
         SettingsSection(title: L("PRIVACY")) {
             SettingsRow(title: L("Microphone access")) { PermissionControl() }
             SettingsNote(L("Needed to meter any input. After changing it in System Settings, click the arrow to check again."))
-            Divider()
+            SettingsDivider()
             SettingsRow(title: L("System audio recording")) {
-                Button(L("Open System Settings")) {
+                Button {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture")!)
+                } label: {
+                    Label(L("Open System Settings"), systemImage: "gear")
                 }
                 .glassButton()
             }
-            SettingsNote(L("Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope LABS in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
+            SettingsNote(L("Needed to meter an output. macOS asks when output capture starts. If the meters stay silent, allow Auraliscope in Privacy & Security → Screen & System Audio Recording, then choose the output again."))
         }
         // The pane never shows a state from before a change made in System Settings.
         .onAppear { AudioPermission.shared.refresh() }
@@ -673,26 +831,36 @@ private struct ChannelsPane: View {
             // The four-segment mode picker gets a full-width row of its own: beside the diagram it made the
             // pane wider than the window's default size.
             HStack(alignment: .center, spacing: 16) {
-                LayoutDiagram(layout: draft.layout ?? model.speakerLayout)
+                LayoutDiagram(layout: model.layoutFromPlugin ? model.shownLayout : draft.layout ?? model.speakerLayout)
                     .frame(width: 96, height: 96)
                 SettingsRow(title: L("Immersive format")) {
-                    Picker(L("Immersive format"), selection: draft.binding(\.layout, live: { model.speakerLayout })) {
-                        ForEach(SpeakerLayout.allCases) { layout in
-                            Text(L("%@ · %d channels", layout.name, layout.channelCount)).tag(layout)
+                    if model.layoutFromPlugin {
+                        // A DAW plugin's immersive bus: its own format, not a choice.
+                        Text(verbatim: L("%@ · %d channels", model.shownLayoutName, Int(model.selectedDevice?.channels ?? 0)))
+                            .font(.system(size: 12)).foregroundStyle(Theme.secondary)
+                            .frame(width: 170, alignment: .leading)
+                    } else {
+                        Picker(L("Immersive format"), selection: draft.binding(\.layout, live: { model.speakerLayout })) {
+                            ForEach(SpeakerLayout.allCases) { layout in
+                                Text(L("%@ · %d channels", layout.name, layout.channelCount)).tag(layout)
+                            }
                         }
+                        .labelsHidden()
+                        .frame(width: 170)
                     }
-                    .labelsHidden()
-                    .frame(width: 170)
                 }
             }
-            .padding(.vertical, 10)
-            Divider()
+            .padding(.vertical, SettingsMetrics.inset - 4)
+            if model.layoutFromPlugin {
+                SettingsNote(L("The DAW plugin's bus sets the format and the routing: each of its channels feeds its own speaker. The format chosen here returns with audio devices."))
+            }
+            SettingsDivider()
             SettingsRow(title: L("Show Mono mode")) {
                 Toggle(L("Show Mono mode"), isOn: draft.binding(\.mono, live: { model.monoEnabled }))
                     .toggleStyle(.switch).controlSize(.small).labelsHidden()
             }
             SettingsNote(L("Mono reads only the input routed to L and is rarely needed, so it stays out of the mode selector, the Meter menu and Auto until you turn it on."))
-            Divider()
+            SettingsDivider()
             // The panels' glass switch, trailing like every other row's control.
             SettingsRow(title: L("Monitoring mode")) {
                 let showsMono = draft.mono ?? model.monoEnabled
@@ -710,16 +878,18 @@ private struct ChannelsPane: View {
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.secondary)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
-                Button(L("Default Order")) {
-                    draft.binding(\.routing, live: { model.sourceForRole }).wrappedValue = model.defaultAssignment
-                }
-                .glassButton()
-                .disabled(draft.routingLocked)
-                    .help(L("Input 1 to the first channel, input 2 to the second, and so on"))
+                ChannelOrderMenu(model: model)
+                    .disabled(draft.routingLocked || model.layoutFromPlugin)
             }
-            .frame(minHeight: 34)
-            ForEach(model.speakerLayout.groups, id: \.self) { group in
-                Divider()
+            .frame(minHeight: SettingsMetrics.row)
+            if model.selectedDevice != nil && !model.layoutFromPlugin {
+                DeviceSpeakersNote(model: model)
+            }
+            if model.selectedDevice?.name.localizedCaseInsensitiveContains("Pro Tools") == true && !model.layoutFromPlugin {
+                SettingsNote(L("Pro Tools sends surround in film order (L C R Ls Rs LFE…), not in SMPTE order (L R C LFE Ls Rs…): with SMPTE order its surrounds are shown at the front. Set its speakers up in Audio MIDI Setup or choose Channel Order ▸ Film Order, unless its I/O Setup is remapped, and the format that matches its output bus."))
+            }
+            ForEach(model.shownLayout.groups, id: \.self) { group in
+                SettingsDivider()
                 HStack(spacing: 6) {
                     Capsule().fill(Theme.groupColor(group)).frame(width: 8, height: 3)
                     Text(group.localizedName.uppercased(with: l10n.locale))
@@ -727,16 +897,86 @@ private struct ChannelsPane: View {
                         .foregroundStyle(Theme.tertiary)
                     Spacer()
                 }
-                .padding(.top, 8)
-                ForEach(model.speakerLayout.speakers.filter { $0.group == group }, id: \.role) { speaker in
+                .padding(.top, 12)
+                .padding(.bottom, 2)
+                ForEach(model.shownLayout.speakers.filter { $0.group == group }, id: \.role) { speaker in
                     RoutingRow(model: model, speaker: speaker)
-                        .disabled(draft.routingLocked)
+                        .disabled(draft.routingLocked || model.layoutFromPlugin)
                 }
             }
             if draft.routingLocked {
                 SettingsNote(L("Apply the source and format first, then route their channels."))
             }
             SettingsNote(L("Routing is saved per device and format. A change restarts capture and resets Integrated LUFS. LFE shows Peak and RMS but is excluded from LUFS, per BS.1770."))
+        }
+    }
+}
+
+/// Routes every channel of the format in one go (staged, applied with the rest): as the device's speakers are set up
+/// in Audio MIDI Setup, or in a host's channel order.
+private struct ChannelOrderMenu: View {
+    @ObservedObject var model: MeterModel
+    @ObservedObject private var l10n = Localizer.shared
+    @ObservedObject private var draft = SettingsDraft.shared
+
+    var body: some View {
+        let speakers = model.deviceSpeakers
+        Menu {
+            Button(speakers.map { L("Audio MIDI Setup (%@)", $0.name) } ?? L("Audio MIDI Setup")) { stage(model.deviceAssignment) }
+                .disabled(speakers == nil)
+            Divider()
+            Button(L("SMPTE / ITU: L R C LFE Ls Rs…")) { stage(model.smpteAssignment) }
+            Button(L("Film (Pro Tools): L C R Ls Rs LFE…")) { stage(model.filmAssignment) }
+            Button(L("VST3 (Nuendo, Cubase): L R C LFE Lrs Rrs Lss Rss…")) { stage(model.vst3Assignment) }
+        } label: {
+            Label(L("Channel Order"), systemImage: "list.number")
+        }
+        .menuStyle(.button)
+        .glassButton()
+        .fixedSize()
+        .help(L("Routes every channel of this format at once: as the device's speakers are set up in Audio MIDI Setup, or in a host's channel order"))
+    }
+
+    private func stage(_ routing: [Int32]?) {
+        guard let routing else { return }
+        draft.binding(\.routing, live: { model.sourceForRole }).wrappedValue = routing
+    }
+}
+
+/// Where the device's default routing comes from: its speaker configuration in Audio MIDI Setup, or SMPTE order.
+private struct DeviceSpeakersNote: View {
+    @ObservedObject var model: MeterModel
+    @ObservedObject private var l10n = Localizer.shared
+    @ObservedObject private var draft = SettingsDraft.shared
+
+    var body: some View {
+        let speakers = model.deviceSpeakers
+        let format = draft.layout ?? model.speakerLayout
+        if let speakers {
+            SettingsNote(L("Audio MIDI Setup sets this device's speakers up as %@: unless you route them here, its channels feed those speakers.", speakers.name))
+            if let layout = speakers.layout, layout != format {
+                HStack(alignment: .firstTextBaseline) {
+                    SettingsNote(L("The format chosen above is %@: speakers it has that Audio MIDI Setup does not describe stay unrouted.", format.name))
+                    Button {
+                        draft.binding(\.layout, live: { model.speakerLayout }).wrappedValue = layout
+                    } label: {
+                        Label(L("Use %@", layout.name), systemImage: "hifispeaker.2")
+                    }
+                    .glassButton()
+                    .fixedSize()
+                }
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline) {
+                SettingsNote(L("No speakers are set up for this device in Audio MIDI Setup, so input 1 feeds the first channel in SMPTE order, input 2 the second, and so on. Set them up there (Configure Speakers), or choose a Channel Order."))
+                Button {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Audio MIDI Setup.app"))
+                } label: {
+                    Label(L("Audio MIDI Setup…"), systemImage: "pianokeys")
+                }
+                .glassButton()
+                .fixedSize()
+            }
         }
     }
 }
@@ -756,7 +996,8 @@ private struct RoutingRow: View {
             })) {
                 Text(L("Off")).tag(Int32(-1))
                 ForEach(0..<Int(min(model.selectedDevice?.channels ?? 0, 64)), id: \.self) { source in
-                    Text(model.selectedDevice?.output == true ? L("Output %d", source + 1) : L("Input %d", source + 1)).tag(Int32(source))
+                    Text(model.selectedDevice?.isBridge == true ? L("Channel %d", source + 1)
+                         : model.selectedDevice?.output == true ? L("Output %d", source + 1) : L("Input %d", source + 1)).tag(Int32(source))
                 }
             } label: {
                 Text(speaker.name)
@@ -785,8 +1026,7 @@ private struct AppearancePane: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.top, 14)
-            .padding(.bottom, 10)
+            .padding(.vertical, SettingsMetrics.inset - 4)
             SettingsNote(L("Auto follows macOS. The sun and moon button in the toolbar, or View ▸ Appearance, switches between Light and Dark at any time."))
         }
         SettingsSection(title: L("COLOR")) {
@@ -999,19 +1239,21 @@ private struct ApplyBar: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if draft.dirty {
-                Button(L("Revert")) { draft.revert() }
+                Button { draft.revert() } label: { Label(L("Revert"), systemImage: "arrow.uturn.backward") }
                     .glassButton()
                     .disabled(draft.outcome == .checking)
-                Button(L("Apply")) { draft.apply(model: model) }
+                Button { draft.apply(model: model) } label: { Label(L("Apply"), systemImage: "checkmark") }
                     .glassButton(prominent: true)
                     .keyboardShortcut(.defaultAction)
                     .disabled(draft.outcome == .checking)
             }
         }
-        .padding(.horizontal, 26)
+        .padding(.horizontal, SettingsMetrics.gutter + SettingsMetrics.inset)
         .padding(.vertical, 12)
         .background {
-            Theme.windowBottom.opacity(0.97)
+            // Frosted over the page that scrolls under it.
+            Rectangle().fill(.ultraThinMaterial)
+                .overlay { Theme.sidebarTint }
                 .overlay(alignment: .top) { Rectangle().fill(Theme.hairline.opacity(Theme.dark ? 0.09 : 0.11)).frame(height: 0.5) }
         }
     }
@@ -1056,10 +1298,10 @@ struct PreviewBanner: View {
                 Label(L("Previewing settings"), systemImage: "eye.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.ink)
-                Button(L("Revert")) { draft.revert() }
+                Button { draft.revert() } label: { Label(L("Revert"), systemImage: "arrow.uturn.backward") }
                     .glassButton()
                     .controlSize(.small)
-                Button(L("Apply")) { draft.apply(model: model) }
+                Button { draft.apply(model: model) } label: { Label(L("Apply"), systemImage: "checkmark") }
                     .glassButton(prominent: true)
                     .controlSize(.small)
             }
@@ -1072,28 +1314,33 @@ struct PreviewBanner: View {
     }
 }
 
+/// A titled group of settings: its title on the column's text edge, then one glass card (the meter's panel surface)
+/// whose rows and notes all sit at `SettingsMetrics.inset` from its edge. Row groups (a row and its note) are parted by
+/// `SettingsDivider`.
 struct SettingsSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: SettingsMetrics.titleGap) {
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .tracking(Localizer.shared.tracking(0.6))
                 .foregroundStyle(Theme.tertiary)
-                .padding(.leading, 12)
-            // The meter's panel material, opaque here: a lit top edge fading down the sides.
-            VStack(spacing: 0) { content }
-                .padding(.horizontal, 14)
-                .background(Theme.cardTint, in: RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: Theme.cardRadius - 4, style: .continuous)
-                        .strokeBorder(LinearGradient(colors: Theme.dark ? [Color.white.opacity(0.10), Color.white.opacity(0.03)]
-                                                                         : [Theme.hairline.opacity(0.06), Theme.hairline.opacity(0.10)],
-                                                     startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
-                }
+                .padding(.leading, SettingsMetrics.inset)
+            VStack(alignment: .leading, spacing: 0) { content }
+                .padding(.horizontal, SettingsMetrics.inset)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background { CardSurface(radius: SettingsMetrics.radius) }
         }
+    }
+}
+
+/// The hairline between two row groups of a card, the same in every pane.
+struct SettingsDivider: View {
+    var body: some View {
+        Rectangle().fill(Theme.hairline.opacity(Theme.dark ? 0.10 : 0.12)).frame(height: 0.5)
     }
 }
 
@@ -1115,7 +1362,7 @@ struct SettingsRow<Control: View>: View {
             }
             .padding(.vertical, 8)
         }
-        .frame(minHeight: 36)
+        .frame(minHeight: SettingsMetrics.row)
     }
 
     private var label: some View {
@@ -1124,7 +1371,8 @@ struct SettingsRow<Control: View>: View {
     }
 }
 
-private struct SettingsNote: View {
+/// The explanation under a row: as wide as the card's text column, with the same space below it in every pane.
+struct SettingsNote: View {
     let text: String
     init(_ text: String) { self.text = text }
 
@@ -1134,6 +1382,6 @@ private struct SettingsNote: View {
             .lineSpacing(Localizer.shared.paragraphSpacing)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 10)
+            .padding(.bottom, 12)
     }
 }
