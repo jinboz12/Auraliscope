@@ -98,7 +98,8 @@ Discord linked in Settings ▸ General ▸ Feedback.
 
 ## License
 
+This project is a vibe coding project with multiple ai agents.
 Copyright © 2026 JINBOZ. Licensed under **GPL-3.0-only**. See [LICENSE](LICENSE), [COPYRIGHT.md](COPYRIGHT.md),
-[third-party notices](docs/THIRD_PARTY_NOTICES.md) and [image rights](docs/ASSET_RIGHTS.md). O
+[third-party notices](docs/THIRD_PARTY_NOTICES.md) and [image rights](docs/ASSET_RIGHTS.md).
 The software is provided "as is", without warranty of any kind. Loudness standard and service names belong to
 their owners.
