@@ -40,10 +40,6 @@ enum MeterScale {
         CGFloat(max(0, min(1, (db - spectrumFloor) / -spectrumFloor)))
     }
 
-    static func loudnessFraction(_ lufs: Float) -> CGFloat {
-        CGFloat(max(0, min(1, (lufs - loudnessFloor) / -loudnessFloor)))
-    }
-
     /// Fixed one-decimal text with a true minus sign; silence reads as −∞.
     /// Whole number with a typographic minus, e.g. "−18".
     static func signedInteger(_ value: Float) -> String {
@@ -501,6 +497,47 @@ enum SpectrogramTone {
     }
 }
 
+/// The live spectrum in a card of its own, as the horizontal strip shows it beside the waterfall: frequency runs left to
+/// right on the log axis and level rises from the −96 dB floor, with the level labels at the left and the frequency
+/// labels under the plot. The curve is worked out on the spectrum's usual axes (`canonical`, level across and
+/// frequency up) and turned a quarter onto `plot`, so it is the same curve as beside the waterfall.
+struct SpectrumCardLayout {
+    static let levelLabels: CGFloat = 30
+    /// The least room between two frequency labels across.
+    static let labelSpacing: CGFloat = 34
+
+    let plot: CGRect
+    let canonical: SpectrogramLayout
+
+    init(size: CGSize) {
+        let top: CGFloat = 8, margin: CGFloat = 12
+        plot = CGRect(x: Self.levelLabels, y: top, width: max(1, size.width - Self.levelLabels - margin),
+                      height: max(1, size.height - top - FrequencyAxis.labelHeight))
+        canonical = SpectrogramLayout(spectrumOnly: CGRect(x: 0, y: 0, width: plot.height, height: plot.width))
+    }
+
+    /// A point on the canonical axes, turned onto the plot.
+    func point(_ p: CGPoint) -> CGPoint { CGPoint(x: plot.minX + (plot.width - p.y), y: plot.maxY - p.x) }
+    func rect(_ r: CGRect) -> CGRect {
+        let a = point(CGPoint(x: r.minX, y: r.minY)), b = point(CGPoint(x: r.maxX, y: r.maxY))
+        return CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+    }
+
+    func x(frequency: Double, sampleRate: Double) -> CGFloat {
+        point(CGPoint(x: 0, y: canonical.y(frequency: frequency, sampleRate: sampleRate))).x
+    }
+    func y(decibels db: Float) -> CGFloat { point(CGPoint(x: canonical.x(decibels: db), y: 0)).y }
+    func frequency(x: CGFloat, sampleRate: Double) -> Double {
+        canonical.frequency(y: plot.width - (x - plot.minX), sampleRate: sampleRate)
+    }
+    /// The fine band (of `rows`) under `x`, as `SpectrogramLayout.row(y:rows:)`.
+    func row(x: CGFloat, rows: Int) -> Double { canonical.row(y: plot.width - (x - plot.minX), rows: rows) }
+
+    func frequencyTicks(sampleRate: Double) -> [(Double, String)] {
+        SpectrogramLayout.frequencyTicks(canonical, sampleRate: sampleRate, spacing: Self.labelSpacing)
+    }
+}
+
 /// The Spectrum card's display well, which holds the spectrogram and the live spectrum on one frequency axis:
 /// frequency runs bottom to top on the log axis. A vertical piano keyboard on the left shares that axis, so
 /// each key sits exactly on its pitch band, with octave labels (C1, C2…) left of the keys. The waterfall
@@ -526,6 +563,9 @@ struct SpectrogramLayout {
     static let minWaterfall: CGFloat = 160
     /// Level grid of the spectrum, in dBFS.
     static let grid: [Float] = [0, -24, -48, -72]
+    /// The `strip` width for the waterfall alone: the horizontal strip shows the live spectrum in a card of its own
+    /// (`SpectrumCardLayout`), so the waterfall takes the whole well.
+    static let split: CGFloat = -1
 
     let keyboard: CGRect
     /// The waterfall.
@@ -552,6 +592,12 @@ struct SpectrogramLayout {
         let left = spectrumLeft ? margin : keyboard.maxX + Self.keyGap
         let right = spectrumLeft ? size.width - keyboard.minX + Self.keyGap : margin
         let available = max(1, size.width - left - right)
+        if requested == Self.split {
+            plot = CGRect(x: left, y: top, width: available, height: height)
+            spectrum = CGRect(x: spectrumLeft ? plot.minX : plot.maxX, y: top, width: 0, height: height)
+            seconds = span > 0 ? span : max(Self.minSeconds, min(Self.maxSeconds, Double((available / Self.pointsPerSecond).rounded())))
+            return
+        }
         let automatic = min(240, max(Self.minStrip, (available * 0.24).rounded()))
         let upper = max(Self.minStrip, available - Self.spectrumGap - Self.minWaterfall)
         let valid = requested.isFinite && requested > 0 ? requested.rounded() : automatic
@@ -567,6 +613,19 @@ struct SpectrogramLayout {
         }
         seconds = span > 0 ? span : max(Self.minSeconds, min(Self.maxSeconds, Double((waterfall / Self.pointsPerSecond).rounded())))
     }
+
+    /// The live spectrum alone in `rect`, on its usual axes (level across from the floor at the left, frequency up),
+    /// for `SpectrumCardLayout`, which turns it a quarter so frequency runs across.
+    init(spectrumOnly rect: CGRect) {
+        mirrored = false
+        keyboard = .zero
+        plot = rect
+        spectrum = rect
+        seconds = Self.minSeconds
+    }
+
+    /// Whether the live spectrum shares the well (it does not in the horizontal strip).
+    var showsSpectrum: Bool { spectrum.width > 0 }
 
     /// Centre of the octave labels' column, beside the keyboard on its outer side.
     var noteLabelX: CGFloat { mirrored ? keyboard.maxX + 2 + (Self.noteLabels - 4) / 2 : (Self.noteLabels - 4) / 2 }
@@ -616,7 +675,7 @@ struct SpectrogramLayout {
     static let frequencyMarks: [(Double, String)] = [(20, "20"), (30, "30"), (50, "50"), (100, "100"), (200, "200"),
         (300, "300"), (500, "500"), (1_000, "1k"), (2_000, "2k"), (3_000, "3k"), (5_000, "5k"), (10_000, "10k"), (20_000, "20k")]
 
-    static func frequencyTicks(_ layout: SpectrogramLayout, sampleRate: Double) -> [(Double, String)] {
+    static func frequencyTicks(_ layout: SpectrogramLayout, sampleRate: Double, spacing: CGFloat = 13) -> [(Double, String)] {
         let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
         // The top of the axis is always named (20k at 44.1 kHz and above), so the full range reads at a glance;
         // its label sits just under the edge (`isTopEdge`).
@@ -626,9 +685,9 @@ struct SpectrogramLayout {
         let order = frequencyMarks.filter { [100, 1_000, 10_000].contains($0.0) } + frequencyMarks.filter { ![100, 1_000, 10_000].contains($0.0) }
         for mark in order where mark.0 < upper {
             let y = layout.y(frequency: mark.0, sampleRate: sampleRate)
-            guard y - 12 > layout.spectrum.minY, y < layout.spectrum.maxY + 1 else { continue }
+            guard y - spacing + 1 > layout.spectrum.minY, y < layout.spectrum.maxY + 1 else { continue }
             // The top label hangs below its line, toward the marks under it, so it needs twice the room.
-            if kept.allSatisfy({ abs(layout.y(frequency: $0.0, sampleRate: sampleRate) - y) >= ($0.0 >= upper ? 26 : 13) }) {
+            if kept.allSatisfy({ abs(layout.y(frequency: $0.0, sampleRate: sampleRate) - y) >= ($0.0 >= upper ? 2 * spacing : spacing) }) {
                 kept.append(mark)
             }
         }
@@ -906,10 +965,12 @@ enum HeroLayout {
 }
 
 enum ColumnLayout {
-    static let minStage: CGFloat = 300
-    static let maxStage: CGFloat = 620
+    /// The divider between the analyzers and the Soundstage column moves freely between these: the Soundstage column
+    /// as narrow as its stereometer and readings stay legible, the analyzers as narrow as the Spectrum panel's own
+    /// window may be (`MeterPanel.minimumSize`), so either side can take most of a wide window.
+    static let minStage: CGFloat = 280
     static let defaultStage: CGFloat = 380
-    static let minAnalyzers: CGFloat = 600
+    static let minAnalyzers: CGFloat = 520
 
     /// The right-hand column holds the Soundstage room above the Channel Levels panel; the room's share of the
     /// column's height is stored, and each panel keeps its minimum.
@@ -949,7 +1010,7 @@ enum ColumnLayout {
     /// Soundstage width for a requested width inside `total` (both columns and the divider).
     static func stageWidth(_ requested: CGFloat, total: CGFloat) -> CGFloat {
         let valid = requested.isFinite && requested > 0 ? requested : defaultStage
-        let upper = min(maxStage, total - PanelLayout.divider - minAnalyzers)
+        let upper = max(minStage, total - PanelLayout.divider - minAnalyzers)
         return PanelLayout.clamp(valid.rounded(), minStage, upper)
     }
 }
@@ -1033,8 +1094,9 @@ struct SoundstageLayout {
     }
     /// The bar's height for a lane count that may be between resolutions while a band switch animates: straight
     /// between the heights of 1, 3 and 5 lanes, so the section glides instead of jumping.
+    private static let laneCounts = StereoBands.Resolution.allCases.map(\.count).sorted()
     static func trackHeight(lanes: CGFloat) -> CGFloat {
-        let counts = StereoBands.Resolution.allCases.map(\.count).sorted()
+        let counts = laneCounts
         let clamped = max(CGFloat(counts.first!), min(CGFloat(counts.last!), lanes))
         for (low, high) in zip(counts, counts.dropFirst()) where clamped <= CGFloat(high) {
             let t = (clamped - CGFloat(low)) / CGFloat(high - low)
@@ -1055,8 +1117,6 @@ struct SoundstageLayout {
     /// Column pitch in Spatial: small layouts get wider columns (41 pt for 3.0, 36 for 5.1.2) down to 30 pt for 14
     /// or more channels. A narrow well compresses every column alike.
     static func spatialPitch(channels: Int) -> CGFloat { max(30, min(42, 44 - CGFloat(channels))) }
-    /// Label offset beyond a node's rim, shared by the stereo fit below and `label(_:)`.
-    static let labelOffset: CGFloat = 12
 
     let speakers: [Speaker]
     let presence: CGFloat
@@ -1065,6 +1125,10 @@ struct SoundstageLayout {
     /// Multi Channel L/R alone says little about what reaches the listener.
     let correlationWeight: CGFloat
     let stageWell: CGRect
+    /// The stereometer's listener point and radius in the well (fixed by its size, so worked out once: the plot
+    /// asks for them at every point it draws).
+    let scopeCenter: CGPoint
+    let scopeRadius: CGFloat
     /// Square the room is fitted into; the room itself zooms within it as presence changes.
     let radar: CGRect
     /// The listener on screen, and the length of one room unit (the bed ring's radius) at the listener, in points.
@@ -1106,6 +1170,10 @@ struct SoundstageLayout {
         speakers = layout.speakers
         stageWell = CGRect(origin: .zero, size: CGSize(width: max(1, size.width), height: max(1, size.height)))
         let inner = stageWell.insetBy(dx: 12, dy: 10)
+        let scopeHeight = inner.height - (Self.showsLegend(wellHeight: stageWell.height) ? Self.legendHeight + 6 : 0)
+        scopeRadius = max(20, min(inner.width / 2 - Self.scopeMargin + 6, scopeHeight - Self.scopeMargin - 16))
+        scopeCenter = CGPoint(x: inner.midX,
+                              y: inner.minY + Self.scopeMargin + scopeRadius + max(0, scopeHeight - Self.scopeMargin - scopeRadius - 16) / 2)
         // Decided for the full section at its tallest (five lanes) and independent of the format mix, so the section
         // keeps its form through band switches and mode changes, and fewer lanes always give the bars more height.
         let fullSection = Self.correlationHeight(lanes: CGFloat(StereoBands.count)) + Self.roomGap
@@ -1352,9 +1420,6 @@ struct SoundstageLayout {
 
     /// Dense layouts in a short well keep orientation labels; the full channel names remain in Channel Levels.
     var compactRoom: Bool { speakers.count > 8 && stageScale < 64 }
-    func showsRoomLabel(_ speaker: Speaker) -> Bool {
-        !compactRoom || [Role.left, Role.right, Role.center, Role.lfe, Role.leftTopFront, Role.rightTopFront].contains(speaker.role)
-    }
 
     // MARK: Stereometer (Stereo)
 
@@ -1370,17 +1435,6 @@ struct SoundstageLayout {
     /// The stereometer's half disc, in Stereo: a polar sample plot, mid (L+R) straight up and side (R−L) to the
     /// right, so a mono sample points to M, a sample on L alone to the upper left (−45°), on R alone to the upper
     /// right (+45°), and an out-of-phase one lies along the horizon. Distance from the centre is the sample's level.
-    var scopeCenter: CGPoint {
-        let inner = stageWell.insetBy(dx: 12, dy: 10)
-        let height = inner.height - (showsScopeLegend ? Self.legendHeight + 6 : 0)
-        let slack = max(0, height - Self.scopeMargin - scopeRadius - 16)
-        return CGPoint(x: inner.midX, y: inner.minY + Self.scopeMargin + scopeRadius + slack / 2)
-    }
-    var scopeRadius: CGFloat {
-        let inner = stageWell.insetBy(dx: 12, dy: 10)
-        let height = inner.height - (showsScopeLegend ? Self.legendHeight + 6 : 0)
-        return max(20, min(inner.width / 2 - Self.scopeMargin + 6, height - Self.scopeMargin - 16))
-    }
     /// The band legend shows while the stereometer keeps a 40 pt radius with it; in a shorter room (a 720p
     /// screen) it folds away and the rims' colours name the bands.
     var showsScopeLegend: Bool { Self.showsLegend(wellHeight: stageWell.height) }
@@ -1409,10 +1463,14 @@ struct SoundstageLayout {
     func scopeLabel(angle: Double) -> CGPoint {
         scopePoint(angle: angle, fraction: (rimRadius(StereoBands.count - 1) + 10) / max(1, scopeRadius))
     }
-    /// The band legend under the plot.
+    /// Width kept in each lower corner of the well for the stereometer's readings (BALANCE, WIDTH, LEVEL).
+    static let readingColumn: CGFloat = 72
+    /// The band legend under the plot, on the readings' line between them.
     var scopeLegend: CGRect {
         let inner = stageWell.insetBy(dx: 12, dy: 10)
-        return CGRect(x: inner.minX, y: inner.maxY - Self.legendHeight, width: inner.width, height: Self.legendHeight)
+        let side = min(Self.readingColumn, inner.width / 4)
+        return CGRect(x: inner.minX + side, y: inner.maxY - Self.legendHeight, width: max(1, inner.width - side * 2),
+                      height: Self.legendHeight)
     }
     /// Where a sample's level lands on the radius.
     static func scopeFraction(decibels db: Float) -> CGFloat {

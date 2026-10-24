@@ -67,17 +67,21 @@ cat > "$stage/resources/welcome.html" <<EOF
 <p>Audio metering, spatial analysis and loudness reports for macOS.</p>
 <p>Choose the app and the plugin formats you use. The app installs in Applications; VST3 and Audio Unit plugins
 install in /Library/Audio/Plug-Ins. Requires Apple silicon and macOS 13 or later.</p>
-<p>Quit Auraliscope and your DAW before installing. This updates the normal Auraliscope app and earlier Bridge
-plugins. Auraliscope LABS remains separate and is not removed.</p>
-<p>Copyright © 2026 JINBOZ. All rights reserved. This package is unsigned and not notarized.</p>
+<p>Quit Auraliscope and your DAW before installing. This release candidate replaces Auraliscope 2.0 and earlier Bridge plugins
+in place. Auraliscope LABS is not removed.</p>
+<p>Copyright © 2026 JINBOZ. Original source code is licensed under GNU GPL v3 only. Official compiled packages may be sold;
+recipients retain their GPL rights. See the included source distribution and image-rights records.</p>
+<p>This package is unsigned and not notarized.</p>
 </body></html>
 EOF
+cp LICENSE "$stage/resources/license.txt"
 cat > "$stage/resources/readme.html" <<EOF
 <html><body style="font-family: -apple-system, sans-serif; font-size: 13px">
 <p><b>Start</b>: open Auraliscope, choose Audio devices or Host plugins in Settings → Audio.
 For a DAW source, insert Auraliscope Bridge and click Open Auraliscope.</p>
-<p><b>Upgrading from LABS</b>: install both app and plugins. LABS settings remain separate. Remove duplicate Bridge
-copies from your user Library only after confirming their location; rescan plugins in your DAW.</p>
+<p><b>Upgrading from LABS</b>: install both app and plugins. On first launch Auraliscope takes over any LABS setting
+Auraliscope itself never set. Remove duplicate Bridge copies from your user Library only after confirming their
+location; rescan plugins in your DAW.</p>
 <p><b>First launch</b>: if macOS blocks the download, use System Settings → Privacy &amp; Security → Open Anyway
 for this package after verifying its source. Audio permissions are requested when needed.</p>
 <p><b>Uninstall</b>: remove /Applications/Auraliscope.app and the Auraliscope Bridge bundles from
@@ -91,6 +95,7 @@ cat > "$stage/distribution.xml" <<EOF
     <title>$name</title>
     <welcome file="welcome.html" mime-type="text/html"/>
     <readme file="readme.html" mime-type="text/html"/>
+    <license file="license.txt" mime-type="text/plain"/>
     <options customize="allow" require-scripts="false" hostArchitectures="arm64" rootVolumeOnly="true"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <volume-check><allowed-os-versions><os-version min="13.0"/></allowed-os-versions></volume-check>
@@ -99,7 +104,7 @@ cat > "$stage/distribution.xml" <<EOF
         <line choice="vst3"/>
         <line choice="au"/>
     </choices-outline>
-    <choice id="app" title="Auraliscope (app)" description="The audio meter, in Applications. Updates earlier normal releases.">
+    <choice id="app" title="Auraliscope (app)" description="The audio meter, in Applications. Replaces Auraliscope 2.0 and earlier releases.">
         <pkg-ref id="com.jinboz.SoundMeterJBZ"/>
     </choice>
     <choice id="vst3" title="Auraliscope Bridge VST3" description="The VST3 plugin, in /Library/Audio/Plug-Ins/VST3.">

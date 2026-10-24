@@ -13,6 +13,8 @@ enum StripLayout {
     static let controls: CGFloat = 34
     /// Flexible panels never narrow below this before the fixed ones give way.
     static let minFlexible: CGFloat = 200
+    /// The Spectrum panel's two cards (`SpectrumPanel`) need about twice that.
+    static let minSpectrum: CGFloat = 400
 
     /// A fixed width (for a panel of a natural shape) or a share of the flexible room.
     private enum Want { case fixed(CGFloat), flexible(CGFloat) }
@@ -26,9 +28,45 @@ enum StripLayout {
         case .soundstage: return .fixed(spatial ? min(460, max(300, plot * 1.8 + 40)) : 440)
         case .levels: return .fixed(spatial ? min(600, max(320, CGFloat(channels) * 30 + 80)) : 440)
         case .history: return .flexible(1)
-        case .spectrum: return .flexible(2.3)
+        // Two cards side by side: the waterfall and the live spectrum (`SpectrumPanel`).
+        case .spectrum, .multiFFT: return .flexible(3.4)
         case .waveform: return .flexible(1.4)
         }
+    }
+
+    /// The narrowest a divider drag leaves a panel.
+    static func dragMinimum(_ panel: MeterPanel) -> CGFloat {
+        switch panel {
+        case .loudness: return 280
+        case .spectrum, .multiFFT: return 320
+        case .soundstage, .levels, .vu: return 200
+        case .history, .waveform: return 160
+        }
+    }
+
+    /// Widths for `panels`: the user's `shares` of the room where they set one, the automatic widths for the rest,
+    /// together filling the room.
+    static func widths(_ panels: [MeterPanel], width: CGFloat, height: CGFloat, spatial: Bool, channels: Int,
+                       shares: [MeterPanel: CGFloat]) -> [CGFloat] {
+        let automatic = widths(panels, width: width, height: height, spatial: spatial, channels: channels)
+        let room = max(0, width - CGFloat(max(0, panels.count - 1)) * gap)
+        guard room > 0, panels.contains(where: { shares[$0] != nil }) else { return automatic }
+        let fractions = zip(panels, automatic).map { panel, width in shares[panel] ?? width / room }
+        let total = fractions.reduce(0, +)
+        guard total > 0 else { return automatic }
+        return fractions.map { ($0 / total * room).rounded(.down) }
+    }
+
+    /// The widths after the divider between panel `index` and the next is dragged to give panel `index` `requested`
+    /// points: the pair trades room, each kept to its drag minimum, and the other panels keep theirs.
+    static func dragged(_ panels: [MeterPanel], widths: [CGFloat], index: Int, requested: CGFloat) -> [MeterPanel: CGFloat] {
+        var next = widths
+        let pair = widths[index] + widths[index + 1]
+        let low = dragMinimum(panels[index]), high = pair - dragMinimum(panels[index + 1])
+        let leading = low <= high ? min(high, max(low, requested)) : pair * widths[index] / max(1, pair)
+        next[index] = leading.rounded()
+        next[index + 1] = pair - next[index]
+        return Dictionary(uniqueKeysWithValues: zip(panels, next))
     }
 
     /// Widths for `panels` across a strip `width` wide (the controls and gaps excluded) and `height` tall.
@@ -43,20 +81,36 @@ enum StripLayout {
             case .flexible(let weight): weights += weight
             }
         }
-        let flexibleCount = CGFloat(wants.filter { if case .flexible = $0 { return true } else { return false } }.count)
+        func minimum(_ panel: MeterPanel) -> CGFloat { panel == .spectrum || panel == .multiFFT ? minSpectrum : minFlexible }
+        let flexibleMinimum = zip(panels, wants).reduce(CGFloat(0)) { total, pair in
+            guard case .flexible = pair.1 else { return total }
+            return total + minimum(pair.0)
+        }
         // Without flexible panels the fixed ones share the room in proportion; with them, the fixed ones give way
         // only once the flexible ones would drop below their minimum.
+        let compactMinimum = fixed*0.55 + flexibleMinimum
+        if weights > 0, room < compactMinimum {
+            // At very small widths keep every selected panel nonzero instead of giving all space to fixed cards.
+            return zip(panels,wants).map { panel,want in
+                let base: CGFloat
+                switch want { case .fixed(let width): base = width*0.55; case .flexible: base = minimum(panel) }
+                return (base*room/max(1,compactMinimum)).rounded(.down)
+            }
+        }
         let scale: CGFloat
         if weights == 0 {
             scale = fixed > 0 ? room / fixed : 1
         } else {
-            scale = min(1, max(0.55, (room - flexibleCount * minFlexible) / max(1, fixed)))
+            scale = min(1, max(0.55, (room - flexibleMinimum) / max(1, fixed)))
         }
+        // Each flexible panel has its minimum first (while the room allows); what is left is shared by weight.
         let flexibleRoom = max(0, room - fixed * scale)
-        return wants.map { want in
+        let floor = min(1, flexibleRoom / max(1, flexibleMinimum))
+        let surplus = max(0, flexibleRoom - flexibleMinimum)
+        return zip(panels, wants).map { panel, want in
             switch want {
             case .fixed(let width): return (width * scale).rounded()
-            case .flexible(let weight): return (flexibleRoom * weight / weights).rounded(.down)
+            case .flexible(let weight): return (minimum(panel) * floor + surplus * weight / weights).rounded(.down)
             }
         }
     }
@@ -69,14 +123,16 @@ struct StripView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let panels = placement.stripPanels.filter { !placement.detached.contains($0) }
+            let panels = placement.displayedStripPanels.filter { !placement.detached.contains($0) }
             let inner = CGSize(width: proxy.size.width - 2 * StripLayout.gap, height: proxy.size.height - 2 * StripLayout.gap)
-            let widths = StripLayout.widths(panels, width: inner.width - StripLayout.controls - StripLayout.gap,
-                                            height: inner.height, spatial: model.format == .spatial,
-                                            channels: model.format == .spatial ? model.shownLayout.speakers.count : 2)
-            HStack(spacing: StripLayout.gap) {
+            let room = inner.width - StripLayout.controls - StripLayout.gap
+            let widths = StripLayout.widths(panels, width: room, height: inner.height, spatial: model.format == .spatial,
+                                            channels: model.format == .spatial ? model.shownLayout.speakers.count : 2,
+                                            shares: placement.displayedStripShares)
+            HStack(spacing: 0) {
                 StripControls(model: model)
                     .frame(width: StripLayout.controls)
+                Color.clear.frame(width: StripLayout.gap)
                 ForEach(Array(panels.enumerated()), id: \.element) { index, panel in
                     Group {
                         if panel == .loudness {
@@ -87,19 +143,33 @@ struct StripView: View {
                     }
                     .frame(width: index < widths.count ? widths[index] : 0)
                     .transition(.opacity)
+                    // The gap after each panel but the last resizes it against the next, like the full window's.
+                    if index + 1 < panels.count, index + 1 < widths.count {
+                        PanelDivider(axis: .horizontal, leading: widths[index],
+                                     onResize: { requested in
+                                         let next = StripLayout.dragged(panels, widths: widths, index: index, requested: requested)
+                                         placement.setStripWidths(next, room: max(1, room - CGFloat(panels.count - 1) * StripLayout.gap))
+                                     },
+                                     onReset: { placement.resetStripWidths() },
+                                     identifier: "strip.gap")
+                            .frame(width: StripLayout.gap)
+                    }
                 }
                 if panels.isEmpty {
-                    Text(L("Choose the strip's panels with the button on the left."))
+                    Text(L("Choose the dock's panels with the button on the left."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Theme.tertiary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .frame(width: max(0, inner.width), height: max(0, inner.height))
             .environment(\.panelContext, .strip)
             .padding(StripLayout.gap)
         }
-        // No title bar in the strip: the panels run up to the window's top edge.
-        .ignoresSafeArea(.container, edges: .top)
+        .onAppear { model.configureSpectrumArchitecture() }
+        .onChange(of: model.format) { _ in model.configureSpectrumArchitecture() }
+        .onChange(of: model.sourceIsBridge) { _ in model.configureSpectrumArchitecture() }
+        // MeterView measures the full window in Dock mode; keep the padded row inside those same bounds.
     }
 }
 
@@ -121,8 +191,11 @@ private struct StripControls: View {
                        help: L("Reset: clear peak holds and clip latches, and restart Integrated LUFS"), diameter: 26,
                        action: model.resetMeasurements)
             Spacer(minLength: 0)
+            DiscButton(symbol: "minus", help: L("Minimize (⌘M)"), diameter: 26) {
+                placement.minimizeStrip()
+            }
             StripPanelsMenu()
-            DiscButton(symbol: "rectangle.expand.vertical", help: L("Leave the strip (⌥⌘S)"), diameter: 26) {
+            DiscButton(symbol: "dock.arrow.up.rectangle", help: L("Leave Dock mode (⌥⌘S)"), diameter: 26) {
                 placement.leaveStrip()
             }
         }
@@ -159,7 +232,7 @@ struct StripPanelsMenu: View {
     @State private var open = false
 
     var body: some View {
-        DiscButton(symbol: "rectangle.split.3x1", help: L("Strip panels"), diameter: 26, on: open) { open.toggle() }
+        DiscButton(symbol: "rectangle.split.3x1", help: L("Dock panels"), diameter: 26, on: open) { open.toggle() }
             .popover(isPresented: $open, arrowEdge: .trailing) {
                 StripPanelsForm().padding(14).frame(width: 300)
             }
@@ -172,10 +245,10 @@ struct StripPanelsForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(L("STRIP PANELS"), color: Theme.title)
+            Eyebrow(L("DOCK PANELS"), color: Theme.title)
             VStack(spacing: 2) {
                 ForEach(orderedPanels) { panel in
-                    let included = placement.stripPanels.contains(panel)
+                    let included = placement.stripIncludes(panel)
                     HStack(spacing: 8) {
                         Toggle(isOn: Binding(get: { included }, set: { _ in placement.toggleStripPanel(panel) })) {
                             Label(panel.title, systemImage: panel.symbol)
@@ -185,10 +258,10 @@ struct StripPanelsForm: View {
                         Spacer(minLength: 4)
                         if included {
                             Button { placement.moveStripPanel(panel, by: -1) } label: { Image(systemName: "chevron.left") }
-                                .disabled(placement.stripPanels.first == panel)
+                                .disabled(placement.displayedStripPanels.first == panel)
                                 .help(L("Move Left"))
                             Button { placement.moveStripPanel(panel, by: 1) } label: { Image(systemName: "chevron.right") }
-                                .disabled(placement.stripPanels.last == panel)
+                                .disabled(placement.displayedStripPanels.last == panel)
                                 .help(L("Move Right"))
                         }
                     }
@@ -198,13 +271,20 @@ struct StripPanelsForm: View {
             }
             Divider()
             HStack {
-                Button(L("Dock to Bottom")) { placement.dockStrip() }
+                Button { placement.dockStrip() } label: { Label(L("Move to Bottom"), systemImage: "dock.arrow.down.rectangle") }
                     .help(L("Full width along the bottom of this screen"))
                 Spacer()
-                Button(L("Reset")) { placement.setStripPanels(PanelPlacement.defaultStrip) }
+                Button {
+                    placement.setStripPanels(PanelPlacement.defaultStrip)
+                    placement.resetStripWidths()
+                    UserDefaults.standard.removeObject(forKey: SpectrumPanel.stripShareKey)
+                } label: {
+                    Label(L("Reset"), systemImage: "arrow.counterclockwise")
+                }
+                .help(L("The default panels at their automatic widths"))
             }
             .controlSize(.small)
-            Text(L("Drag the strip's top edge to change its height. It remembers where you leave it."))
+            Text(L("Drag the dock's top edge to change its height, and any gap in it to change the widths on either side (double-click a gap for the automatic widths). It remembers where you leave it."))
                 .font(.system(size: 10))
                 .foregroundStyle(Theme.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -213,7 +293,7 @@ struct StripPanelsForm: View {
 
     /// The strip's panels in their order first, then the rest in the window's order.
     private var orderedPanels: [MeterPanel] {
-        placement.stripPanels + MeterPanel.allCases.filter { !placement.stripPanels.contains($0) }
+        placement.displayedStripPanels + placement.dockMenuPanels.filter { !placement.displayedStripPanels.contains($0) }
     }
 }
 

@@ -106,9 +106,22 @@ final class CoreTests {
                 }
             }
         }
-        checkEqual(MemoryLayout<BodyUniforms>.stride, 88)
+        // With a speaker below the ear plane the whole sphere fits the canvas and the body's quad, in every view.
+        for view in DomeView.allCases {
+            let size = CGSize(width: 380, height: 320)
+            let g = DomeGeometry(size: size, view: view, yaw: 37, lower: true)
+            let u = g.bodyUniforms(opacity: 1, layers: 1, dark: true)
+            for a in stride(from: 0.0, to: 360, by: 15) {
+                for e in stride(from: -90.0, through: 90, by: 15) {
+                    let p = g.project(DomeGeometry.direction(azimuth: a, elevation: e))
+                    checkTrue(p.x >= 0 && p.x <= size.width && p.y >= 0 && p.y <= size.height)
+                    checkTrue(Float(p.y) >= u.minY - 0.01 && Float(p.y) <= u.maxY + 0.01)
+                }
+            }
+        }
+        checkEqual(MemoryLayout<BodyUniforms>.stride, 92)
         checkEqual(MemoryLayout<RadiantCamera>.stride, 96)
-        checkEqual(MemoryLayout<RadiantLook>.stride, 32)
+        checkEqual(MemoryLayout<RadiantLook>.stride, 56)
         // Radiant: the loudest band glows near white and the range's foot fades out; a quiet programme glows dimmer
         // and silence not at all; the level body alone has rings.
         checkTrue(Radiant.seen(0) > 0.9 && Radiant.seen(-1) < 0.05 && Radiant.seen(-0.5) > Radiant.seen(-1))
@@ -296,6 +309,8 @@ final class CoreTests {
             let pipeline = MeterPipeline(sampleRate: 48_000, activeRoles: (0..<Role.count).map { roles.contains($0) },
                                          detector: FormatDetector(initial: .spatial, canDetectSpatial: true), streamID: 1)!
             pipeline.spatialSpectrum = true
+            // The Build 87–97 form, which a Bridge plugin still sends to a display before build 98.
+            pipeline.spatialLegacyPoints = true
             var buffer = [Float](repeating: 0, count: 800 * roles.count)
             var values = [Float](repeating: 0, count: SnapshotSlots.total)
             var frame = 0
@@ -401,6 +416,236 @@ final class CoreTests {
         let short = Array(bytes.dropLast())
         checkTrue(!short.withUnsafeBytes { raw in decoded.withUnsafeMutableBufferPointer { SpatialPointsWire.decode(raw, into: $0.baseAddress!) } })
         checkEqual(decoded[SpatialPoints.status], 0)
+    }
+
+    /// Radiant's observations (`SpatialObservations`, build 98) through the real pipeline (7.1.4, 48 kHz): every
+    /// frequency at the amplitude-weighted centre of gravity of the speakers in the geometry's mapping, one weighted
+    /// reduction that keeps energy, each band's centre of gravity and its spread (second moment) exactly whatever the
+    /// detail, custom and below-ear placements, meters, mirror and rotation, speakers left out, the LFE, silence, the
+    /// header (geometry hash, window time) and the wire form (RESULT tag 58).
+    func testSpatialObservations() {
+        let roles = SpeakerLayout.s714.roles
+        let standard = SpatialGeometry.standard(roles: roles)
+        typealias O = (position: SIMD3<Float>, energy: Float, frequency: Float, low: Float, high: Float, spread: Float)
+        func run(_ geometry: SpatialGeometry = standard, seconds: Double = 1, _ sample: (Int, Int) -> Float) -> (field: [Float], observations: [Float], frames: Int) {
+            let pipeline = MeterPipeline(sampleRate: 48_000, activeRoles: (0..<Role.count).map { roles.contains($0) },
+                                         detector: FormatDetector(initial: .spatial, canDetectSpatial: true), streamID: 1)!
+            pipeline.spatialSpectrum = true
+            pipeline.spatialGeometry = geometry
+            var buffer = [Float](repeating: 0, count: 800 * roles.count)
+            var values = [Float](repeating: 0, count: SnapshotSlots.total)
+            var frame = 0
+            for tick in 0..<Int(seconds * 60) {
+                for i in 0..<800 { for c in 0..<roles.count { buffer[i * roles.count + c] = sample(frame + i, c) } }
+                frame += 800
+                buffer.withUnsafeBufferPointer { pipeline.consume(interleaved: $0.baseAddress!, channels: roles.count, frames: 800, roles: roles) }
+                values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick) / 60) }
+            }
+            return (Array(values[SnapshotSlots.spatialField..<(SnapshotSlots.spatialField + SpatialField.floats)]),
+                    Array(values[SnapshotSlots.spatialObservations..<(SnapshotSlots.spatialObservations + SpatialObservations.floats)]), frame)
+        }
+        func band(_ hz: Double) -> Int { Int(log(hz / 20) / log(1_000) * Double(SpatialField.bandCount)) }
+        func list(_ v: [Float], _ b: Int) -> [O] {
+            var start = 0
+            for k in 0..<b { start += Int(v[SpatialObservations.counts + k]) }
+            return (0..<Int(v[SpatialObservations.counts + b])).map { i in
+                let o = SpatialObservations.observation(start + i)
+                return (SIMD3(v[o], v[o + 1], v[o + 2]), v[o + 3], v[o + 4], v[o + 5], v[o + 6], v[o + 7])
+            }
+        }
+        func all(_ v: [Float]) -> [O] { (0..<SpatialField.bandCount).flatMap { list(v, $0) } }
+        func energy(_ o: [O]) -> Float { o.reduce(0) { $0 + $1.energy } }
+        func centroid(_ o: [O]) -> SIMD3<Float> { o.reduce(SIMD3<Float>.zero) { $0 + $1.position * $1.energy } / max(1e-30, energy(o)) }
+        /// The energy-weighted second moment about the centre of gravity, each observation's own spread included.
+        func moment(_ o: [O]) -> Float {
+            let c = centroid(o)
+            return o.reduce(0) { $0 + $1.energy * (simd_length_squared($1.position - c) + $1.spread * $1.spread) } / max(1e-30, energy(o))
+        }
+        func bandEnergy(_ f: [Float], _ b: Int) -> Float {
+            var total: Float = 0
+            for role in 0..<Role.count where role != Role.lfe { total += f[SpatialField.independent(band: b, role: role)] }
+            for slot in 0..<SpatialField.coherentSlots { total += f[SpatialField.component(band: b, slot: slot)] }
+            return total
+        }
+        func unit(_ g: SpatialGeometry, _ role: Int) -> SIMD3<Float> { let d = g.position(role: role)!; return SIMD3(Float(d.x), Float(d.y), Float(d.z)) }
+        struct Noise {
+            var state: UInt64
+            mutating func next() -> Float {
+                state = state &* 6364136223846793005 &+ 1442695040888963407
+                return (Float(state >> 40) / Float(1 << 24) - 0.5) * 0.4
+            }
+        }
+        func sine(_ hz: Double, _ n: Int) -> Float { Float(0.5 * sin(2 * .pi * hz * Double(n) / 48_000)) }
+        let l = roles.firstIndex(of: Role.left)!, r = roles.firstIndex(of: Role.right)!, c = roles.firstIndex(of: Role.center)!
+        let lfe = roles.firstIndex(of: Role.lfe)!, ls = roles.firstIndex(of: Role.leftSurround)!
+        let left = unit(standard, Role.left), right = unit(standard, Role.right)
+        var g = Noise(state: 7)
+        var shared = [Float](repeating: 0, count: 48_000 * 2)
+        for i in shared.indices { shared[i] = g.next() }
+
+        // A lone speaker: every observation of every band on it, one per band (its bins merged exactly), carrying the
+        // tone's energy (a 0.5 sine is −9.03 dBFS mean square); the header names the geometry and the window's time.
+        let lone = run { n, ch in ch == l ? sine(1_000, n) : 0 }
+        checkEqual(lone.observations[SpatialObservations.Header.status], 1)
+        checkEqual(lone.observations[SpatialObservations.Header.source], SpatialObservations.Source.measured.rawValue)
+        let loneAll = all(lone.observations)
+        // Every bin on L, even 180 dB under the tone: the silent R that shares L's packed transform is zero, not L's
+        // float rounding.
+        checkTrue(!loneAll.isEmpty && loneAll.allSatisfy { simd_distance($0.position, left) < 1e-5 })
+        checkEqual(list(lone.observations, band(1_000)).count, 1)
+        checkEqual(10 * log10(energy(loneAll)), -9.03, accuracy: 0.1)
+        lone.observations.withUnsafeBufferPointer { v in
+            checkEqual(SpatialObservations.hash(v.baseAddress!), standard.hash)
+            let end = SpatialObservations.windowEnd(v.baseAddress!)
+            checkTrue(end <= UInt64(lone.frames) && end + 1_600 >= UInt64(lone.frames) && end % 800 == 0)
+            checkEqual(v[SpatialObservations.Header.windowLength], Float(SpectrumAnalyzer.fftSize))
+        }
+        // Amplitude panning, L at twice R's amplitude: every observation at (2 u_L + u_R) / 3 at every frequency, one per
+        // band, their energies the band's.
+        let panned = run { n, ch in ch == l ? shared[n] : (ch == r ? 0.5 * shared[n] : 0) }
+        let expected = (2 * left + right) / 3
+        checkTrue(all(panned.observations).allSatisfy { simd_distance($0.position, expected) < 1e-4 })
+        for b in 1..<SpatialField.bandCount where bandEnergy(panned.field, b) > 0 {
+            checkEqual(list(panned.observations, b).count, 1)
+            checkEqual(energy(list(panned.observations, b)), bandEnergy(panned.field, b), accuracy: bandEnergy(panned.field, b) * 1e-4)
+        }
+        // Each keeps its frequency: the 12 kHz band's observation is inside its band and spans its bins.
+        let treble = list(panned.observations, band(12_000))[0]
+        checkTrue(treble.low < treble.frequency && treble.frequency < treble.high
+                  && Double(treble.low) >= SpatialField.edge(band(12_000)) - 6 && Double(treble.high) <= SpatialField.edge(band(12_000) + 1) + 6)
+        // Two sources in one band, one in L only and one equally in L and R: each at its own place, little between.
+        let k = band(1_000)
+        let low = SpatialField.edge(k), high = SpatialField.edge(k + 1)
+        let f1 = low + 0.2 * (high - low), f2 = low + 0.8 * (high - low)
+        let two = list(run { n, ch in ch == l ? sine(f1, n) + sine(f2, n) : (ch == r ? sine(f2, n) : 0) }.observations, k)
+        let centre = (left + right) / 2
+        let atLeft = energy(two.filter { simd_distance($0.position, left) < 0.03 })
+        let atCentre = energy(two.filter { simd_distance($0.position, centre) < 0.03 })
+        checkTrue(atLeft > 0.25 * energy(two) && atCentre > 0.4 * energy(two) && atLeft + atCentre > 0.9 * energy(two))
+        // Uncorrelated L and R: observations along the line between them on both sides of the centre. Whatever the
+        // detail, every band keeps its energy, its centre of gravity and its second moment (spread included).
+        var a = Noise(state: 8), bNoise = Noise(state: 9)
+        var ln = [Float](repeating: 0, count: 48_000 * 2), rn = ln
+        for i in ln.indices { ln[i] = a.next(); rn[i] = bNoise.next() }
+        func wide(_ detail: Int) -> [Float] {
+            run(SpatialGeometry(placements: standard.placements, detail: detail, roles: roles)) { n, ch in ch == l ? ln[n] : (ch == r ? rn[n] : 0) }.observations
+        }
+        let fine = wide(32), coarse = wide(2)
+        let line = list(fine, band(3_000))
+        checkTrue(line.count > 8 && line.allSatisfy { abs($0.position.y - left.y) < 1e-3 && abs($0.position.z) < 1e-4 })
+        checkTrue(line.contains { $0.position.x < -0.15 } && line.contains { $0.position.x > 0.15 })
+        checkTrue(all(coarse).count < all(fine).count && all(coarse).count <= 2 * SpatialField.bandCount)
+        for b in 0..<SpatialField.bandCount where energy(list(fine, b)) > 0 {
+            let x = list(fine, b), y = list(coarse, b)
+            checkEqual(energy(y), energy(x), accuracy: energy(x) * 1e-4)
+            checkTrue(simd_distance(centroid(y), centroid(x)) < 1e-4)
+            checkEqual(moment(y), moment(x), accuracy: max(1e-7, moment(x) * 0.01))
+        }
+        // The reduction is recorded: coarse detail moved energy, by at most the layout's diameter.
+        checkTrue(coarse[SpatialObservations.Header.largestMove] > 0 && coarse[SpatialObservations.Header.largestMove] <= 2.0001
+                  && coarse[SpatialObservations.Header.meanMove] <= coarse[SpatialObservations.Header.largestMove])
+
+        // A custom layout with L and R below the ear plane (−20°) at ±45°: the phantom between them lies below the
+        // floor, never raised onto it.
+        var placements = standard.placements
+        placements[Role.left] = SpeakerPlacement(azimuth: -45, elevation: -20)
+        placements[Role.right] = SpeakerPlacement(azimuth: 45, elevation: -20)
+        let low20 = SpatialGeometry(placements: placements, roles: roles)
+        checkTrue(low20.hash != standard.hash && low20.reachesBelow(roles: roles))
+        let below = run(low20) { n, ch in ch == l || ch == r ? shared[n] : 0 }
+        let under = SIMD3<Float>(0, Float(cos(45 * Double.pi / 180) * cos(20 * Double.pi / 180)), Float(sin(-20 * Double.pi / 180)))
+        checkTrue(!all(below.observations).isEmpty && all(below.observations).allSatisfy { simd_distance($0.position, under) < 1e-4 })
+        below.observations.withUnsafeBufferPointer { checkEqual(SpatialObservations.hash($0.baseAddress!), low20.hash) }
+        // Meters: L 2 m and R 3 m at ±30°, every other speaker 2.5 m; the phantom of equal gains at (s_L + s_R) / 2.
+        var metric = standard.placements
+        for role in roles { metric[role].distance = 2.5 }
+        metric[Role.left].distance = 2
+        metric[Role.right].distance = 3
+        let meters = SpatialGeometry(placements: metric, mapping: .positions, roles: roles)
+        checkEqual(meters.mapping, .positions)
+        checkEqual(meters.extent(roles: roles), 3, accuracy: 1e-6)
+        let inMeters = run(meters) { n, ch in ch == l || ch == r ? shared[n] : 0 }
+        let midpoint = (unit(meters, Role.left) + unit(meters, Role.right)) / 2
+        checkTrue(simd_distance(midpoint, SIMD3(0.25, Float(2.5 * cos(Double.pi / 6)), 0)) < 1e-5)
+        checkTrue(all(inMeters.observations).allSatisfy { simd_distance($0.position, midpoint) < 1e-4 })
+        checkEqual(inMeters.observations[SpatialObservations.Header.mapping], 1)
+        // Without every distance the positions mapping is not used: an unknown distance is never taken for 1 m.
+        var partial = metric
+        partial[Role.center].distance = nil
+        checkEqual(SpatialGeometry(placements: partial, mapping: .positions, roles: roles).mapping, .directions)
+        // Mirror and rotation: the same signal with the layout mirrored puts every band's centre of gravity at −x; with
+        // the layout turned by 30°, turned by 30° about the vertical.
+        var odd = standard.placements
+        odd[Role.left] = SpeakerPlacement(azimuth: -40, elevation: 5)
+        odd[Role.right] = SpeakerPlacement(azimuth: 25, elevation: -10)
+        let base = SpatialGeometry(placements: odd, roles: roles)
+        func mix(_ n: Int, _ ch: Int) -> Float { ch == l ? shared[n] : (ch == r ? 0.3 * shared[n] : (ch == ls ? 0.5 * ln[n] : 0)) }
+        let original = run(base, mix).observations, mirrored = run(base.mirrored(), mix).observations
+        let turned = run(base.rotated(by: 30), mix).observations
+        let cosT = Float(cos(Double.pi / 6)), sinT = Float(sin(Double.pi / 6))
+        for b in 0..<SpatialField.bandCount where energy(list(original, b)) > 1e-12 {
+            let p = centroid(list(original, b)), m = centroid(list(mirrored, b)), t = centroid(list(turned, b))
+            checkTrue(simd_distance(m, SIMD3(-p.x, p.y, p.z)) < 1e-4)
+            checkTrue(simd_distance(t, SIMD3(p.x * cosT + p.y * sinT, -p.x * sinT + p.y * cosT, p.z)) < 1e-4)
+        }
+        // A speaker left out takes no part: C alone leaves nothing; L with C coherent sits on L.
+        var noCentre = standard.placements
+        noCentre[Role.center].included = false
+        let without = SpatialGeometry(placements: noCentre, roles: roles)
+        checkTrue(all(run(without) { n, ch in ch == c ? shared[n] : 0 }.observations).isEmpty)
+        checkTrue(all(run(without) { n, ch in ch == c || ch == l ? shared[n] : 0 }.observations).allSatisfy { simd_distance($0.position, left) < 1e-5 })
+        // The LFE has no direction; silence is a frame with nothing in it.
+        checkTrue(all(run { n, ch in ch == lfe ? sine(60, n) : 0 }.observations).isEmpty)
+        let quiet = run { _, _ in 0 }.observations
+        checkEqual(quiet[SpatialObservations.Header.status], 1)
+        checkEqual(quiet[SpatialObservations.Header.count], 0)
+
+        // The multi-resolution window: bands from 1 kHz on a quarter of the transform, from 4 kHz on an eighth, each
+        // ending at the newest sample; the same places for a steady pan, calibrated energy, each observation's zone.
+        let fast = SpatialGeometry(placements: standard.placements, window: .multiResolution, roles: roles)
+        let quick = run(fast) { n, ch in ch == l ? shared[n] : (ch == r ? 0.5 * shared[n] : 0) }.observations
+        checkEqual(quick[SpatialObservations.Header.zones], 3)
+        checkEqual(quick[SpatialObservations.Header.zoneWindow], Float(SpectrumAnalyzer.fftSize / 4))
+        checkEqual(quick[SpatialObservations.Header.zoneWindow + 1], Float(SpectrumAnalyzer.fftSize / 8))
+        checkTrue(all(quick).allSatisfy { simd_distance($0.position, expected) < 1e-4 })
+        func zone(_ v: [Float], _ b: Int) -> [Float] {
+            var start = 0
+            for k in 0..<b { start += Int(v[SpatialObservations.counts + k]) }
+            return (0..<Int(v[SpatialObservations.counts + b])).map { v[SpatialObservations.observation(start + $0) + 8] }
+        }
+        checkTrue(zone(quick, band(500)).allSatisfy { $0 == 0 } && zone(quick, band(2_000)).allSatisfy { $0 == 1 }
+                  && zone(quick, band(8_000)).allSatisfy { $0 == 2 } && zone(panned.observations, band(8_000)).allSatisfy { $0 == 0 })
+        let toneFast = all(run(fast) { n, ch in ch == l ? sine(5_000, n) : 0 }.observations)
+        checkEqual(10 * log10(energy(toneFast)), -9.03, accuracy: 0.1)
+        checkTrue(toneFast.allSatisfy { simd_distance($0.position, left) < 1e-5 })
+
+        // The wire form (RESULT tag 58): positions, energies and spreads as sent (f32), frequencies to 1/4096 octave,
+        // the geometry's hash and revision and the window's time; a truncated set is refused.
+        for frame in [panned.observations, fine, inMeters.observations] {
+            var bytes = [UInt8](repeating: 0, count: frame.withUnsafeBufferPointer { SpatialObservationsWire.size($0.baseAddress!) })
+            frame.withUnsafeBufferPointer { v in bytes.withUnsafeMutableBytes { _ = SpatialObservationsWire.encode(v.baseAddress!, into: $0.baseAddress!) } }
+            checkTrue(bytes.count <= SpatialObservationsWire.largest)
+            var decoded = [Float](repeating: 0, count: SpatialObservations.floats)
+            checkTrue(bytes.withUnsafeBytes { raw in decoded.withUnsafeMutableBufferPointer { SpatialObservationsWire.decode(raw, sampleRate: 48_000, into: $0.baseAddress!) } })
+            for h in [SpatialObservations.Header.status, SpatialObservations.Header.mapping, SpatialObservations.Header.count] {
+                checkEqual(decoded[h], frame[h])
+            }
+            frame.withUnsafeBufferPointer { v in
+                decoded.withUnsafeBufferPointer { d in
+                    checkEqual(SpatialObservations.hash(d.baseAddress!), SpatialObservations.hash(v.baseAddress!))
+                    checkEqual(SpatialObservations.windowEnd(d.baseAddress!), SpatialObservations.windowEnd(v.baseAddress!))
+                }
+            }
+            let x = all(frame), y = all(decoded)
+            checkEqual(x.count, y.count)
+            for (u, w) in zip(x, y) {
+                checkTrue(u.position == w.position && u.energy == w.energy && u.spread == w.spread)
+                checkEqual(log2(w.frequency / u.frequency), 0, accuracy: 1.0 / 4096)
+            }
+            let short = Array(bytes.dropLast())
+            checkTrue(!short.withUnsafeBytes { raw in decoded.withUnsafeMutableBufferPointer { SpatialObservationsWire.decode(raw, sampleRate: 48_000, into: $0.baseAddress!) } })
+            checkEqual(decoded[SpatialObservations.Header.status], 0)
+        }
     }
 
     /// The Immersive body (`SpatialBody`): a lobe reaches its own level in its own direction; a coherent image points
@@ -564,7 +809,7 @@ final class CoreTests {
 
     func testLocalizerKeepsTermsAndUnitsTogether() {
         let nbsp = "\u{00A0}"
-        checkEqual(Localizer.typeset("立体声与 Dolby Atmos 之间切换"), "立体声与 Dolby\(nbsp)Atmos 之间切换")
+        checkEqual(Localizer.typeset("采用 ITU-R BS.1770-5 测量"), "采用 ITU-R\(nbsp)BS.1770-5 测量")
         checkEqual(Localizer.typeset("above −60 dBFS for 150 ms, back after 2.5 s"),
                    "above −60\(nbsp)dBFS for 150\(nbsp)ms, back after 2.5\(nbsp)s")
         checkEqual(Localizer.typeset("0 VU (%@ dBFS) · %d ch · True Peak"), "0\(nbsp)VU (%@\(nbsp)dBFS) · %d\(nbsp)ch · True\(nbsp)Peak")
@@ -1586,19 +1831,6 @@ final class CoreTests {
         let streaming = try unwrap(LoudnessStandard.with(id: "streaming"))
         checkEqual(verdict(streaming, -9, -1.5), .info)
         checkEqual(verdict(streaming, -9, -0.5), .check)
-        // A section with no measurements must not claim OK.
-        let unavailable = MasteringCheck.Item(name: "Unavailable", value: "—", status: .unavailable, note: "")
-        checkEqual(MasteringCheck.Section(title: "Empty", items: []).worst, .unavailable)
-        checkEqual(MasteringCheck.Section(title: "Unmeasured", items: [unavailable]).worst, .unavailable)
-        let measured = MasteringCheck.Item(name: "Measured", value: "0", status: .ok, note: "")
-        checkEqual(MasteringCheck.Section(title: "Mixed", items: [unavailable, measured]).worst, .ok)
-        // Full-programme measurement cannot certify dialogue-gated delivery.
-        let netflix = try unwrap(LoudnessStandard.with(id: "netflix"))
-        checkEqual(verdict(netflix, -27, -3), .info)
-        checkEqual(verdict(netflix, -20, -3), .info)
-        checkEqual(verdict(netflix, -27, -1), .check)
-        checkEqual(verdict(netflix, -27, -3, seconds: 5), .measuring)
-        checkEqual(verdict(try unwrap(LoudnessStandard.with(id: "arib")), -24, -3), .info)
         // Custom targets are judged within ±1 LU.
         checkEqual(verdict(nil, -20.9, -3), .pass)
         checkEqual(verdict(nil, -21.2, -3), .check)
@@ -1874,8 +2106,126 @@ final class CoreTests {
         checkEqual(SpeakerLayout.s916.speakers.map(\.name),
                    ["L", "R", "C", "Lw", "Rw", "LFE", "Lss", "Rss", "Lrs", "Rrs", "Ltf", "Rtf", "Ltm", "Rtm", "Ltr", "Rtr"])
         checkEqual(SpeakerLayout.s51.name(of: Role.leftSurround), "Ls")
+        // Film order (Pro Tools): L C R, surrounds, LFE, heights; every role once.
+        checkEqual(SpeakerLayout.s51.filmRoles, [Role.left, Role.center, Role.right, Role.leftSurround, Role.rightSurround, Role.lfe])
+        checkEqual(SpeakerLayout.s714.filmRoles, [Role.left, Role.center, Role.right, Role.leftSurround, Role.rightSurround,
+                                                  Role.leftRearSurround, Role.rightRearSurround, Role.lfe, Role.leftTopFront,
+                                                  Role.rightTopFront, Role.leftTopRear, Role.rightTopRear])
+        for layout in SpeakerLayout.allCases { checkEqual(Set(layout.filmRoles), Set(layout.roles)); checkEqual(layout.filmRoles.count, layout.roles.count) }
         checkEqual(Role.loudnessWeights.count, Role.count)
         checkEqual(Role.loudnessWeights[Role.lfe], 0)
+    }
+
+    /// Channel labels to roles: Audio MIDI Setup's 9.1.6 and 5.1.2 (as this Mac's Pro Tools Audio Bridge reports them),
+    /// a driver's placeholder labels, a WAV-style 7.1, Core Audio's Atmos tags, a repeated label; the routing a
+    /// configuration gives a format; and the VST3 order a Bridge plugin's 9.1.6 bus arrives in.
+    func testChannelLabels() throws {
+        let unknown = kAudioChannelLabel_Unknown
+        let ams916: [AudioChannelLabel] = [1, 2, 3, 4, 5, 6, 33, 34, 35, 36, 13, 15, 49, 51, 52, 54]
+        let map916 = try unwrap(SpeakerMap(labels: ams916))
+        checkEqual(map916.roles.compactMap { $0 }, SpeakerLayout.s916.roles)
+        checkTrue(map916.complete && map916.configured)
+        checkEqual(map916.layout, .s916)
+        checkEqual(map916.name, "9.1.6")
+        checkEqual(map916.routing(for: .s916, channels: 16), (0..<16).map { Int32(SpeakerLayout.s916.roles.firstIndex(of: $0) ?? -1) })
+        // 5.1.2 on a 16-channel device: the lone top-middle pair is the x.x.2 pair; a larger format leaves the rest off.
+        let map512 = try unwrap(SpeakerMap(labels: [1, 2, 3, 4, 5, 6, 49, 51] + [AudioChannelLabel](repeating: unknown, count: 8)))
+        checkEqual(map512.roles.prefix(8).compactMap { $0 }, SpeakerLayout.s512.roles)
+        checkTrue(map512.configured && !map512.complete)
+        checkEqual(map512.layout, .s512)
+        let routed = map512.routing(for: .s916, channels: 16)
+        checkEqual(routed[Role.leftTopFront], 6)
+        checkEqual(routed[Role.rightTopFront], 7)
+        checkEqual(routed[Role.leftWide], -1)
+        checkEqual(routed[Role.leftTopMiddle], -1)
+        checkEqual(map512.routing(for: .s512, channels: 6)[Role.leftTopFront], -1)
+        // A placeholder (label n on channel n) is no configuration; up to six channels it is a real 5.1.
+        checkTrue(SpeakerMap(labels: (1...16).map { AudioChannelLabel($0) }) == nil)
+        checkEqual(try unwrap(SpeakerMap(labels: [1, 2, 3, 4, 5, 6])).layout, .s51)
+        // Stereo is no speaker configuration.
+        checkTrue(!(try unwrap(SpeakerMap(labels: [1, 2]))).configured)
+        // A WAV-style 7.1 (back L/R, then side L/R): Left surround is the rear pair beside a side pair.
+        checkEqual(ChannelLabels.roles([1, 2, 3, 4, 5, 6, 10, 11]).compactMap { $0 },
+                   [Role.left, Role.right, Role.center, Role.lfe, Role.leftRearSurround, Role.rightRearSurround,
+                    Role.leftSurround, Role.rightSurround])
+        // Core Audio's Atmos layout tags, expanded: SMPTE order.
+        for (tag, layout) in [(kAudioChannelLayoutTag_Atmos_7_1_4, SpeakerLayout.s714), (kAudioChannelLayoutTag_Atmos_9_1_6, .s916),
+                              (kAudioChannelLayoutTag_Atmos_5_1_2, .s512), (kAudioChannelLayoutTag_Atmos_5_1_4, .s514)] {
+            var layoutTag = AudioChannelLayout()
+            layoutTag.mChannelLayoutTag = tag
+            let labels = withUnsafePointer(to: &layoutTag) { ChannelLabels.labels($0, size: MemoryLayout<AudioChannelLayout>.size) }
+            checkEqual(ChannelLabels.roles(labels).compactMap { $0 }, layout.roles)
+        }
+        // A role only once; labels without a role are skipped.
+        checkEqual(ChannelLabels.roles([1, 1, 2, 7, 9]), [Role.left, nil, Role.right, nil, nil])
+        // VST3 order: the Bridge plugin's 9.1.6 bus (Bridge/scripts/e2e-probe.sh) and the beds.
+        checkEqual(SpeakerLayout.s916.vst3Roles, [0, 1, 2, 3, 8, 9, 4, 5, 6, 7, 14, 15, 12, 13, 10, 11])
+        checkEqual(SpeakerLayout.s714.vst3Roles, [Role.left, Role.right, Role.center, Role.lfe, Role.leftRearSurround,
+                                                  Role.rightRearSurround, Role.leftSurround, Role.rightSurround, Role.leftTopFront,
+                                                  Role.rightTopFront, Role.leftTopRear, Role.rightTopRear])
+        checkEqual(SpeakerLayout.s512.vst3Roles, SpeakerLayout.s512.roles)
+        checkEqual(SpeakerLayout.s514.vst3Roles, SpeakerLayout.s514.roles)
+        for layout in SpeakerLayout.allCases { checkEqual(Set(layout.vst3Roles), Set(layout.roles)) }
+    }
+
+    /// The speaker layout file (docs/SPEAKER_LAYOUT_FORMAT.md): written in full with unknown distances as null, read back
+    /// exactly; a minimal hand-written file completed; other formats' roles left out, missing ones standard; bad
+    /// values, foreign and newer files refused; the geometry it gives.
+    func testSpeakerLayoutFile() throws {
+        var c = SpeakerConfiguration.standard(.s714)
+        c.name = "Studio"
+        let lower = try unwrap(c.speakers.firstIndex { $0.role == "Ltr" })
+        c.speakers[lower].elevation = -20
+        c.speakers[lower].included = false
+        let data = try SpeakerLayoutDocument.encode(c)
+        let text = String(decoding: data, as: UTF8.self)
+        checkTrue(text.contains("\"format\" : \"auraliscope.speaker-layout\"") && text.contains("\"schemaVersion\" : 1"))
+        checkTrue(text.contains("\"distance\" : null") && text.contains("\"included\" : false"))
+        let read = try SpeakerLayoutDocument.decode(data)
+        checkTrue(read.notes.isEmpty)
+        var same = read.configuration
+        same.id = c.id
+        checkEqual(same, c)
+        let g = SpeakerLayoutStore.geometry(for: .s714, configuration: read.configuration, revision: 3, nebula: NebulaSettings())
+        checkTrue(g.reachesBelow(roles: SpeakerLayout.s714.roles) == false)  // the lower speaker is left out
+        checkTrue(g.direction(role: Role.leftTopRear) == nil)
+        // Its revision names this content: the same layout gives the same one, another channel format, Particles or
+        // window another (so a plugin is sent it again and its answer is matched), and it is never 0.
+        let again = SpeakerLayoutStore.geometry(for: .s714, configuration: read.configuration, revision: 3, nebula: NebulaSettings())
+        var fewer = NebulaSettings()
+        fewer.particles = 8
+        let other = SpeakerLayoutStore.geometry(for: .s714, configuration: read.configuration, revision: 3, nebula: fewer)
+        let standard = SpeakerLayoutStore.geometry(for: .s916, configuration: nil, revision: 3, nebula: NebulaSettings())
+        checkTrue(g.revision == again.revision && g.revision != 0 && other.hash != g.hash && other.revision != g.revision
+                  && standard.revision != g.revision && g.revision == SpeakerLayoutStore.revision(3, hash: g.hash))
+        // By hand: the format, its version, the channel format and each speaker's role and angles are enough.
+        let minimal = Data("""
+        {"format": "auraliscope.speaker-layout", "schemaVersion": 1, "layout": {"channelFormat": "5.1",
+         "speakers": [{"role": "L", "azimuth": -25, "elevation": 0}, {"role": "R", "azimuth": 25, "elevation": 0, "distance": 2.5},
+                      {"role": "Ltf", "azimuth": -45, "elevation": 40}]}}
+        """.utf8)
+        let hand = try SpeakerLayoutDocument.decode(minimal)
+        checkEqual(hand.configuration.mapping, .directions)
+        checkEqual(hand.configuration.speaker(Role.left)?.azimuth, -25)
+        checkEqual(hand.configuration.speaker(Role.left)?.distance, nil)
+        checkEqual(hand.configuration.speaker(Role.right)?.distance, 2.5)
+        checkTrue(hand.configuration.speaker(Role.left)?.included == true)
+        checkEqual(hand.notes.count, 2)  // Ltf is not in 5.1; C, LFE, Ls and Rs keep the standard places
+        checkTrue(hand.configuration.speaker(Role.leftTopFront) == nil && hand.configuration.speaker(Role.center) != nil)
+        checkEqual(Set(hand.configuration.speakers.map(\.role)), Set(SpeakerLayout.s51.roles.map { SpatialGeometry.roleNames[$0] }))
+        func refused(_ json: String) -> Bool { (try? SpeakerLayoutDocument.decode(Data(json.utf8))) == nil }
+        let head = "{\"format\": \"auraliscope.speaker-layout\", \"schemaVersion\": 1, \"layout\": {\"channelFormat\": \"5.1\", \"speakers\": "
+        checkTrue(refused(head + "[{\"role\": \"L\", \"azimuth\": -30, \"elevation\": 95}]}}"))
+        checkTrue(refused(head + "[{\"role\": \"L\", \"azimuth\": -30, \"elevation\": 0, \"distance\": 0.05}]}}"))
+        checkTrue(refused(head + "[{\"role\": \"L\", \"azimuth\": -30, \"elevation\": 0}, {\"role\": \"L\", \"azimuth\": 0, \"elevation\": 0}]}}"))
+        checkTrue(refused(head + "[{\"role\": \"L\", \"azimuth\": -30, \"elevation\": 0}], \"mapping\": \"positions\"}}"))
+        checkTrue(refused("{\"format\": \"something else\", \"schemaVersion\": 1, \"layout\": {\"channelFormat\": \"5.1\", \"speakers\": []}}"))
+        checkTrue(refused("{\"format\": \"auraliscope.speaker-layout\", \"schemaVersion\": 2, \"layout\": {\"channelFormat\": \"5.1\", \"speakers\": []}}"))
+        checkTrue(refused("{\"format\": \"auraliscope.speaker-layout\", \"schemaVersion\": 1, \"layout\": {\"channelFormat\": \"6.1\", \"speakers\": []}}"))
+        // Mirroring takes one side's places to the other.
+        var left = SpeakerConfiguration.standard(.s51)
+        left.speakers[0].azimuth = -40
+        checkEqual(left.mirrored(from: true).speaker(Role.right)?.azimuth, 40)
     }
 
     func testSpectrogramResolutionMetadata() throws {
@@ -2157,6 +2507,31 @@ final class CoreTests {
         checkTrue(near.spectrogram[treble] > -40)
         checkTrue(early.spectrogram[treble] < near.spectrogram[treble] - 40)
         checkTrue(early.spectrum.max()! > -80)
+    }
+
+    func testDisplayIdleAcrossRates() {
+        for rate in [30, 60, 120] {
+            var idle = DisplayIdle()
+            idle.update(changed: true, at: 10)
+            for tick in 1..<(2 * rate) {
+                idle.update(changed: false, at: 10 + Double(tick) / Double(rate))
+                checkTrue(!idle.settled)
+            }
+            idle.update(changed: false, at: 12)
+            checkTrue(idle.settled)
+            // A reset or UI change wakes a fully settled scene for another two seconds.
+            idle.update(changed: true, at: 20)
+            checkTrue(!idle.settled)
+            idle.update(changed: false, at: 21.99)
+            checkTrue(!idle.settled)
+            idle.update(changed: false, at: 22)
+            checkTrue(idle.settled)
+        }
+        // Dropped frames and a window hidden for a while do not extend the timeout by counting drawn frames.
+        var idle = DisplayIdle()
+        idle.update(changed: true, at: 0)
+        idle.update(changed: false, at: 3)
+        checkTrue(idle.settled)
     }
 
     func testDampedDisplayConvergence() {
@@ -2608,15 +2983,18 @@ final class CoreTests {
             let dragged = PanelLayout(height: height, spectrum: base.draggingSpectrum(to: base.spectrum + 40))
             checkEqual(Double(dragged.spectrum), Double(min(base.spectrum + 40, base.panels - PanelLayout.minWaveform)), accuracy: 1.001)
         }
-        // The Soundstage column keeps its limits and always leaves the analyzers their minimum width.
-        for total in [1_000, 1_400, 2_400] as [CGFloat] {
-            for requested in [0, 200, 380, 900, .nan] as [CGFloat] {
+        // The Soundstage column keeps its minimum and always leaves the analyzers theirs; between them the divider
+        // moves freely, so a wide window can give either side most of its width.
+        for total in [980, 1_000, 1_400, 2_400] as [CGFloat] {
+            for requested in [0, 200, 380, 900, 1_800, .nan] as [CGFloat] {
                 let stage = ColumnLayout.stageWidth(requested, total: total)
                 checkGreaterOrEqual(stage, ColumnLayout.minStage)
-                checkTrue(stage <= ColumnLayout.maxStage)
                 checkGreaterOrEqual(total - stage - PanelLayout.divider, ColumnLayout.minAnalyzers - 0.001)
             }
         }
+        checkEqual(Double(ColumnLayout.stageWidth(2_200, total: 2_400)), Double(2_400 - PanelLayout.divider - ColumnLayout.minAnalyzers))
+        checkEqual(Double(ColumnLayout.stageWidth(1_800, total: 2_400)), 1_800)
+        checkEqual(Double(ColumnLayout.stageWidth(900, total: 1_400)), Double(1_400 - PanelLayout.divider - ColumnLayout.minAnalyzers))
         // The right-hand column: the room's share is clamped so both panels keep their minimum.
         // The minimums close in continuously from the full ones to the short ones as the column shortens.
         checkTrue(ColumnLayout.minimums(total: 524) == (200, 310))
@@ -2927,6 +3305,8 @@ private func unwrap<T>(_ value: T?) throws -> T {
 @main
 struct TestRunner {
     static func main() throws {
+        setbuf(stdout, nil)
+        try MultiFFTChecks.run()
         if CommandLine.arguments.contains("--benchmark-gate") {
             var gate = GatedIntegration()
             var checksum: Float = 0
@@ -2955,6 +3335,7 @@ struct TestRunner {
             ("spatial body: lobes at their levels, one coherent lobe against two uncorrelated, anti-phase wide and out of phase, merging, layers, fallback, LFE", suite.testSpatialBody),
             ("spatial field: the spec's eight cases, Frank's image widths, velocity- and energy-vector directions, two phantoms sharing a speaker, energy kept, wire form", suite.testSpatialField),
             ("spatial bins: amplitude-weighted centres of gravity, panning at every frequency, two sources in one band, energy kept, LFE, silence, wire form", suite.testSpatialPoints),
+            ("spatial observations: centres of gravity in the geometry's mapping, one exact reduction (energy, centre, second moment at any detail), below-ear and metric layouts, mirror, rotation, speakers left out, LFE, silence, header, tag 58", suite.testSpatialObservations),
             ("ring wrap and overflow", suite.testRingWrapAndOverflow),
             ("mono duplication and clear", suite.testMonoAndClear),
             ("100,000 concurrent snapshot publications", suite.testExchangeKeepsLatestWithoutTearing),
@@ -2983,6 +3364,8 @@ struct TestRunner {
             ("invalid audio samples are isolated without clipping valid overs", suite.testInvalidAudioSamplesAreIsolated),
             ("band powers and cross spectrum match calibrated tones at five sample rates", suite.testBandEnergyCalibrationAcrossRates),
             ("speaker layouts 3.0 to 9.1.6", suite.testSpeakerLayouts),
+            ("speaker layout files: written in full, read back exactly, minimal files completed, bad values refused", suite.testSpeakerLayoutFile),
+            ("channel labels: Audio MIDI Setup's 9.1.6 and 5.1.2, placeholders, WAV 7.1, Atmos tags, routing, VST3 order", suite.testChannelLabels),
             ("chunk boundaries and stereo energy", suite.testChunkBoundariesAndStereoEnergy),
             ("Lightweight resolution metadata matches analysis and describes transitions", suite.testSpectrogramResolutionMetadata),
             ("Spectrum curve preserves measured extrema and mirrored geometry", suite.testSpectrumInterpolationPreservesMeasurements),
@@ -2990,6 +3373,7 @@ struct TestRunner {
             ("128 fine spectrum bands: sine calibration at three rates and agreement with the 64", suite.testFineSpectrumBands),
             ("multi-resolution spectrogram: window choice, calibration across zones and blends, treble timing", suite.testMultiResolutionSpectrogram),
             ("enhanced (reassigned) spectrogram: zones, sine calibration and sharpness, click timing, zone joins", suite.testReassignedSpectrogram),
+            ("display idle: two seconds at 30, 60 and 120 Hz, dropped frames and wake after reset", suite.testDisplayIdleAcrossRates),
             ("critically damped 60 Hz display convergence", suite.testDampedDisplayConvergence),
             ("IEC meter scale and shared panel layouts", suite.testMeterScaleAndLayouts),
             ("stereo ↔ spatial detector attack, hold and silence freeze", suite.testFormatDetectorHysteresis),

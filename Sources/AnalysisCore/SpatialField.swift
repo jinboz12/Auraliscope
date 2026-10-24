@@ -263,11 +263,22 @@ package final class SpatialFieldAnalyzer {
     /// Transforms per field: the field is built from every second transform (30 per second). Successive transforms
     /// share 90 % of their 170 ms window, so the skipped ones add almost nothing it could show.
     package static let interval = 2
+    /// The multi-resolution observations (`SpatialGeometry.Window.multiResolution`): zone 1 a quarter of the spectrum's
+    /// transform (about 43 ms at every rate) for bands centred from 1 kHz, zone 2 an eighth (about 21 ms) from 4 kHz; each
+    /// window ends at the newest sample, so its centre, the observation's time, is later the shorter it is. A band takes
+    /// all its energy from one zone (nothing is counted twice); the coherence statistics keep the full transform.
+    package static let zoneDivisors = [4, 8]
+    package static let zoneEdges = [1_000.0, 4_000.0]
     private let fullRange: Int
     private let slotCount: Int
     private let slotOfRole: [Int]
-    /// Side surrounds at ±90° instead of ±110° (`SpeakerGeometry`): set to the layout shown.
-    package var sidesAtNinety: Bool { didSet { if sidesAtNinety != oldValue { placeSpeakers() } } }
+    /// Where every speaker sits and how observations are mapped (`SpatialGeometry`): the standard layout of the roles
+    /// until a display sets its own. Set between transforms (the analysis thread's, or before the first).
+    package var geometry: SpatialGeometry { didSet { if geometry != oldValue { placeSpeakers() } } }
+    /// Places the bins as Build 87–97 did (`SpatialPoints`, the standard layout's directions) instead of observing: for a
+    /// display that reads RESULT tag 54 and not the observations (a Bridge plugin serving an app before build 98, which
+    /// would never receive them). Its frames have no observations (status 0).
+    package var legacyPoints = false
     /// Coherence below which speakers share no image, within `SpatialField.thresholdRange`.
     package var coherenceThreshold = SpatialField.defaultThreshold {
         didSet {
@@ -289,6 +300,19 @@ package final class SpatialFieldAnalyzer {
     /// estimates than coherence needs, so it reads every second or third bin there. Its energies stay exact.
     private static let maxInner = 40
     private let spans: [Span]
+    /// The multi-resolution zones: per zone its complex spectra (bin-major, every slot), first bin and bins, bin width,
+    /// mean-square scale, and per band its span; each band's zone.
+    private struct ZoneGrid {
+        let length: Int
+        let firstBin: Int
+        let binCount: Int
+        let binWidth: Double
+        let scale: Float
+        let spans: [Span]
+        let spectra: UnsafeMutablePointer<Float>
+    }
+    private let zoneGrids: [ZoneGrid]
+    private let zoneOfBand: [Int]
     /// Per band: the coherence smoothing time, the effective bins (Hann's 1.5-bin noise bandwidth) and how much of an
     /// image's direction comes from the velocity vector (`SpatialField.velocityWeight`).
     private let smoothing: [Double]
@@ -321,8 +345,18 @@ package final class SpatialFieldAnalyzer {
     private let points: UnsafeMutablePointer<Float>
     private let binEnergy: UnsafeMutablePointer<Float>
     private var pointSerial: UInt32 = 0
-    /// Directions of the full-range slots (x right, y front, z up).
+    /// Directions of the full-range slots (x right, y front, z up): unit vectors, which the coherence model uses; their
+    /// positions in the geometry's mapping, which the observations use; whether each takes part in the picture (the
+    /// LFE and a speaker left out do not); and the largest distance among them (1 for directions).
     private let directions: UnsafeMutablePointer<SIMD3<Float>>
+    private let positions: UnsafeMutablePointer<SIMD3<Float>>
+    private let directional: UnsafeMutablePointer<Bool>
+    private var extent: Float = 1
+    /// The newest observations (`SpatialObservations` layout), the one reduction that makes them, and how many frames
+    /// were observed (their serial).
+    private let observations: UnsafeMutablePointer<Float>
+    private let builder: SpatialObservationBuilder
+    private var observationSerial: UInt32 = 0
     // Scratch for one band (at most 15 full-range speakers).
     private static let maxCliques = 16
     private let energy: UnsafeMutablePointer<Float>
@@ -352,7 +386,7 @@ package final class SpatialFieldAnalyzer {
         var map = [Int](repeating: -1, count: Role.count)
         for (slot, role) in roles.enumerated() { map[role] = slot }
         slotOfRole = map
-        sidesAtNinety = SpeakerGeometry.sidesAtNinety(routed)
+        geometry = SpatialGeometry.standard(roles: routed)
         let binWidth = sampleRate / Double(n)
         let top = min(SpatialField.highestFrequency, sampleRate / 2 * 0.999)
         let first = max(1, Int((SpatialField.lowestFrequency / binWidth + 0.5).rounded(.down)))
@@ -380,6 +414,42 @@ package final class SpatialFieldAnalyzer {
             times[band] = min(1.0, max(0.06, (32 / effective[band] - 1) * correlationTime / 2))
         }
         self.spans = spans
+        // The zones' grids: the same bands on each shorter transform's bins.
+        func grid(length m: Int) -> (first: Int, count: Int, spans: [Span]) {
+            let width = sampleRate / Double(m)
+            let first = max(1, Int((SpatialField.lowestFrequency / width + 0.5).rounded(.down)))
+            let last = max(first, min(m / 2 - 1, Int((top / width + 0.5).rounded(.down))))
+            var list = [Span](repeating: Span(), count: SpatialField.bandCount)
+            for band in 0..<SpatialField.bandCount {
+                let low = SpatialField.edge(band), high = min(SpatialField.edge(band + 1), top)
+                guard high > low else { continue }
+                let x0 = low / width, x1 = high / width
+                let k0 = max(first, Int((x0 + 0.5).rounded(.down))), k1 = min(last, Int((x1 + 0.5).rounded(.down)))
+                guard k1 >= k0 else { continue }
+                func overlap(_ k: Int) -> Float { Float(max(0, min(x1, Double(k) + 0.5) - max(x0, Double(k) - 0.5))) }
+                list[band] = Span(first: k0 - first, last: k1 - first, firstWeight: overlap(k0), lastWeight: overlap(k1), step: 1)
+            }
+            return (first, last - first + 1, list)
+        }
+        var grids: [ZoneGrid] = []
+        for divisor in Self.zoneDivisors {
+            let m = n / divisor
+            let g = grid(length: m)
+            // Mean square per unit of one-sided |X|² for this window (Parseval): 2 / (m · Σw²), w the Hann window.
+            var window = [Float](repeating: 0, count: m)
+            vDSP_hann_window(&window, vDSP_Length(m), Int32(vDSP_HANN_DENORM))
+            var squares: Float = 0
+            vDSP_svesq(window, 1, &squares, vDSP_Length(m))
+            let spectra = UnsafeMutablePointer<Float>.allocate(capacity: max(1, g.count * max(1, roles.count) * 2))
+            spectra.initialize(repeating: 0, count: max(1, g.count * max(1, roles.count) * 2))
+            grids.append(ZoneGrid(length: m, firstBin: g.first, binCount: g.count, binWidth: sampleRate / Double(m),
+                                  scale: Float(2 / (Double(m) * Double(squares))), spans: g.spans, spectra: spectra))
+        }
+        zoneGrids = grids
+        zoneOfBand = (0..<SpatialField.bandCount).map { band in
+            let hz = SpatialField.centre(band)
+            return hz >= Self.zoneEdges[1] ? 2 : (hz >= Self.zoneEdges[0] ? 1 : 0)
+        }
         effectiveBins = effective
         smoothing = times
         velocityWeights = (0..<SpatialField.bandCount).map { SpatialField.velocityWeight(hz: SpatialField.centre($0)) }
@@ -402,6 +472,10 @@ package final class SpatialFieldAnalyzer {
         points = zeroed(SpatialPoints.floats, Float(0))
         binEnergy = zeroed(binCount, Float(0))
         directions = zeroed(Role.count, SIMD3<Float>.zero)
+        positions = zeroed(Role.count, SIMD3<Float>.zero)
+        directional = zeroed(Role.count, false)
+        observations = zeroed(SpatialObservations.floats, Float(0))
+        builder = SpatialObservationBuilder(bins: binCount)
         energy = zeroed(Role.count, Float(0))
         exact = zeroed(Role.count, Float(0))
         share = zeroed(Role.count * Role.count, Float(0))
@@ -419,29 +493,35 @@ package final class SpatialFieldAnalyzer {
 
     deinit {
         for pointer in [spectra, frame, slow, values, points, binEnergy, energy, exact, share, rho, fraction, components,
-                        memberEnergies, memberCosines, memberSines] { pointer.deallocate() }
+                        memberEnergies, memberCosines, memberSines, observations] { pointer.deallocate() }
         memberDirections.deallocate()
         activeTime.deallocate(); silentTime.deallocate(); weightSum.deallocate(); weightSquares.deallocate()
-        slotPosition.deallocate(); slotAlive.deallocate(); directions.deallocate()
+        slotPosition.deallocate(); slotAlive.deallocate(); directions.deallocate(); positions.deallocate(); directional.deallocate()
         adjacency.deallocate(); cliques.deallocate()
+        for grid in zoneGrids { grid.spectra.deallocate() }
     }
 
     private func placeSpeakers() {
+        var largest: Float = 0
         for (slot, role) in roles.prefix(fullRange).enumerated() {
-            let d = SpeakerGeometry.direction(role: role, sidesAtNinety: sidesAtNinety) ?? .zero
+            let u = geometry.direction(role: role)
+            directional[slot] = u != nil
+            let d = u ?? .zero
             directions[slot] = SIMD3(Float(d.x), Float(d.y), Float(d.z))
+            let p = geometry.position(role: role) ?? .zero
+            positions[slot] = SIMD3(Float(p.x), Float(p.y), Float(p.z))
+            largest = max(largest, (positions[slot] * positions[slot]).sum().squareRoot())
         }
+        extent = geometry.mapping == .positions ? max(0.1, largest) : 1
     }
-
-    /// Smoothing time of a band's coherence estimate, in seconds.
-    package func coherenceTime(band: Int) -> Double { smoothing[band] }
 
     /// The newest field (`SpatialField` layout), `SpatialField.floats` values.
     package var fieldValues: UnsafePointer<Float> { UnsafePointer(values) }
     package var field: [Float] { Array(UnsafeBufferPointer(start: values, count: SpatialField.floats)) }
-    /// The newest field's bins (`SpatialPoints` layout), `SpatialPoints.floats` values.
+    /// The newest field's bins (`SpatialPoints` layout), `SpatialPoints.floats` values; status 0 unless `legacyPoints`.
     package var pointValues: UnsafePointer<Float> { UnsafePointer(points) }
-    package var pointList: [Float] { Array(UnsafeBufferPointer(start: points, count: SpatialPoints.floats)) }
+    /// The newest observations (`SpatialObservations` layout), `SpatialObservations.floats` values.
+    package var observationValues: UnsafePointer<Float> { UnsafePointer(observations) }
 
     /// Whether this Spatial transform builds the field (every `interval`-th; the first after any other at once).
     package func due(continuing: Bool) -> Bool {
@@ -461,6 +541,7 @@ package final class SpatialFieldAnalyzer {
         slotAlive.update(repeating: false, count: bands * SpatialField.coherentSlots)
         values.update(repeating: 0, count: SpatialField.floats)
         points.update(repeating: 0, count: SpatialPoints.floats)
+        observations.update(repeating: 0, count: SpatialObservations.first)
         phase = 0
     }
 
@@ -487,6 +568,29 @@ package final class SpatialFieldAnalyzer {
         }
     }
 
+    /// One role pair's transform over zone `zone`'s (1…) shorter window, as `capture` takes the full one.
+    package func captureZone(_ zone: Int, _ a: Int, _ b: Int?, real: UnsafePointer<Float>, imaginary: UnsafePointer<Float>) {
+        guard (1...zoneGrids.count).contains(zone) else { return }
+        let grid = zoneGrids[zone - 1]
+        let n = grid.length
+        let sa = (0..<Role.count).contains(a) ? slotOfRole[a] : -1
+        let sb = b.map { (0..<Role.count).contains($0) ? slotOfRole[$0] : -1 } ?? -1
+        guard sa >= 0 || sb >= 0 else { return }
+        let stride = slotCount * 2, first = grid.firstBin, o = grid.spectra
+        for j in 0..<grid.binCount {
+            let k = first + j
+            let zr = real[k], zi = imaginary[k], wr = real[n - k], wi = imaginary[n - k]
+            if sa >= 0 {
+                o[j * stride + sa * 2] = zr + wr
+                o[j * stride + sa * 2 + 1] = zi - wi
+            }
+            if sb >= 0 {
+                o[j * stride + sb * 2] = zi + wi
+                o[j * stride + sb * 2 + 1] = wr - zr
+            }
+        }
+    }
+
     /// A role the transform skipped because its window held only zeros.
     package func silence(_ role: Int) {
         guard (0..<Role.count).contains(role) else { return }
@@ -494,21 +598,27 @@ package final class SpatialFieldAnalyzer {
         guard slot >= 0 else { return }
         let stride = slotCount * 2
         for j in 0..<binCount { spectra[j * stride + slot * 2] = 0; spectra[j * stride + slot * 2 + 1] = 0 }
+        for grid in zoneGrids {
+            for j in 0..<grid.binCount { grid.spectra[j * stride + slot * 2] = 0; grid.spectra[j * stride + slot * 2 + 1] = 0 }
+        }
     }
 
-    /// Every role silent (digital silence): the field falls to nothing.
-    package func silenceAll(seconds: Double) {
+    /// Every role silent (digital silence): the field falls to nothing, and the frame's observations are none.
+    package func silenceAll(seconds: Double, windowEnd: UInt64 = 0) {
         spectra.update(repeating: 0, count: binCount * slotCount * 2)
-        analyse(seconds: seconds, scale: 0)
+        for grid in zoneGrids { grid.spectra.update(repeating: 0, count: grid.binCount * slotCount * 2) }
+        analyse(seconds: seconds, scale: 0, windowEnd: windowEnd)
     }
 
-    /// Builds the field from the captured spectra. `seconds` since the previous field; `scale` converts Σ|X|² to
-    /// the band's mean square (`SpectrumAnalyzer.bandPowerScale`).
-    package func analyse(seconds: Double, scale: Double) {
+    /// Builds the field and the observations (with `legacyPoints`, the bins) from the captured spectra. `seconds` since
+    /// the previous field; `scale` converts Σ|X|² to the band's mean square (`SpectrumAnalyzer.bandPowerScale`);
+    /// `windowEnd` is how many frames the analysis had taken when the transform's window ended (the observations' time).
+    package func analyse(seconds: Double, scale: Double, windowEnd: UInt64 = 0) {
         let s = slotCount, matrix = s * s * 2
         let alphaScale = Float(scale)
         let ld = Int32(s)
         let x = UnsafePointer(spectra)
+        if !legacyPoints { builder.begin() }
         for band in 0..<SpatialField.bandCount {
             let c = frame + band * matrix
             c.update(repeating: 0, count: matrix)
@@ -574,10 +684,15 @@ package final class SpatialFieldAnalyzer {
                 if silentTime[band] > 0.3 { activeTime[band] = 0 }
             }
             decompose(band: band, smooth: smooth)
-            placePoints(band: band, span: span, scale: alphaScale)
+            if legacyPoints { placePoints(band: band, span: span, scale: alphaScale) } else { observe(band: band, span: span, scale: alphaScale) }
         }
         pointSerial &+= 1
-        points[SpatialPoints.status] = 1
+        points[SpatialPoints.status] = legacyPoints ? 1 : 0
+        if legacyPoints {
+            observations.update(repeating: 0, count: SpatialObservations.first)
+        } else {
+            finishObservations(windowEnd: windowEnd)
+        }
         values[SpatialField.status] = 1
         values[SpatialField.threshold] = coherenceThreshold
         values[SpatialField.speakers] = Float(fullRange)
@@ -640,6 +755,59 @@ package final class SpatialFieldAnalyzer {
         out[0] = Float(made)
     }
 
+    /// One band's bins into the observation builder: each bin with energy at the amplitude-weighted centre of gravity
+    /// of the included full-range speakers' positions in the geometry's mapping, Σ|Xᵢ|sᵢ / Σ|Xᵢ|, its energy their
+    /// mean square (a partial edge bin by its share of the band), at its own frequency.
+    private func observe(band: Int, span fullSpan: Span, scale fullScale: Float) {
+        builder.startBand(band, extent: extent)
+        // The band's zone: the full transform, or (multi-resolution) a shorter window above 1 and 4 kHz.
+        let zone = geometry.window == .multiResolution ? zoneOfBand[band] : 0
+        let span = zone == 0 ? fullSpan : zoneGrids[zone - 1].spans[band]
+        let scale = zone == 0 ? fullScale : (fullScale > 0 ? zoneGrids[zone - 1].scale : 0)
+        guard span.last >= span.first, scale > 0, fullRange > 0 else { return }
+        let s = slotCount, f = fullRange, positions = self.positions, directional = self.directional
+        let x = zone == 0 ? UnsafePointer(spectra) : UnsafePointer(zoneGrids[zone - 1].spectra)
+        let binWidth = Float(zone == 0 ? sampleRate / Double(transformLength) : zoneGrids[zone - 1].binWidth)
+        let firstBin = zone == 0 ? self.firstBin : zoneGrids[zone - 1].firstBin
+        for k in span.first...span.last {
+            let w = scale * (k == span.first ? span.firstWeight : (k == span.last ? span.lastWeight : 1))
+            guard w > 0 else { continue }
+            let column = x + k * s * 2
+            var sum = SIMD3<Float>.zero, amplitudes: Float = 0, power: Float = 0
+            for i in 0..<f where directional[i] {
+                let p = column[2 * i] * column[2 * i] + column[2 * i + 1] * column[2 * i + 1]
+                let a = p.squareRoot()
+                sum += positions[i] * a
+                amplitudes += a
+                power += p
+            }
+            guard amplitudes > 0 else { continue }
+            let c = sum / amplitudes
+            builder.add(x: c.x, y: c.y, z: c.z, energy: w * power, frequency: Float(firstBin + k) * binWidth, zone: Int32(zone))
+        }
+    }
+
+    /// The frame's observations: the builder's reduction, and the header that says what they are.
+    private func finishObservations(windowEnd: UInt64) {
+        typealias H = SpatialObservations.Header
+        observations.update(repeating: 0, count: SpatialObservations.first)
+        builder.finish(detail: geometry.detail, extent: extent, into: observations)
+        observationSerial &+= 1
+        observations[H.status] = 1
+        observations[H.version] = SpatialObservations.version
+        observations[H.mapping] = Float(geometry.mapping.rawValue)
+        observations[H.source] = SpatialObservations.Source.measured.rawValue
+        SpatialObservations.store(UInt64(geometry.revision), parts: 2, at: observations + H.revision)
+        SpatialObservations.store(geometry.hash, parts: 4, at: observations + H.hash)
+        SpatialObservations.store(windowEnd, parts: 3, at: observations + H.windowEnd, bits: 24)
+        observations[H.sampleRate] = Float(sampleRate)
+        observations[H.windowLength] = Float(transformLength)
+        observations[H.serial] = Float(observationSerial % (1 << 24))
+        let multi = geometry.window == .multiResolution
+        observations[H.zones] = multi ? Float(1 + zoneGrids.count) : 1
+        if multi { for (i, grid) in zoneGrids.enumerated() { observations[H.zoneWindow + i] = Float(grid.length) } }
+    }
+
     /// Independent averages behind a band's coherence estimate right now: its effective bins × the fields its
     /// average rests on, (Σw)²/Σw², counted as independent only as far as fields `correlationTime` apart are.
     private func averages(_ band: Int) -> Double {
@@ -674,7 +842,8 @@ package final class SpatialFieldAnalyzer {
         if f < roles.count { v[Role.lfe] = max(0, exact[f]) }
         var loudest: Float = 0
         for i in 0..<f {
-            energy[i] = max(0, exact[i])
+            // A speaker left out of the picture carries nothing here (its feed still counts in every level reading).
+            energy[i] = directional[i] ? max(0, exact[i]) : 0
             loudest = max(loudest, energy[i])
             rho[i] = 0
             adjacency[i] = 0

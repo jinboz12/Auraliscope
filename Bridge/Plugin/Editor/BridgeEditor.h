@@ -1,7 +1,7 @@
 #pragma once
 
 // The plugin window shared by the VST3 and AU wrappers: the source name (editable, saved in the project), the
-// connection to Auraliscope, what the stream carries, and this insert's own measurement (with Reset and
+// connection to Auraliscope LABS, what the stream carries, and this insert's own measurement (with Reset and
 // Pause). It reads the core's status; closing it changes nothing about the analysis or what is sent.
 
 #include <functional>

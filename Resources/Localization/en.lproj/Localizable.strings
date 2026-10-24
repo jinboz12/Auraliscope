@@ -38,9 +38,6 @@
 "True Peak ceiling" = "True Peak ceiling";
 "%@ · in use" = "%@ · in use";
 "Loud master · club, EDM" = "Loud master · club, EDM";
-"Streaming · Spotify, YouTube, Tidal" = "Streaming · Spotify, YouTube, Tidal";
-"Apple Music · podcasts" = "Apple Music · podcasts";
-"Netflix · film and series" = "Netflix · film and series";
 "Stereo & Mono" = "Stereo & Mono";
 
 /* Accessibility */
@@ -93,8 +90,10 @@
 "System" = "System";
 "WINDOW" = "WINDOW";
 "Always on top" = "Always on top";
+"Always on Top" = "Always on Top";
 "Full screen" = "Full screen";
-"Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen." = "Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F). Always on top pauses in full screen.";
+"Keeps the meter window, and any panel in a window of its own, above other apps' windows. Off until you turn it on, here or with the pin in the toolbar; it pauses in full screen." = "Keeps the meter window, and any panel in a window of its own, above other apps' windows. Off until you turn it on, here or with the pin in the toolbar; it pauses in full screen.";
+"Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F)." = "Or use the green window button, or View ▸ Enter Full Screen (⌃⌘F).";
 "STARTUP" = "STARTUP";
 "Show welcome at launch" = "Show welcome at launch";
 "Live" = "Live";
@@ -134,8 +133,6 @@
 "%@ · %d channels" = "%@ · %d channels";
 "Monitoring mode" = "Monitoring mode";
 "ROUTING" = "ROUTING";
-"Default Order" = "Default Order";
-"Input 1 to the first channel, input 2 to the second, and so on" = "Input 1 to the first channel, input 2 to the second, and so on";
 "Input %d" = "Input %d";
 "Channel %d" = "Channel %d";
 "Output %d" = "Output %d";
@@ -162,9 +159,7 @@
 "See your sound in real time" = "See your sound in real time";
 "Live analysis of any input or output, from Mono to 9.1.6." = "Live analysis of any input or output, from Mono to 9.1.6.";
 "Frequency content and pitch, live and over the last 8 seconds." = "Frequency content and pitch, live and over the last 8 seconds.";
-"LUFS, Range and True Peak against a delivery target." = "LUFS, Range and True Peak against a delivery target.";
 "Every channel over the last 2, 4 or 8 seconds." = "Every channel over the last 2, 4 or 8 seconds.";
-"Formats up to 9.1.6, with up to 64 inputs to route." = "Formats up to 9.1.6, with up to 64 inputs to route.";
 "Needed to read the input you select. Audio stays on this Mac and is never recorded." = "Needed to read the input you select. Audio stays on this Mac and is never recorded.";
 "Allow Microphone Access" = "Allow Microphone Access";
 "Open Microphone Settings" = "Open Microphone Settings";
@@ -175,6 +170,25 @@
 "Only needed to monitor what apps play to an output. macOS requests access when that output starts; permission can later be changed in System Settings." = "Only needed to monitor what apps play to an output. macOS requests access when that output starts; permission can later be changed in System Settings.";
 "Don't show this again" = "Don't show this again";
 "Start Metering" = "Start Metering";
+"Seven panels, one window" = "Seven panels, one window";
+"Each panel answers one question about your sound." = "Each panel answers one question about your sound.";
+"Allow access to audio" = "Allow access to audio";
+"Auraliscope only listens to the audio you choose." = "Auraliscope only listens to the audio you choose.";
+"Back" = "Back";
+"Next" = "Next";
+"Choose a source" = "Choose a source";
+"Pick an input or an output in the toolbar, or a DAW track through the Auraliscope Bridge plugin." = "Pick an input or an output in the toolbar, or a DAW track through the Auraliscope Bridge plugin.";
+"Pick a mode" = "Pick a mode";
+"Mono, Stereo or Immersive up to 9.1.6. Auto follows what is playing." = "Mono, Stereo or Immersive up to 9.1.6. Auto follows what is playing.";
+"Read, then report" = "Read, then report";
+"Meter against a loudness target, export a report (⌘E) or analyze a file (⌘O)." = "Meter against a loudness target, export a report (⌘E) or analyze a file (⌘O).";
+"Momentary, Short-term and Integrated LUFS against your target." = "Momentary, Short-term and Integrated LUFS against your target.";
+"How the loudness has moved over time." = "How the loudness has moved over time.";
+"A classic needle for the average level." = "A classic needle for the average level.";
+"Where the sound sits, from stereo width to a 9.1.6 dome." = "Where the sound sits, from stereo width to a 9.1.6 dome.";
+"Every channel's level, side by side." = "Every channel's level, side by side.";
+"Click a panel's corner button (⌘1–⌘7) to enlarge it; hold it to open the panel in its own window." = "Click a panel's corner button (⌘1–⌘7) to enlarge it; hold it to open the panel in its own window.";
+"Dock mode (⌥⌘S) lays every panel in one row along the bottom of the screen." = "Dock mode (⌥⌘S) lays every panel in one row along the bottom of the screen.";
 "Spectrogram & Spectrum" = "Spectrogram & Spectrum";
 "Waveform" = "Waveform";
 "Soundstage" = "Soundstage";
@@ -183,18 +197,9 @@
 "Native audio metering for macOS" = "Native audio metering for macOS";
 "Version %@" = "Version %@";
 "Build %@" = "Build %@";
-"What it measures" = "What it measures";
 "Loudness" = "Loudness";
-"Privacy" = "Privacy";
-"Acknowledgements" = "Acknowledgements";
 "Third-party notices" = "Third-party notices";
 "Third-party notices are included in the packaged app." = "Third-party notices are included in the packaged app.";
-"Copy Version Info" = "Copy Version Info";
-"Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer." = "Live spectrum beside a multi-resolution spectral history on one pitch axis, with the notes sounding together lit on its keyboard and any point readable under the pointer.";
-"LUFS, loudness range and True Peak against your target." = "LUFS, loudness range and True Peak against your target.";
-"Real-time waveforms for each monitored channel." = "Real-time waveforms for each monitored channel.";
-"Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded." = "Audio stays on your Mac. It is analyzed in memory, never recorded or uploaded.";
-"Spotify, YouTube, Tidal, Amazon Music, Deezer, Apple Music, Dolby Atmos, Prime Video and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them." = "Spotify, YouTube, Tidal, Amazon Music, Deezer, Apple Music, Dolby Atmos, Prime Video and Netflix are trademarks of their respective owners. They are named only to identify the loudness targets those services publish; Auraliscope is not affiliated with or endorsed by them.";
 
 /* Meter window, theme names and the language restart (1.0.1). */
 "LOUDNESS" = "LOUDNESS";
@@ -266,16 +271,10 @@
 "HEIGHT" = "HEIGHT";
 "AUTO" = "AUTO";
 "Starlight" = "Starlight";
-"Blossom Pink" = "Blossom Pink";
+"Cobalt" = "Cobalt";
+"Glacier" = "Glacier";
+"Graphite" = "Graphite";
 "Sage" = "Sage";
-"Vintage Amber" = "Vintage Amber";
-"Phosphor Green" = "Phosphor Green";
-"Ice Blue" = "Ice Blue";
-"Electric Violet" = "Electric Violet";
-"Safety Orange" = "Safety Orange";
-"Ocean & Mist" = "Ocean & Mist";
-"Plum & Pearl" = "Plum & Pearl";
-"Copper & Linen" = "Copper & Linen";
 
 /* Soundstage: vertical meters, true-peak overs and correlation (1.0.1 build 11). */
 "Out of phase" = "Out of phase";
@@ -306,9 +305,7 @@
 "Show Diagnostic Logs" = "Show Diagnostic Logs";
 
 /* About (1.0.1). */
-"The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive." = "The channel map of Stereo and Immersive layouts up to 9.1.6 with each speaker's level, and where the frequency bands sit (full band, 3 or 5): a stereometer in Stereo, band markers in Immersive.";
 "Channel Levels" = "Channel Levels";
-"Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo." = "Peak, RMS and true-peak overs per channel, and correlation in 3 or 5 frequency bands in Stereo.";
 "Click to reset True Peak" = "Click to reset True Peak";
 "Immersive" = "Immersive";
 "%d bands" = "%d bands";
@@ -420,7 +417,6 @@
 "Classic" = "Classic";
 "Enhanced" = "Enhanced";
 "Smoothing" = "Smoothing";
-"BOTH" = "BOTH";
 "reassigned" = "reassigned";
 "2D scrolls a flat image in time. 3D lifts it into a landscape: time across, frequency into the distance, level as height." = "2D scrolls a flat image in time. 3D lifts it into a landscape: time across, frequency into the distance, level as height.";
 "A faint line along each band's recent peak, held 1.2 s and then falling." = "A faint line along each band's recent peak, held 1.2 s and then falling.";
@@ -464,7 +460,6 @@
 "How long a faint afterglow of recent energy lingers after the release; 0 turns it off." = "How long a faint afterglow of recent energy lingers after the release; 0 turns it off.";
 "How much of each image's predicted width is drawn: 1 as wide as it is heard, from its energy vector after Frank 2013 (an in-phase phantom between speakers 60° apart about 36°, one speaker 10.7°), 0 every image as compact as one speaker, 2 twice as wide. Energy that cancels between speakers spreads wider still." = "How much of each image's predicted width is drawn: 1 as wide as it is heard, from its energy vector after Frank 2013 (an in-phase phantom between speakers 60° apart about 36°, one speaker 10.7°), 0 every image as compact as one speaker, 2 twice as wide. Energy that cancels between speakers spreads wider still.";
 "How readily speakers that share coherent energy form one image between them. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance; higher sensitivity lets weaker coherence form images, lower keeps only strongly shared signals together. The analysis uses it (in the plugin, too)." = "How readily speakers that share coherent energy form one image between them. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance; higher sensitivity lets weaker coherence form images, lower keeps only strongly shared signals together. The analysis uses it (in the plugin, too).";
-"IMMERSIVE NEBULA" = "IMMERSIVE NEBULA";
 "Iso" = "Iso";
 "Isometric view" = "Isometric view";
 "Lowest frequency" = "Lowest frequency";
@@ -484,12 +479,8 @@
 "coherence %.2f" = "coherence %.2f";
 "in phase %d%%" = "in phase %d%%";
 "x to the right, y to the front, z up, from the listener." = "x to the right, y to the front, z up, from the listener.";
-"width %d°" = "width %d°";
 "FREQUENCY" = "FREQUENCY";
 "%@ to 0 dBFS" = "%@ to 0 dBFS";
-"Between speakers: phantom image" = "Between speakers: phantom image";
-"Ochre: out of phase" = "Ochre: out of phase";
-"Between speakers: phantom image · Ochre: out of phase" = "Between speakers: phantom image · Ochre: out of phase";
 "RADIUS = LEVEL" = "RADIUS = LEVEL";
 "Radius = level, %@ to 0 dBFS" = "Radius = level, %@ to 0 dBFS";
 "Level floor" = "Level floor";
@@ -500,8 +491,6 @@
 "The LFE channel's level as the arc around the listener, on the body's scale: it has no direction, so it never shapes the body. Low frequencies in the full-range channels stay where those channels are." = "The LFE channel's level as the arc around the listener, on the body's scale: it has no direction, so it never shapes the body. Low frequencies in the full-range channels stay where those channels are.";
 "The hemisphere's grid and the level rings on the floor, every 20 dB, labelled in dBFS." = "The hemisphere's grid and the level rings on the floor, every 20 dB, labelled in dBFS.";
 "The level at the listener, where the body's radius starts: quieter energy reaches no radius. The speakers' shell is 0 dBFS." = "The level at the listener, where the body's radius starts: quieter energy reaches no radius. The speakers' shell is 0 dBFS.";
-"Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Height channels use a schematic 45 degree elevation." = "Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Height channels use a schematic 45 degree elevation.";
-"The body shows how loud the speaker feeds are heard from each direction: its radius is the level in dBFS (the rings on the floor), not a distance. Energy only one speaker carries points at that speaker. Energy several speakers carry coherently points between them, where its phantom image is heard: along their velocity vector below about 700 Hz and their energy vector above (Gerzon), as wide as the energy vector predicts it is heard (Frank). Energy that cancels between speakers has no stable direction: it spreads wide and is tinted ochre. An estimate from the feeds, not a measured sound field; height channels use a schematic 45 degree elevation. Hover over the body to read a direction's level and what forms it." = "The body shows how loud the speaker feeds are heard from each direction: its radius is the level in dBFS (the rings on the floor), not a distance. Energy only one speaker carries points at that speaker. Energy several speakers carry coherently points between them, where its phantom image is heard: along their velocity vector below about 700 Hz and their energy vector above (Gerzon), as wide as the energy vector predicts it is heard (Frank). Energy that cancels between speakers has no stable direction: it spreads wide and is tinted ochre. An estimate from the feeds, not a measured sound field; height channels use a schematic 45 degree elevation. Hover over the body to read a direction's level and what forms it.";
 "Frequency" = "Frequency";
 "Frequency colors the full band by the bands heard from each direction, warm bass through cool treble: near the listener every audible band mixes, toward white for broadband sound, and toward the edge only the loudest bands remain. Theme draws it in the palette's color. A split into 3 or 5 bands always shows each band in its own color." = "Frequency colors the full band by the bands heard from each direction, warm bass through cool treble: near the listener every audible band mixes, toward white for broadband sound, and toward the edge only the loudest bands remain. Theme draws it in the palette's color. A split into 3 or 5 bands always shows each band in its own color.";
 "Grain" = "Grain";
@@ -509,8 +498,6 @@
 "Colored by frequency, a point of the body wears the hues of the bands that are at least that loud in its direction: the edge shows what dominates each direction, the core what all of them share." = "Colored by frequency, a point of the body wears the hues of the bands that are at least that loud in its direction: the edge shows what dominates each direction, the core what all of them share.";
 "centre %@" = "centre %@";
 "Its color shows the frequencies heard from each direction: near the listener every band mixes toward white, near the edge only the loudest bands remain, warm for bass and cool for treble." = "Its color shows the frequencies heard from each direction: near the listener every band mixes toward white, near the edge only the loudest bands remain, warm for bass and cool for treble.";
-"Edge color: loudest band" = "Edge color: loudest band";
-"Radiant" = "Radiant";
 "Level body" = "Level body";
 "Style" = "Style";
 "Glow range" = "Glow range";
@@ -521,48 +508,33 @@
 "Blur" = "Blur";
 "Particles" = "Particles";
 "Particle size" = "Particle size";
-"How large a new particle is." = "How large a new particle is.";
-"How bright the particles' light is." = "How bright the particles' light is.";
-"Each particle: a band, where it is heard" = "Each particle: a band, where it is heard";
-"How many particles each band sends per analysis frame (30 a second), drawn from its frequencies in proportion to their energy, so a strong one gathers several into one bright bead. More fill the streaks and clouds; fewer leave single beads." = "How many particles each band sends per analysis frame (30 a second), drawn from its frequencies in proportion to their energy, so a strong one gathers several into one bright bead. More fill the streaks and clouds; fewer leave single beads.";
-"How much particles smear as they age, so older light turns to haze while new particles stay crisp. 0 keeps them sharp." = "How much particles smear as they age, so older light turns to haze while new particles stay crisp. 0 keeps them sharp.";
-"How long particles stay, fading as they go; the longer, the more they build up into streaks and clouds." = "How long particles stay, fading as they go; the longer, the more they build up into streaks and clouds.";
-"How far below the loudest band particles still glow, in dB: the loudest burn white, quieter ones fade out over this range. How loud the loudest band is sets how bright the whole glow is. Hover over a particle to read its band's level." = "How far below the loudest band particles still glow, in dB: the loudest burn white, quieter ones fade out over this range. How loud the loudest band is sets how bright the whole glow is. Hover over a particle to read its band's level.";
-"The quietest band drawn: a band below it sends no particles, whatever the glow range." = "The quietest band drawn: a band below it sends no particles, whatever the glow range.";
-"Frequency colors each band's particles by its frequency, warm bass through cool treble; where many bands meet, their light adds up toward white. Theme draws them in the palette's color. A split into 3 or 5 bands always shows each band in its own color." = "Frequency colors each band's particles by its frequency, warm bass through cool treble; where many bands meet, their light adds up toward white. Theme draws them in the palette's color. A split into 3 or 5 bands always shows each band in its own color.";
-"Each particle wears its band's color, warm for bass and cool for treble; where many bands meet, their light adds up toward white." = "Each particle wears its band's color, warm for bass and cool for treble; where many bands meet, their light adds up toward white.";
-"Radiant draws each band as particles where its frequencies are heard: at the centre of gravity of the speakers that carry them, weighted by their level in each, so a centred phantom is a bright point between L and R and a wide stereo programme a streak along the line between them. The particles glow in their frequency's hue, as bright as they are loud, then fade and smear as they age. Level body draws the level heard from each direction as the radius of one body, read on the floor's dBFS rings." = "Radiant draws each band as particles where its frequencies are heard: at the centre of gravity of the speakers that carry them, weighted by their level in each, so a centred phantom is a bright point between L and R and a wide stereo programme a streak along the line between them. The particles glow in their frequency's hue, as bright as they are loud, then fade and smear as they age. Level body draws the level heard from each direction as the radius of one body, read on the floor's dBFS rings.";
-"Each particle is one of a band's frequencies in the newest analysis, where it is heard: at the centre of gravity of the speakers, weighted by its amplitude in each. A sound only one speaker carries sits at that speaker; one panned between speakers sits on the line between them where its gains put it, at every frequency; two sounds sharing a band each keep their own place; sound the speakers carry independently scatters along the lines between them, frequency by frequency. Energy that cancels between speakers is tinted ochre where it sits. An estimate from the feeds, not a measured sound field; height channels use a schematic 45 degree elevation. Hover over a particle to read its band, level and what places it there." = "Each particle is one of a band's frequencies in the newest analysis, where it is heard: at the centre of gravity of the speakers, weighted by its amplitude in each. A sound only one speaker carries sits at that speaker; one panned between speakers sits on the line between them where its gains put it, at every frequency; two sounds sharing a band each keep their own place; sound the speakers carry independently scatters along the lines between them, frequency by frequency. Energy that cancels between speakers is tinted ochre where it sits. An estimate from the feeds, not a measured sound field; height channels use a schematic 45 degree elevation. Hover over a particle to read its band, level and what places it there.";
-"How readily speakers that share coherent energy count as one image. In Radiant it decides what reads as a phantom image or out of phase (the ochre tint and the pointer's reading), not where particles sit: their frequencies' amplitudes decide that. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance. The analysis uses it (in the plugin, too)." = "How readily speakers that share coherent energy count as one image. In Radiant it decides what reads as a phantom image or out of phase (the ochre tint and the pointer's reading), not where particles sit: their frequencies' amplitudes decide that. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance. The analysis uses it (in the plugin, too).";
-"This plugin sends no frequencies of its own (before build 87), so Radiant draws its particles from the spatial field's statistics. Install the plugins of this build to see each frequency where it is heard." = "This plugin sends no frequencies of its own (before build 87), so Radiant draws its particles from the spatial field's statistics. Install the plugins of this build to see each frequency where it is heard.";
-"Particles of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom is a bright point between two speakers, a wide stereo programme a streak along the line between them, sound all round gathers toward the listener. The loudest band glows white and quieter ones fade out %d dB below it; particles fade and smear as they age. Energy out of phase scatters and is tinted ochre. Height channels use a schematic 45 degree elevation." = "Particles of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom is a bright point between two speakers, a wide stereo programme a streak along the line between them, sound all round gathers toward the listener. The loudest band glows white and quieter ones fade out %d dB below it; particles fade and smear as they age. Energy out of phase scatters and is tinted ochre. Height channels use a schematic 45 degree elevation.";
-"Sparkle" = "Sparkle";
-"How brightly new particles glint before they smoke into glow. 0 leaves only the glow." = "How brightly new particles glint before they smoke into glow. 0 leaves only the glow.";
 
 /* 2.0: panel windows, horizontal strip, layouts, calibration, frame rate */
 "0 VU at" = "0 VU at";
-"Arrange this panel in the strip" = "Arrange this panel in the strip";
+"Arrange this panel in the dock" = "Arrange this panel in the dock";
 "Automatic" = "Automatic";
 "Cancel" = "Cancel";
-"Choose the strip's panels with the button on the left." = "Choose the strip's panels with the button on the left.";
+"Choose the dock's panels with the button on the left." = "Choose the dock's panels with the button on the left.";
 "Delete Layout" = "Delete Layout";
 "Display frame rate" = "Display frame rate";
-"Dock Strip to Bottom of Screen" = "Dock Strip to Bottom of Screen";
-"Dock to Bottom" = "Dock to Bottom";
-"Drag the strip's top edge to change its height. It remembers where you leave it." = "Drag the strip's top edge to change its height. It remembers where you leave it.";
+"Move to Bottom of Screen" = "Move to Bottom of Screen";
+"Move to Bottom" = "Move to Bottom";
+"Drag the dock's top edge to change its height, and any gap in it to change the widths on either side (double-click a gap for the automatic widths). It remembers where you leave it." = "Drag the dock's top edge to change its height, and any gap in it to change the widths on either side (double-click a gap for the automatic widths). It remembers where you leave it.";
+"Minimize (⌘M)" = "Minimize (⌘M)";
+"The default panels at their automatic widths" = "The default panels at their automatic widths";
 "Enlarge Panel" = "Enlarge Panel";
 "Enlarge this panel (click), or open it in a window of its own (hold)" = "Enlarge this panel (click), or open it in a window of its own (hold)";
 "Full Meter" = "Full Meter";
 "Full width along the bottom of this screen" = "Full width along the bottom of this screen";
 "Hide Panel" = "Hide Panel";
-"Horizontal Strip" = "Horizontal Strip";
-"Horizontal strip" = "Horizontal strip";
-"Horizontal strip (click, ⌥⌘S); panels and layouts (hold)" = "Horizontal strip (click, ⌥⌘S); panels and layouts (hold)";
-"How often the meters redraw. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Automatic uses 30 fps in Low Power Mode. Takes effect at once." = "How often the meters redraw. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Automatic uses 30 fps in Low Power Mode. Takes effect at once.";
+"Dock Mode" = "Dock Mode";
+"Dock mode" = "Dock mode";
+"Dock mode (click, ⌥⌘S); panels and layouts (hold)" = "Dock mode (click, ⌥⌘S); panels and layouts (hold)";
+"How often the meters redraw. Automatic follows the display: 120 fps on a ProMotion display, 60 on others, 30 in Low Power Mode. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Takes effect at once." = "How often the meters redraw. Automatic follows the display: 120 fps on a ProMotion display, 60 on others, 30 in Low Power Mode. 30 fps about halves the drawing work, for a laptop on battery or a busy session; the measurement itself is the same. Takes effect at once.";
 "Layout" = "Layout";
 "Layout name" = "Layout name";
-"Leave Horizontal Strip" = "Leave Horizontal Strip";
-"Leave the strip (⌥⌘S)" = "Leave the strip (⌥⌘S)";
+"Leave Dock Mode" = "Leave Dock Mode";
+"Leave Dock mode (⌥⌘S)" = "Leave Dock mode (⌥⌘S)";
 "Loudness & Levels" = "Loudness & Levels";
 "Loudness History" = "Loudness History";
 "Move Left" = "Move Left";
@@ -571,7 +543,7 @@
 "Open Panel in New Window" = "Open Panel in New Window";
 "Open in New Window" = "Open in New Window";
 "PERFORMANCE" = "PERFORMANCE";
-"Remove from Strip" = "Remove from Strip";
+"Remove from Dock" = "Remove from Dock";
 "Reset" = "Reset";
 "Reset Layout" = "Reset Layout";
 "Restore Full Window" = "Restore Full Window";
@@ -579,21 +551,23 @@
 "Restore the full window (Esc)" = "Restore the full window (Esc)";
 "Return this panel to the main window" = "Return this panel to the main window";
 "Return to Main Window" = "Return to Main Window";
-"STRIP PANELS" = "STRIP PANELS";
+"DOCK PANELS" = "DOCK PANELS";
 "Save" = "Save";
 "Save Layout" = "Save Layout";
 "Save Layout…" = "Save Layout…";
-"Saves which panels show, the dividers' positions and the strip's panels." = "Saves which panels show, the dividers' positions and the strip's panels.";
+"Saves which panels show, the dividers' positions and the dock's panels." = "Saves which panels show, the dividers' positions and the dock's panels.";
 "Show All Panels" = "Show All Panels";
 "Show Panels" = "Show Panels";
+"WINDOW PANELS" = "WINDOW PANELS";
+"Show or hide the main window's panels" = "Show or hide the main window's panels";
+"Hidden panels stop drawing. Measurements continue; the optional Multi-FFT engine stops when its panel closes." = "Hidden panels stop drawing. Measurements continue; the optional Multi-FFT engine stops when its panel closes.";
 "Spectrum Only" = "Spectrum Only";
-"Strip Panels" = "Strip Panels";
-"Strip panels" = "Strip panels";
+"Dock Panels" = "Dock Panels";
+"Dock panels" = "Dock panels";
 "Target" = "Target";
-"The True Peak limit of %@. TRUE PEAK turns amber above it." = "The True Peak limit of %@. TRUE PEAK turns amber above it.";
 "The level the VU meter reads as 0 VU. Target follows the loudness target of the current mode; a fixed level calibrates it like a studio console, where −18 dBFS = 0 VU is common." = "The level the VU meter reads as 0 VU. Target follows the loudness target of the current mode; a fixed level calibrates it like a studio console, where −18 dBFS = 0 VU is common.";
-"The loudness target of %@, in steps of 0.5 LU. The summary's TARGET menu offers the published standards." = "The loudness target of %@, in steps of 0.5 LU. The summary's TARGET menu offers the published standards.";
-"The strip lays the panels in one row along the bottom of the screen (⌥⌘S). Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own." = "The strip lays the panels in one row along the bottom of the screen (⌥⌘S). Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own.";
+"Dock mode lays the panels in one row along the bottom of the screen (⌥⌘S)." = "Dock mode lays the panels in one row along the bottom of the screen (⌥⌘S).";
+"Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own." = "Layout ▸ Save Layout… keeps an arrangement of panels and dividers; each panel's title row can enlarge it (⌘1…⌘7) or open it in a window of its own.";
 "Games · mobile (ASWG-R001)" = "Games · mobile (ASWG-R001)";
 "Games · console (ASWG-R001)" = "Games · console (ASWG-R001)";
 "Custom" = "Custom";
@@ -605,8 +579,8 @@
 "The faint line: momentary loudness (400 ms) under the short-term line, to see the peaks a 3 s reading smooths away." = "The faint line: momentary loudness (400 ms) under the short-term line, to see the peaks a 3 s reading smooths away.";
 "The loudness the plot spans. Full reads −36 to 0 LUFS; Close zooms to 18 LU around the target, so small changes of level show." = "The loudness the plot spans. Full reads −36 to 0 LUFS; Close zooms to 18 LU around the target, so small changes of level show.";
 "Var" = "Var";
+"%@ LU below the service's level; most play it as it is" = "%@ LU below the service's level; most play it as it is";
 "%@ s" = "%@ s";
-"%d above 0 dBTP" = "%d above 0 dBTP";
 "%d h" = "%d h";
 "%d min" = "%d min";
 "1 min" = "1 min";
@@ -634,19 +608,39 @@
 "Judged on integrated loudness and the highest true peak since the last reset." = "Judged on integrated loudness and the highest true peak since the last reset.";
 "LAST 1 MIN" = "LAST 1 MIN";
 "LAST 5 MIN" = "LAST 5 MIN";
-"LOUDNESS HISTORY" = "LOUDNESS HISTORY";
 "LOUDNESS OVER TIME" = "LOUDNESS OVER TIME";
 "LUFS writes loudness as it is; LU writes it relative to the target, 0 at the target, as an EBU-mode meter's relative scale does. Range and true peak keep their units." = "LUFS writes loudness as it is; LU writes it relative to the target, 0 at the target, as an EBU-mode meter's relative scale does. Range and true peak keep their units.";
 "Loudness Report" = "Loudness Report";
 "MAX MOMENTARY" = "MAX MOMENTARY";
 "MAX SHORT-TERM" = "MAX SHORT-TERM";
 "MEASURING" = "MEASURING";
-"None above 0 dBTP" = "None above 0 dBTP";
 "Normal" = "Normal";
 "OVER ×%d" = "OVER ×%d";
-"Overs" = "Overs";
 "PASS" = "PASS";
 "PEAK HOLD" = "PEAK HOLD";
+
+/* Panel settings groups and typed levels (build 106) */
+"READING" = "READING";
+"PLOT" = "PLOT";
+"LINES" = "LINES";
+"CALIBRATION" = "CALIBRATION";
+"SPECTROGRAM COLORS" = "SPECTROGRAM COLORS";
+"BOTH VIEWS" = "BOTH VIEWS";
+"LANES" = "LANES";
+"IMMERSIVE" = "IMMERSIVE";
+"RADIANT BODY" = "RADIANT BODY";
+"LEVEL BODY" = "LEVEL BODY";
+"CAMERA" = "CAMERA";
+"SHOW" = "SHOW";
+"DRAWN LEVELS AND FREQUENCIES" = "DRAWN LEVELS AND FREQUENCIES";
+"Bands" = "Bands";
+"TARGET · STEREO & MONO" = "TARGET · STEREO & MONO";
+"TARGET · IMMERSIVE" = "TARGET · IMMERSIVE";
+"The loudness target of %@: type a value (to a tenth, the minus sign may be left out) or step it by 0.5 LU. The summary's TARGET menu offers the published standards." = "The loudness target of %@: type a value (to a tenth, the minus sign may be left out) or step it by 0.5 LU. The summary's TARGET menu offers the published standards.";
+"The True Peak limit of %@: type a value or step it by 0.1 dB. TRUE PEAK turns amber above it." = "The True Peak limit of %@: type a value or step it by 0.1 dB. TRUE PEAK turns amber above it.";
+"Type a value or use the arrows. The summary's TARGET and CEILING menus offer the published standards; Stereo and Immersive each keep their own." = "Type a value or use the arrows. The summary's TARGET and CEILING menus offer the published standards; Stereo and Immersive each keep their own.";
+"Back to the default view, as a double-click on the dome does." = "Back to the default view, as a double-click on the dome does.";
+
 "Plays %@ dB quieter after normalization" = "Plays %@ dB quieter after normalization";
 "Plays at its own level" = "Plays at its own level";
 "SESSION" = "SESSION";
@@ -661,7 +655,6 @@
 "build %@" = "build %@";
 "maximum" = "maximum";
 "normalized" = "normalized";
-"Accuracy" = "Accuracy";
 "%d times" = "%d times";
 "%d · %@ s missing" = "%d · %@ s missing";
 "A steep loss above this frequency, as a lossy encoder or a low-pass filter leaves. Check that the source is not a decoded MP3 or AAC." = "A steep loss above this frequency, as a lossy encoder or a low-pass filter leaves. Check that the source is not a decoded MP3 or AAC.";
@@ -717,7 +710,6 @@
 "None" = "None";
 "Nothing measured yet." = "Nothing measured yet.";
 "OK" = "OK";
-"OK meets the rule beside it. NOTE is worth a listen: the reading is outside what most finished masters show, which can be intended. CHECK needs attention before delivery. Loudness and true peak are judged against the chosen standard; every other rule is mastering guidance, not a specification." = "OK meets the rule beside it. NOTE is worth a listen: the reading is outside what most finished masters show, which can be intended. CHECK needs attention before delivery. Loudness and true peak are judged against the chosen standard; every other rule is mastering guidance, not a specification.";
 "Peak to loudness (PLR)" = "Peak to loudness (PLR)";
 "Peak to short-term (PSR)" = "Peak to short-term (PSR)";
 "Readings that touched 0 dBFS, where a converter or a lossy encoder is likely to clip." = "Readings that touched 0 dBFS, where a converter or a lossy encoder is likely to clip.";
@@ -746,8 +738,250 @@
 "This plugin does not measure it. Install the plugins of build 90 or later." = "This plugin does not measure it. Install the plugins of build 90 or later.";
 "Energy from about 2 to 20 Hz (rumble, wind, subsonic oscillation) against the programme's full-band energy, LFE left out. Above −25 dB it eats headroom no speaker turns into sound; a strong 30 to 40 Hz bass reads a little here too." = "Energy from about 2 to 20 Hz (rumble, wind, subsonic oscillation) against the programme's full-band energy, LFE left out. Above −25 dB it eats headroom no speaker turns into sound; a strong 30 to 40 Hz bass reads a little here too.";
 
-"REFERENCE" = "REFERENCE";
+/* Analyze Audio File */
+"%@ (%d channels, SMPTE order)" = "%@ (%d channels, SMPTE order)";
+"%d channels" = "%d channels";
+"%d-bit" = "%d-bit";
+"%d-bit float" = "%d-bit float";
+"All readings cover the whole file. Tonal balance, bandwidth and stereo image use the meter's spectrum (128 bands, about 1/13 octave) and its five stereo bands, averaged in power over the moments with sound. DC offset and the energy below 20 Hz come from a signal-health meter in the analysis: each channel's 1 s mean, and a fourth-order 20 Hz low-pass after the drift is removed." = "All readings cover the whole file. Tonal balance, bandwidth and stereo image use the meter's spectrum (128 bands, about 1/13 octave) and its five stereo bands, averaged in power over the moments with sound. DC offset and the energy below 20 Hz come from a signal-health meter in the analysis: each channel's 1 s mean, and a fourth-order 20 Hz low-pass after the drift is removed.";
+"Analyze" = "Analyze";
+"Analyze Another…" = "Analyze Another…";
+"Analyze Audio File" = "Analyze Audio File";
+"Analyze Audio File…" = "Analyze Audio File…";
+"Analyzing" = "Analyzing";
+"Choose File…" = "Choose File…";
+"Files with %d channels are not supported. Mono, stereo and the multichannel layouts from 3.0 to 9.1.6 are." = "Files with %d channels are not supported. Mono, stereo and the multichannel layouts from 3.0 to 9.1.6 are.";
+"Measured offline from the whole file at its own sample rate, with the same analysis and 10 Hz readings as live metering." = "Measured offline from the whole file at its own sample rate, with the same analysis and 10 Hz readings as live metering.";
+"Measures a whole file — WAV, AIFF, MP3, AAC, ALAC, FLAC and more — with the meter's own analysis, then writes the loudness and master report as a PDF. The file stays on your Mac." = "Measures a whole file — WAV, AIFF, MP3, AAC, ALAC, FLAC and more — with the meter's own analysis, then writes the loudness and master report as a PDF. The file stays on your Mac.";
+"Save CSV…" = "Save CSV…";
+"Save PDF Report…" = "Save PDF Report…";
+"The analysis was cancelled." = "The analysis was cancelled.";
+"The file could not be read as audio. It may be damaged, protected, or in a format macOS does not decode." = "The file could not be read as audio. It may be damaged, protected, or in a format macOS does not decode.";
+"The file holds no audio." = "The file holds no audio.";
 
-"Dialogue-gated loudness is not measured; this is a full-programme reference." = "Dialogue-gated loudness is not measured; this is a full-programme reference.";
+/* Report pages */
+"3 s window" = "3 s window";
+"400 ms window" = "400 ms window";
+"Ceiling" = "Ceiling";
+"Ceiling %@" = "Ceiling %@";
+"Delivery verdict" = "Delivery verdict";
+"Generated %@" = "Generated %@";
+"Guideline" = "Guideline";
+"Live input, started %@" = "Live input, started %@";
+"Loudness & Master Report" = "Loudness & Master Report";
+"Loudness and true peak are judged against the chosen standard; every other rule is mastering guidance, not a specification." = "Loudness and true peak are judged against the chosen standard; every other rule is mastering guidance, not a specification.";
+"Master check" = "Master check";
+"Measure" = "Measure";
+"Measured" = "Measured";
+"Meets the rule beside it." = "Meets the rule beside it.";
+"Needs attention before delivery." = "Needs attention before delivery.";
+"Offline file analysis" = "Offline file analysis";
+"PLR %@ LU" = "PLR %@ LU";
+"Page %d of %d" = "Page %d of %d";
+"Sample peak" = "Sample peak";
+"Target %@" = "Target %@";
+"Tilt %@" = "Tilt %@";
+"Value" = "Value";
+"Worth a listen: outside what most finished masters show, which can be intended." = "Worth a listen: outside what most finished masters show, which can be intended.";
 
-"%@ LU below the reference; playback gain depends on the service and settings" = "%@ LU below the reference; playback gain depends on the service and settings";
+/* Speaker layout and Radiant observations (build 98) */
+"%@ copy" = "%@ copy";
+"%@ is listed twice." = "%@ is listed twice.";
+"%@ is not a speaker role." = "%@ is not a speaker role.";
+"%@ m, distribution" = "%@ m, distribution";
+"%@: the angles must be numbers." = "%@: the angles must be numbers.";
+"%@: the distance must be between 0.1 and 100 m." = "%@: the distance must be between 0.1 and 100 m.";
+"%@: the elevation must be between −90° and 90°." = "%@: the elevation must be between −90° and 90°.";
+"A layout file is JSON: the channel format, the mapping and each speaker's role, azimuth, elevation and distance (null when unknown), in the listener's frame (x right, y front, z up)." = "A layout file is JSON: the channel format, the mapping and each speaker's role, azimuth, elevation and distance (null when unknown), in the listener's frame (x right, y front, z up).";
+"Applying the speaker layout: what was analysed with the previous one is not drawn." = "Applying the speaker layout: what was analysed with the previous one is not drawn.";
+"Azimuth" = "Azimuth";
+"Azimuth in degrees clockwise from the front (left is negative), elevation in degrees up from the ear plane (below it negative), distance in meters from the listening position; leave the distance empty when it is not known. Routing (which input feeds which speaker) stays in Settings ▸ Channels." = "Azimuth in degrees clockwise from the front (left is negative), elevation in degrees up from the ear plane (below it negative), distance in meters from the listening position; leave the distance empty when it is not known. Routing (which input feeds which speaker) stays in Settings ▸ Channels.";
+"Channel format" = "Channel format";
+"Channel format %@ is not one Auraliscope shows." = "Channel format %@ is not one Auraliscope shows.";
+"Custom %@" = "Custom %@";
+"Distance" = "Distance";
+"Done" = "Done";
+"Duplicate" = "Duplicate";
+"EDIT" = "EDIT";
+"Each particle is a place where a band's frequencies sit in the newest analysis: at the centre of gravity of the speakers, weighted by each frequency's amplitude in each (for one sound panned with gains, the direction of its velocity vector). A sound only one speaker carries sits at that speaker; one panned between speakers sits on the line between them where its gains put it, at every frequency; two sounds sharing a band each keep their own place; sound the speakers carry independently scatters along the lines between them. Neighbouring frequencies at one place share a particle. Energy that cancels between speakers is tinted ochre where it sits. A description of how the feeds share the signal, not a measured sound field or source distance; speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees). Hover over a particle to read its frequency, level and what places it there." = "Each particle is a place where a band's frequencies sit in the newest analysis: at the centre of gravity of the speakers, weighted by each frequency's amplitude in each (for one sound panned with gains, the direction of its velocity vector). A sound only one speaker carries sits at that speaker; one panned between speakers sits on the line between them where its gains put it, at every frequency; two sounds sharing a band each keep their own place; sound the speakers carry independently scatters along the lines between them. Neighbouring frequencies at one place share a particle. Energy that cancels between speakers is tinted ochre where it sits. A description of how the feeds share the signal, not a measured sound field or source distance; speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees). Hover over a particle to read its frequency, level and what places it there.";
+"Elevation" = "Elevation";
+"Export…" = "Export…";
+"File" = "File";
+"How many particles a band keeps per analysis frame (30 a second) on average: the analysis gathers a band's frequencies that sit at one place into one particle, keeps every place that carries a good share of the band's energy, and gathers the weakest rest; bands with more detail (the treble's) get what simpler ones leave. Fewer particles never dim the picture or move a band's centre: its light and its centre of gravity stay the same." = "How many particles a band keeps per analysis frame (30 a second) on average: the analysis gathers a band's frequencies that sit at one place into one particle, keeps every place that carries a good share of the band's energy, and gathers the weakest rest; bands with more detail (the treble's) get what simpler ones leave. Fewer particles never dim the picture or move a band's centre: its light and its centre of gravity stay the same.";
+"Import…" = "Import…";
+"Included" = "Included";
+"LAYOUT" = "LAYOUT";
+"Left out (not in %@): %@." = "Left out (not in %@): %@.";
+"Left to right" = "Left to right";
+"Mirror" = "Mirror";
+"Name" = "Name";
+"No direction: shown as the arc around the listener, never placed." = "No direction: shown as the arc around the listener, never placed.";
+"PREVIEW" = "PREVIEW";
+"Preview" = "Preview";
+"Raw observations" = "Raw observations";
+"Rename…" = "Rename…";
+"Restore" = "Restore";
+"Right to left" = "Right to left";
+"SPEAKERS" = "SPEAKERS";
+"Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees)." = "Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees).";
+"Speaker" = "Speaker";
+"Speaker Layout" = "Speaker Layout";
+"Speaker directions" = "Speaker directions";
+"Speaker directions: each frequency at the centre of gravity of the speakers' directions, weighted by its amplitude in each, every speaker on the unit sphere (as in build 97). The radius is part of that average, not a distance." = "Speaker directions: each frequency at the centre of gravity of the speakers' directions, weighted by its amplitude in each, every speaker on the unit sphere (as in build 97). The radius is part of that average, not a distance.";
+"Speaker layout" = "Speaker layout";
+"Speaker layout preview" = "Speaker layout preview";
+"Speaker positions" = "Speaker positions";
+"Speaker positions need every included speaker's distance." = "Speaker positions need every included speaker's distance.";
+"Speaker positions: each frequency at the centre of gravity of the speakers' positions in meters, weighted by its amplitude in each. It shows how the feeds share the signal out over this layout; it is not a measured source position or distance. Every included speaker needs its distance. The Level body keeps the speakers' directions: its radius is the level." = "Speaker positions: each frequency at the centre of gravity of the speakers' positions in meters, weighted by its amplitude in each. It shows how the feeds share the signal out over this layout; it is not a measured source position or distance. Every included speaker needs its distance. The Level body keeps the speakers' directions: its radius is the level.";
+"Standard %@" = "Standard %@";
+"Standard placements" = "Standard placements";
+"Standard places for: %@." = "Standard places for: %@.";
+"The body shows how loud the speaker feeds are heard from each direction: its radius is the level in dBFS (the rings on the floor), not a distance. Energy only one speaker carries points at that speaker. Energy several speakers carry coherently points between them, where its phantom image is heard: along their velocity vector below about 700 Hz and their energy vector above (Gerzon), as wide as the energy vector predicts it is heard (Frank). Energy that cancels between speakers has no stable direction: it spreads wide and is tinted ochre. An estimate from the feeds, not a measured sound field; speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees). Hover over the body to read a direction's level and what forms it." = "The body shows how loud the speaker feeds are heard from each direction: its radius is the level in dBFS (the rings on the floor), not a distance. Energy only one speaker carries points at that speaker. Energy several speakers carry coherently points between them, where its phantom image is heard: along their velocity vector below about 700 Hz and their energy vector above (Gerzon), as wide as the energy vector predicts it is heard (Frank). Energy that cancels between speakers has no stable direction: it spreads wide and is tinted ochre. An estimate from the feeds, not a measured sound field; speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees). Hover over the body to read a direction's level and what forms it.";
+"This file is not an Auraliscope speaker layout." = "This file is not an Auraliscope speaker layout.";
+"This layout was saved by a newer Auraliscope (format version %d)." = "This layout was saved by a newer Auraliscope (format version %d).";
+"This plugin could not use your speaker layout, so the dome shows the standard layout." = "This plugin could not use your speaker layout, so the dome shows the standard layout.";
+"This plugin places sound with the standard speaker layout (it is older than build 98), so the dome shows the standard layout. Install the plugins of this build to use your speaker layout." = "This plugin places sound with the standard speaker layout (it is older than build 98), so the dome shows the standard layout. Install the plugins of this build to use your speaker layout.";
+"Where each speaker sits around the listening position (azimuth, elevation and, if known, distance), for the dome and its analysis, here and in a DAW plugin of this build. The standard layout places the ear layer at 0° and every height at 45°." = "Where each speaker sits around the listening position (azimuth, elevation and, if known, distance), for the dome and its analysis, here and in a DAW plugin of this build. The standard layout places the ear layer at 0° and every height at 45°.";
+"no direction" = "no direction";
+"unknown" = "unknown";
+"width %d° (frontal model)" = "width %d° (frontal model)";
+"Spatial window" = "Spatial window";
+"How long a stretch of sound places the particles. Standard measures every band over the full analysis window: the steadiest placement. Fast measures the bands from 1 kHz up over a quarter of it and those from 4 kHz up over an eighth (about 43 and 21 ms at 48 kHz), so their particles follow moves and onsets sooner, with coarser frequency detail. The analysis uses it (in the plugin, too)." = "How long a stretch of sound places the particles. Standard measures every band over the full analysis window: the steadiest placement. Fast measures the bands from 1 kHz up over a quarter of it and those from 4 kHz up over an eighth (about 43 and 21 ms at 48 kHz), so their particles follow moves and onsets sooner, with coarser frequency detail. The analysis uses it (in the plugin, too).";
+"Listener" = "Listener";
+"A head at the listening position, its nose to the front and its ears to the sides, so the dome's front, sides and back read at a glance. Its size is schematic." = "A head at the listening position, its nose to the front and its ears to the sides, so the dome's front, sides and back read at a glance. Its size is schematic.";
+
+/* Routing: Audio MIDI Setup speaker configuration and channel orders (build 101) */
+"%d speakers" = "%d speakers";
+"Audio MIDI Setup" = "Audio MIDI Setup";
+"Audio MIDI Setup (%@)" = "Audio MIDI Setup (%@)";
+"Audio MIDI Setup sets this device's speakers up as %@: unless you route them here, its channels feed those speakers." = "Audio MIDI Setup sets this device's speakers up as %@: unless you route them here, its channels feed those speakers.";
+"Audio MIDI Setup…" = "Audio MIDI Setup…";
+"Channel Order" = "Channel Order";
+"Film (Pro Tools): L C R Ls Rs LFE…" = "Film (Pro Tools): L C R Ls Rs LFE…";
+"No speakers are set up for this device in Audio MIDI Setup, so input 1 feeds the first channel in SMPTE order, input 2 the second, and so on. Set them up there (Configure Speakers), or choose a Channel Order." = "No speakers are set up for this device in Audio MIDI Setup, so input 1 feeds the first channel in SMPTE order, input 2 the second, and so on. Set them up there (Configure Speakers), or choose a Channel Order.";
+"Pro Tools sends surround in film order (L C R Ls Rs LFE…), not in SMPTE order (L R C LFE Ls Rs…): with SMPTE order its surrounds are shown at the front. Set its speakers up in Audio MIDI Setup or choose Channel Order ▸ Film Order, unless its I/O Setup is remapped, and the format that matches its output bus." = "Pro Tools sends surround in film order (L C R Ls Rs LFE…), not in SMPTE order (L R C LFE Ls Rs…): with SMPTE order its surrounds are shown at the front. Set its speakers up in Audio MIDI Setup or choose Channel Order ▸ Film Order, unless its I/O Setup is remapped, and the format that matches its output bus.";
+"Routes every channel of this format at once: as the device's speakers are set up in Audio MIDI Setup, or in a host's channel order" = "Routes every channel of this format at once: as the device's speakers are set up in Audio MIDI Setup, or in a host's channel order";
+"SMPTE / ITU: L R C LFE Ls Rs…" = "SMPTE / ITU: L R C LFE Ls Rs…";
+"The format chosen above is %@: speakers it has that Audio MIDI Setup does not describe stay unrouted." = "The format chosen above is %@: speakers it has that Audio MIDI Setup does not describe stay unrouted.";
+"Use %@" = "Use %@";
+"VST3 (Nuendo, Cubase): L R C LFE Lrs Rrs Lss Rss…" = "VST3 (Nuendo, Cubase): L R C LFE Lrs Rrs Lss Rss…";
+
+/* Radiant body (build 101) */
+"Radiant body" = "Radiant body";
+"Radiant body places sound by" = "Radiant body places sound by";
+"Radiant body draws each band where its frequencies are heard, at the centre of gravity of the speakers that carry them weighted by their level in each, as one glowing body: a centred phantom gathers between L and R, a wide stereo programme stretches along the line between them, and sound all round gathers toward the listener. It glows in the frequencies' hues, burns toward white where it is dense and loud, and swells into haze as it ages. Point lights over it mark exactly where each band's frequencies sit. Level body draws the level heard from each direction as the radius of one body, read on the floor's dBFS rings." = "Radiant body draws each band where its frequencies are heard, at the centre of gravity of the speakers that carry them weighted by their level in each, as one glowing body: a centred phantom gathers between L and R, a wide stereo programme stretches along the line between them, and sound all round gathers toward the listener. It glows in the frequencies' hues, burns toward white where it is dense and loud, and swells into haze as it ages. Point lights over it mark exactly where each band's frequencies sit. Level body draws the level heard from each direction as the radius of one body, read on the floor's dBFS rings.";
+"How bright and dense the body glows." = "How bright and dense the body glows.";
+"How far below the loudest band frequencies still add to the body, in dB: the loudest burn white, quieter ones fade out over this range. How loud the loudest band is sets how dense the whole body is. Hover over the body to read a band's level." = "How far below the loudest band frequencies still add to the body, in dB: the loudest burn white, quieter ones fade out over this range. How loud the loudest band is sets how dense the whole body is. Hover over the body to read a band's level.";
+"How large each new particle's light is in the body: larger merges neighbouring places into one mass, smaller keeps them apart." = "How large each new particle's light is in the body: larger merges neighbouring places into one mass, smaller keeps them apart.";
+"How much light swells as it ages, so older light turns to haze while new light stays compact. 0 keeps it as compact as when it was heard." = "How much light swells as it ages, so older light turns to haze while new light stays compact. 0 keeps it as compact as when it was heard.";
+"Frequency colors the body by the frequencies heard at each place, warm bass through cool treble: where many bands meet it burns toward a cream-white core, and its fringes show what dominates there. Theme draws it in the palette's color. A split into 3 or 5 bands always shows each band in its own color." = "Frequency colors the body by the frequencies heard at each place, warm bass through cool treble: where many bands meet it burns toward a cream-white core, and its fringes show what dominates there. Theme draws it in the palette's color. A split into 3 or 5 bands always shows each band in its own color.";
+"Draws the analysis' observations as points instead of the body, for checking where sound is placed: the newest frame only, every point the same small size, without smear, glow or depth shading." = "Draws the analysis' observations as points instead of the body, for checking where sound is placed: the newest frame only, every point the same small size, without smear, glow or depth shading.";
+"How readily speakers that share coherent energy count as one image. In Radiant body it decides what reads as a phantom image or out of phase (the ochre tint and the pointer's reading), not where the body sits: its frequencies' amplitudes decide that. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance. The analysis uses it (in the plugin, too)." = "How readily speakers that share coherent energy count as one image. In Radiant body it decides what reads as a phantom image or out of phase (the ochre tint and the pointer's reading), not where the body sits: its frequencies' amplitudes decide that. Coherence is measured from the speakers' smoothed cross-spectra and corrected for chance. The analysis uses it (in the plugin, too).";
+"The quietest band drawn: a band below it adds nothing to the body, whatever the glow range." = "The quietest band drawn: a band below it adds nothing to the body, whatever the glow range.";
+"How long light stays in the body, fading and swelling as it goes; the longer, the more it builds up into a trail of where sound has been." = "How long light stays in the body, fading and swelling as it goes; the longer, the more it builds up into a trail of where sound has been.";
+"A glowing body of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom gathers between two speakers, a wide stereo programme stretches along the line between them, sound all round gathers toward the listener. The loudest band burns white and quieter ones fade out %d dB below it; older light swells into haze. Point lights mark exactly where each band's frequencies sit. Energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees)." = "A glowing body of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom gathers between two speakers, a wide stereo programme stretches along the line between them, sound all round gathers toward the listener. The loudest band burns white and quieter ones fade out %d dB below it; older light swells into haze. Point lights mark exactly where each band's frequencies sit. Energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees).";
+"The body wears the colors of the frequencies at each place, warm for bass and cool for treble; where many bands meet, their light adds up toward white." = "The body wears the colors of the frequencies at each place, warm for bass and cool for treble; where many bands meet, their light adds up toward white.";
+"This plugin sends no frequencies of its own (before build 87), so Radiant body draws from the spatial field's statistics. Install the plugins of this build to see each frequency where it is heard." = "This plugin sends no frequencies of its own (before build 87), so Radiant body draws from the spatial field's statistics. Install the plugins of this build to see each frequency where it is heard.";
+"Points" = "Points";
+"How bright the point lights over the body are: each is one place where a band's frequencies are heard, crisp when new and smearing as it ages, so where every band sits can be read exactly. The body dims a little under them, so they carry the brightest light. 0 shows the body alone." = "How bright the point lights over the body are: each is one place where a band's frequencies are heard, crisp when new and smearing as it ages, so where every band sits can be read exactly. The body dims a little under them, so they carry the brightest light. 0 shows the body alone.";
+
+/* Additional restrained palettes and the optional console surface. */
+"Pearl" = "Pearl";
+"Sakura Pink" = "Sakura Pink";
+"Milk Frog" = "Milk Frog";
+"Mist Lilac" = "Mist Lilac";
+"Studio Console" = "Studio Console";
+
+/* Neutral loudness preset labels. */
+"Streaming · loud" = "Streaming · loud";
+"Music streaming" = "Music streaming";
+"Music & podcasts" = "Music & podcasts";
+"Immersive music" = "Immersive music";
+"Online video" = "Online video";
+"Film & series · dialogue" = "Film & series · dialogue";
+
+/* Neutral loudness preset labels. */
+"Diagnostic logs" = "Diagnostic logs";
+"Copy version" = "Copy version";
+
+/* Settings presets (build 110) */
+"PRESETS" = "PRESETS";
+"Settings Presets" = "Settings Presets";
+"Save Current Settings…" = "Save Current Settings…";
+"Save Settings Preset" = "Save Settings Preset";
+"Keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout. The source and its routing stay with your devices." = "Keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout. The source and its routing stay with your devices.";
+"A preset keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout, to load again later. The source and its routing stay with your devices." = "A preset keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout, to load again later. The source and its routing stay with your devices.";
+"Preset name" = "Preset name";
+"My Settings %d" = "My Settings %d";
+"Load" = "Load";
+"Load “%@”?" = "Load “%@”?";
+"Your current settings are replaced by the preset's. Save them as a preset first to keep them." = "Your current settings are replaced by the preset's. Save them as a preset first to keep them.";
+"Rename Preset" = "Rename Preset";
+"Rename" = "Rename";
+"Update with Current Settings" = "Update with Current Settings";
+"More" = "More";
+"%@ Copy" = "%@ Copy";
+"Move to Trash" = "Move to Trash";
+"Show in Finder" = "Show in Finder";
+"Show Presets in Finder" = "Show Presets in Finder";
+
+/* Feedback (build 112) */
+"FEEDBACK" = "FEEDBACK";
+"Website" = "Website";
+"Join the Discord" = "Join the Discord";
+"Questions, bug reports and ideas are welcome. Diagnostic logs (Help ▸ Show Diagnostic Logs) help with a bug report." = "Questions, bug reports and ideas are welcome. Diagnostic logs (Help ▸ Show Diagnostic Logs) help with a bug report.";
+
+/* Status bar rates (build 113) */
+"%d Hz analysis" = "%d Hz analysis";
+"%d Hz analysis · %d fps display" = "%d Hz analysis · %d fps display";
+"Readings update 60 times a second whatever the display does. The meters redraw at the display frame rate chosen in Settings ▸ General ▸ Performance; Automatic follows the display." = "Readings update 60 times a second whatever the display does. The meters redraw at the display frame rate chosen in Settings ▸ General ▸ Performance; Automatic follows the display.";
+
+/* Independent Multi-FFT Beta (based on Build 113). */
+"Balanced" = "Balanced";
+"Calibration" = "Calibration";
+"Economy" = "Economy";
+"Frequency smoothing (octaves)" = "Frequency smoothing (octaves)";
+"Fusion width (octaves)" = "Fusion width (octaves)";
+"High" = "High";
+"High band" = "High band";
+"Legacy (Build 113)" = "Legacy (Build 113)";
+"Low band" = "Low band";
+"Low/Mid crossover (Hz)" = "Low/Mid crossover (Hz)";
+"Mid band" = "Mid band";
+"Mid/High crossover (Hz)" = "Mid/High crossover (Hz)";
+"Multi-FFT Spectrum (Beta)" = "Multi-FFT Spectrum (Beta)";
+"Multi-FFT is available in Stereo mode." = "Multi-FFT is available in Stereo mode.";
+"Overlap ceiling" = "Overlap ceiling";
+"Performance preset" = "Performance preset";
+"Precision" = "Precision";
+"Priority" = "Priority";
+"Responsive" = "Responsive";
+"Shared STFT · A/B" = "Shared STFT · A/B";
+"Show M/S alongside L/R" = "Show M/S alongside L/R";
+"Time smoothing (s)" = "Time smoothing (s)";
+"Tone amplitude · dBFS" = "Tone amplitude · dBFS";
+"Ultra" = "Ultra";
+"Update ceiling (Hz)" = "Update ceiling (Hz)";
+"Waiting for a full local audio window…" = "Waiting for a full local audio window…";
+"Window function" = "Window function";
+"Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta." = "Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta.";
+"Shared Hann STFT serves both displays. Enhanced and Immersive keep the original analysis. Switching refills the FFT history." = "Shared Hann STFT serves both displays. Enhanced and Immersive keep the original analysis. Switching refills the FFT history.";
+"Priority tunes preset sizes and rates. Advanced edits become Custom. All three bands use the slowest requested cadence to keep their analysis centres aligned." = "Priority tunes preset sizes and rates. Advanced edits become Custom. All three bands use the slowest requested cadence to keep their analysis centres aligned.";
+"Rates are analysis ceilings; milliseconds are the common centre delay. Tone calibration keeps sine peaks correct; PSD keeps noise density comparable across windows. Frequency smoothing lowers narrow peaks. M=(L+R)/2, S=(L−R)/2." = "Rates are analysis ceilings; milliseconds are the common centre delay. Tone calibration keeps sine peaks correct; PSD keeps noise density comparable across windows. Frequency smoothing lowers narrow peaks. M=(L+R)/2, S=(L−R)/2.";
+
+/* GitHub release checks. */
+"Check for Updates…" = "Check for Updates…";
+"Checking GitHub…" = "Checking GitHub…";
+"Checks public GitHub releases. Opens the release page or installer download when an update is available." = "Checks public GitHub releases. Opens the release page or installer download when an update is available.";
+"Could not check GitHub for updates. Check your connection and try again." = "Could not check GitHub for updates. Check your connection and try again.";
+"Download Installer" = "Download Installer";
+"GitHub rate limit reached. Try again later." = "GitHub rate limit reached. Try again later.";
+"GitHub release unavailable. The repository may be private or have no public release." = "GitHub release unavailable. The repository may be private or have no public release.";
+"GitHub returned release information that could not be verified." = "GitHub returned release information that could not be verified.";
+"No newer published release found. Latest: %@" = "No newer published release found. Latest: %@";
+"UPDATES" = "UPDATES";
+"Update available: %@" = "Update available: %@";
+"View Release" = "View Release";
+"Include pre-releases" = "Include pre-releases";
+"Pre-release available: %@" = "Pre-release available: %@";
+"Also offers beta and release-candidate builds published on GitHub. They are tested less than final releases. Turn off to return to final releases only; an installed pre-release stays until a newer final release." = "Also offers beta and release-candidate builds published on GitHub. They are tested less than final releases. Turn off to return to final releases only; an installed pre-release stays until a newer final release.";

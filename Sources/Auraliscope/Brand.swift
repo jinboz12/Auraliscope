@@ -45,7 +45,7 @@ struct BrandLogo: View {
     }
 }
 
-/// The public product name, shared by windows and accessibility labels.
+/// The name this build shows: Auraliscope (the 2.0 beta, with the DAW Bridge).
 enum AppName {
     static let full = "Auraliscope"
 }
@@ -64,9 +64,9 @@ struct BrandMark: View {
             // Title case, as the app's name appears everywhere else on the system. Lowercase letters read
             // smaller than capitals at one point size, so the name is set a little larger, with the light
             // tracking that mixed case wants (the wide spacing suited the former all-caps wordmark).
-            Text(verbatim: AppName.full).foregroundColor(color)
-                .font(.system(size: size * 1.18, weight: .semibold).width(.expanded))
-                .tracking(Tracking.wordmark * size / 13)
+            Text(verbatim: "Auraliscope").foregroundColor(color)
+                .font(.wordmark(size * 1.18))
+                .tracking(Tracking.wordmark(size: size * 1.18))
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)

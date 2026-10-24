@@ -64,6 +64,13 @@ typedef struct {
     uint32_t last_ack_outcome;       // ABR_ACK_*
     uint32_t last_ack_generation;
     uint32_t last_ack_measurement;
+    uint32_t spatial_revision_sent;  // the newest SPATIAL_CONFIG sent to it (0: none)
+    uint32_t spatial_acks_received;
+    uint32_t spatial_ack_revision;   // the newest SPATIAL_ACK: which configuration, and what came of it
+    uint64_t spatial_ack_hash;
+    uint32_t spatial_ack_outcome;    // ABR_SPATIAL_*
+    uint32_t spatial_ack_generation;
+    uint64_t spatial_ack_frames;
     double seconds_since_message;
     double seconds_since_result;     // < 0 when no result arrived yet
     uint32_t connection_serial;      // increments per accepted connection; unique while the server runs
@@ -96,6 +103,12 @@ void abr_server_set_spectrogram(AbrServer *_Nonnull server, uint32_t mode);
 void abr_server_set_spectrum(AbrServer *_Nonnull server, uint32_t channels);
 // The spatial field's coherence threshold, in thousandths (ABR_SUBSCRIBE_COHERENCE; 0: the plugin's default), likewise.
 void abr_server_set_coherence(AbrServer *_Nonnull server, uint32_t thousandths);
+
+// The spatial geometry for every subscription (a SPATIAL_CONFIG payload of at most ABR_SPATIAL_CONFIG_MAX bytes, from
+// SpatialConfigWire), with its revision; sent to the subscribed instance when it has ABR_CAPABILITY_SPATIAL_CONFIG,
+// again after every new subscription or change. NULL or 0 bytes: none (plugins keep the standard layout).
+void abr_server_set_spatial_config(AbrServer *_Nonnull server, const uint8_t *_Nullable payload, uint32_t length,
+                                   uint32_t revision);
 
 // Delivers the selected instance's results to `sink` until detached.
 void abr_server_attach(AbrServer *_Nonnull server, AbrResultSink _Nonnull sink, void *_Nullable context);

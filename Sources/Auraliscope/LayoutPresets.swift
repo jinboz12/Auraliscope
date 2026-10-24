@@ -85,7 +85,7 @@ final class LayoutPresets: ObservableObject {
     func saveCurrent() {
         let alert = NSAlert()
         alert.messageText = L("Save Layout")
-        alert.informativeText = L("Saves which panels show, the dividers' positions and the strip's panels.")
+        alert.informativeText = L("Saves which panels show, the dividers' positions and the dock's panels.")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.placeholderString = L("Layout name")
         field.stringValue = L("My Layout %d", saved.count + 1)
@@ -120,13 +120,13 @@ struct LayoutCommands: Commands {
 
     var body: some Commands {
         CommandMenu(L("Layout")) {
-            Button(placement.strip ? L("Leave Horizontal Strip") : L("Horizontal Strip")) { placement.toggleStrip() }
+            Button(placement.strip ? L("Leave Dock Mode") : L("Dock Mode")) { placement.toggleStrip() }
                 .keyboardShortcut("s", modifiers: [.option, .command])
-            Button(L("Dock Strip to Bottom of Screen")) { placement.dockStrip() }
+            Button(L("Move to Bottom of Screen")) { placement.dockStrip() }
                 .disabled(!placement.strip)
-            Menu(L("Strip Panels")) {
-                ForEach(MeterPanel.allCases) { panel in
-                    Toggle(panel.title, isOn: Binding(get: { placement.stripPanels.contains(panel) },
+            Menu(L("Dock Panels")) {
+                ForEach(placement.dockMenuPanels) { panel in
+                    Toggle(panel.title, isOn: Binding(get: { placement.stripIncludes(panel) },
                                                       set: { _ in placement.toggleStripPanel(panel) }))
                 }
             }
@@ -187,7 +187,10 @@ struct LayoutMenuButton: View {
 
     var body: some View {
         Menu {
-            Button(placement.strip ? L("Leave Horizontal Strip") : L("Horizontal Strip")) { placement.toggleStrip() }
+            Button { placement.toggleStrip() } label: {
+                Label(placement.strip ? L("Leave Dock Mode") : L("Dock Mode"),
+                      systemImage: placement.strip ? "dock.arrow.up.rectangle" : "dock.rectangle")
+            }
             Divider()
             Section(L("Show Panels")) {
                 ForEach(MeterPanel.allCases) { panel in
@@ -203,10 +206,10 @@ struct LayoutMenuButton: View {
                 ForEach(presets.saved) { preset in
                     Button(preset.name) { presets.apply(preset) }
                 }
-                Button(L("Save Layout…")) { presets.saveCurrent() }
+                Button { presets.saveCurrent() } label: { Label(L("Save Layout…"), systemImage: "square.and.arrow.down") }
             }
         } label: {
-            DiscFace(symbol: "square.grid.2x2", diameter: Theme.dockButton, hovering: hovering)
+            DiscFace(symbol: "dock.rectangle", diameter: Theme.dockButton, hovering: hovering)
         } primaryAction: {
             placement.toggleStrip()
         }
@@ -214,8 +217,71 @@ struct LayoutMenuButton: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .onHover { hovering = $0 }
-        .help(L("Horizontal strip (click, ⌥⌘S); panels and layouts (hold)"))
+        .onHover { inside in withAnimation(Motion.hover) { hovering = inside } }
+        .help(L("Dock mode (click, ⌥⌘S); panels and layouts (hold)"))
         .accessibilityLabel(L("Layout"))
+    }
+}
+
+/// The main window's panels in a popover from the toolbar, as the strip has its own (`StripPanelsMenu`): a checkbox
+/// per panel shows or hides it, the same setting as the Meter menu's Show Panels.
+struct WindowPanelsMenu: View {
+    @ObservedObject private var l10n = Localizer.shared
+    @State private var open = false
+
+    var body: some View {
+        DiscButton(symbol: "rectangle.split.2x2", help: L("Show or hide the main window's panels"), on: open) { open.toggle() }
+            .onAppear {
+                guard Diagnostics.snapshotWindowPanels else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { open = true }
+            }
+            .popover(isPresented: $open, arrowEdge: .bottom) {
+                WindowPanelsForm().padding(14).frame(width: 280)
+            }
+    }
+}
+
+struct WindowPanelsForm: View {
+    @ObservedObject private var placement = PanelPlacement.shared
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        // The last panel shown stays: unchecking it would leave the window empty.
+        let lastShown = MeterPanel.allCases.filter(placement.isShown).count == 1
+        VStack(alignment: .leading, spacing: 10) {
+            Eyebrow(L("WINDOW PANELS"), color: Theme.title)
+            VStack(spacing: 2) {
+                ForEach(MeterPanel.allCases) { panel in
+                    let shown = placement.isShown(panel)
+                    HStack(spacing: 8) {
+                        Toggle(isOn: Binding(get: { shown }, set: { placement.setShown(panel, $0) })) {
+                            Label(panel.title, systemImage: panel.symbol)
+                                .font(.system(size: 12))
+                        }
+                        .toggleStyle(.checkbox)
+                        .disabled(shown && lastShown)
+                        Spacer(minLength: 4)
+                        // A panel in a window of its own shows there; this brings it back into the arrangement.
+                        if shown && placement.detached.contains(panel) {
+                            Button { placement.closeWindow(panel) } label: { Image(systemName: "macwindow") }
+                                .help(L("Return this panel to the main window"))
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(height: 24)
+                }
+            }
+            Divider()
+            HStack {
+                Button { placement.showAll() } label: { Label(L("Show All Panels"), systemImage: "eye") }
+                    .disabled(MeterPanel.allCases.allSatisfy(placement.isShown))
+                Spacer()
+            }
+            .controlSize(.small)
+            Text(L("Hidden panels stop drawing. Measurements continue; the optional Multi-FFT engine stops when its panel closes."))
+                .font(.system(size: 10))
+                .foregroundStyle(Theme.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

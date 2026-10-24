@@ -50,6 +50,7 @@ struct ModeSelector: View {
                 model.toggleAuto()
             }
         }
+        .environment(\.toolbarControls, true)
         .id(theme.signature)
     }
 
@@ -67,7 +68,7 @@ struct ModeSelector: View {
 /// AUTO: the system switch with its label, so it is the Liquid Glass switch on macOS 26 (the knob turns to glass
 /// while pressed or dragged) and the classic switch before it; clicking the label flips it, as beside any macOS
 /// switch. It sits on a track like the segments'; while the detector drives the mode it is lit as a chosen segment
-/// is (a glowing cream key on dark, a glowing white one on light), so AUTO reads as on at the same glance as Stereo | Immersive.
+/// is (a glowing cream key on dark, a crisp ink key on light), so AUTO reads as on at the same glance as Stereo | Immersive.
 private struct AutoToggle: View {
     let auto: Bool
     let detected: ChannelFormat
@@ -85,7 +86,7 @@ private struct AutoToggle: View {
             Text(L("AUTO"))
                 .font(.system(size: 9, weight: auto ? .bold : .semibold).width(.expanded))
                 .tracking(l10n.tracking(Tracking.eyebrow))
-                .foregroundStyle(auto ? Theme.onLit : Theme.secondary)
+                .foregroundStyle(auto ? (Theme.dark ? Theme.onLit : Color.white) : Theme.secondary)
                 .fixedSize()
                 .onTapGesture(perform: action)
                 .accessibilityHidden(true)
@@ -96,8 +97,8 @@ private struct AutoToggle: View {
         .background {
             // The chosen segment's lit plate (`GlassSegments`), inside the same track.
             if auto {
-                Capsule(style: .continuous).fill(Theme.lit)
-                    .shadow(color: Theme.litHalo, radius: 6)
+                Capsule(style: .continuous).fill(Theme.dark ? Theme.lit : Theme.ink)
+                    .shadow(color: Theme.dark ? Theme.litHalo : .clear, radius: 6)
                     .shadow(color: .black.opacity(Theme.dark ? 0.0 : 0.14), radius: 2, y: 1)
                     .transition(.opacity)
             }

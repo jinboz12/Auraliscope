@@ -25,13 +25,14 @@ namespace abr {
 
 namespace {
 constexpr size_t kRingBytes = size_t(1) << 20;     // 1 MB: 2.7 s of 48 kHz stereo, 0.68 s at 192 kHz (per 2 channels)
-constexpr size_t kOutBytes = size_t(1) << 18;
+constexpr size_t kOutBytes = size_t(1) << 19;
 // Stop queuing results while this much is unsent: with the socket buffers (32 KB each way) a stalled receiver finds
 // at most about ten results waiting, and fresher state replaces the rest in the mailbox.
 constexpr size_t kOutHighWater = size_t(1) << 14;
-constexpr uint32_t kMailboxBytes = 192u * 1024u;   // one RESULT: ~7 KB of state, up to 24 spectrogram columns and
+constexpr uint32_t kMailboxBytes = 256u * 1024u;   // one RESULT: ~7 KB of state, up to 24 spectrogram columns and
                                                    // 256 waveform columns, and in Immersive the spatial field and
-                                                   // its bins (up to ~29 KB)
+                                                   // its observations (up to ~95 KB; the largest measured, 16
+                                                   // channels of noise at the finest detail, 154 KB in all)
 constexpr uint32_t kChunkFrames = 2048;            // largest record; longer host blocks are split
 constexpr size_t kCommandQueue = 32;
 constexpr uint64_t kReconnectNs = 1000000000ull;
@@ -505,6 +506,9 @@ bool BridgeCore::startGeneration(double sampleRate, uint32_t channels, uint64_t 
     abr_analyzer_set_spectrum_channels(next, spectrumChannels_.load(std::memory_order_relaxed));
     abr_analyzer_set_spatial_coherence(next, spatialCoherence_.load(std::memory_order_relaxed));
     generation_.store(generationCounter_, std::memory_order_relaxed);
+    // The display's geometry carries over to the new generation (a reset, a new rate or bus): applied again, and
+    // acknowledged again, since a bus of other roles may not take it.
+    if (spatialAppliedBytes_ > 0) applySpatial(spatialApplied_, spatialAppliedBytes_);
     measurement_.store(paused ? ABR_MEASUREMENT_PAUSED : ABR_MEASUREMENT_MEASURING, std::memory_order_relaxed);
     framesAnalysed_.store(0, std::memory_order_relaxed);
     std::lock_guard<std::mutex> lock(summaryLock_);
@@ -562,12 +566,62 @@ void BridgeCore::runCommands() {
     }
 }
 
+// The display's spatial geometry, on the analysis thread between passes: a new configuration is applied to the
+// analysis (from its next spatial transform) and acknowledged; after a disconnection the standard layout returns.
+// Without an analysis yet (no audio so far) it waits, and is applied when the first generation starts.
+void BridgeCore::runSpatial() {
+    uint8_t bytes[ABR_SPATIAL_CONFIG_MAX];
+    uint32_t length = 0;
+    bool reset = false;
+    {
+        std::lock_guard<std::mutex> lock(spatialLock_);
+        reset = spatialPendingReset_;
+        spatialPendingReset_ = false;
+        if (spatialPendingBytes_ > 0 && (analyzer_ || reset)) {
+            length = spatialPendingBytes_;
+            std::memcpy(bytes, spatialPending_, length);
+            spatialPendingBytes_ = 0;
+        }
+    }
+    if (reset) {
+        spatialAppliedBytes_ = 0;
+        if (analyzer_) abr_analyzer_reset_spatial(analyzer_);
+        forceResult_ = true;
+    }
+    if (length > 0) {
+        if (analyzer_) applySpatial(bytes, length);
+        else {
+            std::lock_guard<std::mutex> lock(spatialLock_);
+            if (spatialPendingBytes_ == 0) {  // still waiting for the first generation
+                std::memcpy(spatialPending_, bytes, length);
+                spatialPendingBytes_ = length;
+            }
+        }
+    }
+}
+
+void BridgeCore::applySpatial(const uint8_t *bytes, uint32_t length) {
+    uint32_t revision = 0;
+    uint64_t hash = 0;
+    const uint32_t outcome = abr_analyzer_configure_spatial(analyzer_, bytes, length, &revision, &hash);
+    if (outcome == ABR_SPATIAL_APPLIED && bytes != spatialApplied_) {
+        std::memcpy(spatialApplied_, bytes, length);
+        spatialAppliedBytes_ = length;
+    }
+    forceResult_ = true;
+    std::lock_guard<std::mutex> lock(spatialLock_);
+    if (spatialAckCount_ < 4)
+        spatialAcks_[spatialAckCount_++] = {revision, outcome, generation_.load(std::memory_order_relaxed), hash,
+                                            framesAnalysed_.load(std::memory_order_relaxed)};
+}
+
 // Drains the ring into the analyser, oldest first, at most `maxSeconds` of audio per call so one instance with a
 // backlog cannot hold up the others (the hub visits every instance each pass). A record of a new format epoch
 // starts a new generation; a break (a flagged record, or a position gap where the ring was full) is handed to the
 // analysis between the right frames. Then the newest state goes to the mailbox for the sender.
 uint32_t BridgeCore::analyse(uint64_t nowNs, double maxSeconds) {
     runCommands();
+    runSpatial();
     if (analyzer_) {
         abr_analyzer_set_spectrogram_mode(analyzer_, spectrogramMode_.load(std::memory_order_relaxed));
         abr_analyzer_set_spectrum_channels(analyzer_, spectrumChannels_.load(std::memory_order_relaxed));
@@ -615,18 +669,23 @@ uint32_t BridgeCore::analyse(uint64_t nowNs, double maxSeconds) {
     if (subscription != 0 && (fresh || subscription != encodedSubscription_)) {
         std::lock_guard<std::mutex> lock(mailboxLock_);
         const uint32_t generation = generation_.load(std::memory_order_relaxed);
-        // Columns already delivered to this subscriber, in this generation, are not sent again.
+        // Columns already delivered to this subscriber, in this generation, are not sent again; nor is the observation
+        // frame it holds, if it keeps them. Only a result actually sent counts (sendResult): one replaced here unsent
+        // leaves the next to carry what it carried.
         const bool continuing = sentSubscription_ == subscription && sentGeneration_ == generation;
-        uint64_t spectrogram = 0, waveform = 0;
+        const bool keeps = continuing && displayKeepsObservations_.load(std::memory_order_relaxed);
+        uint64_t spectrogram = 0, waveform = 0, observations = 0;
         const uint32_t bytes = abr_analyzer_encode(analyzer_, mailbox_.get(), kMailboxBytes, subscription,
                                                    unpack(analyzerChannels_, analyzerRoles_).kind(), continuing ? sentSpectrogram_ : 0,
-                                                   continuing ? sentWaveform_ : 0, &spectrogram, &waveform);
+                                                   continuing ? sentWaveform_ : 0, keeps ? sentObservations_ : 0,
+                                                   &spectrogram, &waveform, &observations);
         if (bytes) {
             mailboxBytes_ = bytes;
             mailboxSubscription_ = subscription;
             mailboxGeneration_ = generation;
             mailboxSpectrogram_ = spectrogram;
             mailboxWaveform_ = waveform;
+            mailboxObservations_ = observations;
         }
     }
     encodedSubscription_ = subscription;
@@ -669,7 +728,7 @@ void BridgeCore::queueHello() {
     abr_put_text(&w, ABR_HELLO_PLUGIN_VERSION, ABR_PLUGIN_VERSION, 31);
     abr_put_u32(&w, ABR_HELLO_SCHEMA, ABR_ANALYSIS_SCHEMA);
     abr_put_u32(&w, ABR_HELLO_CAPABILITIES, ABR_CAPABILITY_RESULTS | ABR_CAPABILITY_RESET | ABR_CAPABILITY_RESET_TRUE_PEAK
-                | ABR_CAPABILITY_PAUSE);
+                | ABR_CAPABILITY_PAUSE | ABR_CAPABILITY_SPATIAL_CONFIG);
     if (!w.overflowed) queue(ABR_MSG_HELLO, payload, uint32_t(8 + w.used));
 }
 
@@ -766,6 +825,11 @@ bool BridgeCore::readControl() {
                 receiverTooOld_.store(version < ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
                 receiverTooNew_.store(version > ABR_PROTOCOL_VERSION, std::memory_order_relaxed);
                 if (version != ABR_PROTOCOL_VERSION) return false;
+                AbrReader r = abr_reader(payload + ABR_HELLO_MIN_BYTES, header.length - ABR_HELLO_MIN_BYTES);
+                AbrField f;
+                uint32_t capabilities = 0;
+                while (abr_next_field(&r, &f)) if (f.tag == ABR_WELCOME_CAPABILITIES) abr_field_u32(&f, &capabilities);
+                displayKeepsObservations_.store((capabilities & ABR_DISPLAY_KEEPS_OBSERVATIONS) != 0, std::memory_order_relaxed);
                 welcomed_ = true;
                 connected_.store(true, std::memory_order_relaxed);
             } else if (!welcomed_) {
@@ -795,6 +859,11 @@ bool BridgeCore::readControl() {
                 spatialCoherence_.store(0, std::memory_order_relaxed);
             } else if (header.type == ABR_MSG_COMMAND) {
                 handleCommand(payload, header.length);
+            } else if (header.type == ABR_MSG_SPATIAL_CONFIG && header.length > 0 && header.length <= ABR_SPATIAL_CONFIG_MAX) {
+                // Kept for the analysis thread, which applies it between passes (never on the host's audio thread).
+                std::lock_guard<std::mutex> lock(spatialLock_);
+                std::memcpy(spatialPending_, payload, header.length);
+                spatialPendingBytes_ = header.length;
             }
             offset += sizeof header + header.length;
         }
@@ -836,6 +905,7 @@ void BridgeCore::sendResult() {
     sentGeneration_ = mailboxGeneration_;
     sentSpectrogram_ = mailboxSpectrogram_;
     sentWaveform_ = mailboxWaveform_;
+    sentObservations_ = mailboxObservations_;
     mailboxBytes_ = 0;
     resultsSent_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -848,6 +918,25 @@ void BridgeCore::sendAcks() {
         count = acks_.size();
         std::copy(acks_.begin(), acks_.end(), pending);
         acks_.clear();
+    }
+    SpatialAck spatial[4];
+    uint32_t spatialCount;
+    {
+        std::lock_guard<std::mutex> lock(spatialLock_);
+        spatialCount = spatialAckCount_;
+        std::copy(spatialAcks_, spatialAcks_ + spatialCount, spatial);
+        spatialAckCount_ = 0;
+    }
+    for (uint32_t i = 0; i < spatialCount; ++i) {
+        uint8_t payload[128];
+        AbrWriter w = abr_writer(payload, sizeof payload);
+        abr_put_u32(&w, ABR_SPATIAL_ACK_REVISION, spatial[i].revision);
+        abr_put_u64(&w, ABR_SPATIAL_ACK_HASH, spatial[i].hash);
+        abr_put_u32(&w, ABR_SPATIAL_ACK_OUTCOME, spatial[i].outcome);
+        abr_put_u32(&w, ABR_SPATIAL_ACK_GENERATION, spatial[i].generation);
+        abr_put_u64(&w, ABR_SPATIAL_ACK_FRAMES, spatial[i].frames);
+        abr_put_bytes(&w, ABR_SPATIAL_ACK_SESSION_ID, sessionId_, 16);
+        if (!w.overflowed) queue(ABR_MSG_SPATIAL_ACK, payload, uint32_t(w.used));
     }
     for (size_t i = 0; i < count; ++i) {
         uint8_t payload[128];
@@ -869,8 +958,23 @@ void BridgeCore::disconnect() {
     if (fd_ >= 0) close(fd_);
     fd_ = -1;
     welcomed_ = false;
+    {
+        // The geometry was that display's: the next one (perhaps an older app) starts from the standard layout.
+        std::lock_guard<std::mutex> lock(spatialLock_);
+        spatialPendingBytes_ = 0;
+        spatialPendingReset_ = true;
+        spatialAckCount_ = 0;
+    }
+    {
+        // What was encoded for that connection, and what it was sent, end with it: the next display starts afresh (the
+        // oldest columns held, the observation frame) even if it numbers its subscription the same (a relaunched app).
+        std::lock_guard<std::mutex> lock(mailboxLock_);
+        mailboxBytes_ = 0;
+        sentSubscription_ = 0;
+    }
     subscription_.store(0, std::memory_order_release);
     connected_.store(false, std::memory_order_relaxed);
+    displayKeepsObservations_.store(false, std::memory_order_relaxed);
     outUsed_ = outSent_ = inUsed_ = 0;
     lastStatusState_ = 0xFFFFFFFF;
 }

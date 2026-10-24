@@ -60,8 +60,9 @@ typedef struct MeterExchange MeterExchange;
 // columns × 16 roles × (min, max), then the analysis' continuity: breaks since it started, and seconds of audio
 // known to be missing at them; 128 fine spectrum bands, the spectrogram mode, and the spatial field (4 header
 // floats, then 96 bands × (16 independent energies + 3 coherent components × 12)), then its bins (a status, then
-// 96 bands × (a count + 32 points × (x, y, z, energy))).
-#define METER_SNAPSHOT_FLOATS 21669
+// 96 bands × (a count + 32 points × (x, y, z, energy))), the signal health (16 DC offsets, 16 infrasonic powers, a
+// status), then the spatial observations (28 header floats, 96 band counts, 3072 × 9 observation floats).
+#define METER_SNAPSHOT_FLOATS 49441
 MeterExchange *meter_exchange_create(void);
 void meter_exchange_destroy(MeterExchange *exchange);
 void meter_exchange_publish(MeterExchange *exchange, const float *values);

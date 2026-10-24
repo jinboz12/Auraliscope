@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Real plugin binaries → plugin-side analysis → results → a receiver, without Auraliscope: the test host plays
+# Real plugin binaries → plugin-side analysis → results → a receiver, without Auraliscope Labs: the test host plays
 # the built VST3 and the installed AU and checks that the output equals the input; the probe checks the results
 # against Auraliscope's own analysis of the same signal, their order and the timeline. A private socket keeps it
 # apart from a running Labs. Logs go to .build/bridge/validation/.
@@ -62,6 +62,19 @@ run vst3-stereo-to-7.1.4 Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --e
 run vst3-7.1.4-controls Harness 0 "--controls --seconds 3" --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --block 256 \
     --name Harness --phases live:12
 run au-controls       Harness 0 "--controls --seconds 3" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness --phases live:12
+# The display's speaker geometry (SPATIAL_CONFIG, build 98): acknowledged, the observations (tag 58) with its hash and never
+# an earlier one, every tone at its configured speaker, equal to the local analysis with it; changed again and after a
+# reconnection; and an older plugin (BRIDGE_PREVIOUS: the previous build's VST3) left on the standard layout's bins.
+run vst3-7.1.4-geometry Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --immersive-after 1 --geometry below --geometry-after 2 --reconfigure-after 4" \
+    --format vst3 --bundle "$vst3" --layout 7.1.4 --rate 48000 --block 256 --name Harness $live
+run vst3-9.1.6-meters-96k Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15,12,13,10,11 --immersive-after 1 --geometry meters --geometry-after 2 --reconnect-after 4" \
+    --format vst3 --bundle "$vst3" --layout 9.1.6 --rate 96000 --block 512 --name Harness $live
+run au-stereo-geometry Harness 0 "--immersive-after 1 --geometry meters --geometry-after 2 --reconfigure-after 4" \
+    --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live
+if [[ -n "${BRIDGE_PREVIOUS:-}" ]]; then
+    run vst3-previous-build Harness 0 "--expect-roles 0,1,2,3,8,9,4,5,6,7,14,15 --immersive-after 1 --geometry below --geometry-after 2 --expect-legacy" \
+        --format vst3 --bundle "$BRIDGE_PREVIOUS" --layout 7.1.4 --rate 48000 --block 256 --name Harness $live
+fi
 run vst3-editor-close Harness 0 "" --format vst3 --bundle "$vst3" --channels 2 --rate 48000 --block 256 --name Harness $live \
     --editor-snapshot "$logs/editor-vst3.png" --editor-seconds 2
 run au-editor-close   Harness 0 "" --format au --bundle "$au" --channels 2 --rate 48000 --block 256 --name Harness $live \

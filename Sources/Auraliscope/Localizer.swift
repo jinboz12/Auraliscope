@@ -3,21 +3,25 @@ import Foundation
 
 // Language policy
 //
-// Everything a person reads is translated, the meter window included: panel titles (频谱, 파형…), measurement
-// names (瞬时, 트루 피크…), status and legends, the mode selector, AUTO, and theme names. What stays in English is
-// what engineers read as symbols in every language: units (LUFS, dBFS, dBTP, RMS, VU, Hz), channel labels
-// (L, R, C, LFE, Ls…), speaker layout names (5.1.2), note names, standards (EBU R128, ITU-R BS.1770-5),
+// Everything a person reads is translated, the meter window included: panel titles (频谱, 파형, スペクトラム…),
+// measurement names (瞬时, 트루 피크, pico real…), status and legends, the mode selector, AUTO, and theme names. What
+// stays in English is what engineers read as symbols in every language: units (LUFS, dBFS, dBTP, RMS, VU, Hz), channel
+// labels (L, R, C, LFE, Ls…), speaker layout names (5.1.2), note names, standards (EBU R128, ITU-R BS.1770-5),
 // abbreviations (FFT) and product names. Terms with an established translation use it everywhere (Stereo →
-// 立体声 / 스테레오, True Peak → 真峰值 / 트루 피크, Integrated → 积分 / 통합…), so a tooltip quoting a meter label
-// matches what the meter prints. `scripts/check-localization.py` holds the glossary and enforces all of this.
+// 立体声 / 立體聲 / ステレオ / 스테레오 / estéreo, True Peak → 真峰值 / トゥルーピーク / 트루 피크 / pico real…), so a
+// tooltip quoting a meter label matches what the meter prints. Traditional Chinese follows Taiwan's usage and Spanish
+// Spain's. `scripts/check-localization.py` holds the glossary and enforces all of this.
 
 enum AppLanguage: String, CaseIterable, Identifiable {
     case system
     case english = "en"
     case simplifiedChinese = "zh-Hans"
+    case traditionalChinese = "zh-Hant"
+    case japanese = "ja"
     case korean = "ko"
+    case spanish = "es"
 
-    static let supported = ["en", "zh-Hans", "ko"]
+    static let supported = ["en", "zh-Hans", "zh-Hant", "ja", "ko", "es"]
     var id: String { rawValue }
 
     /// Each language names itself, so the choice stays readable whatever is selected.
@@ -26,7 +30,10 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         case .system: return L("System")
         case .english: return "English"
         case .simplifiedChinese: return "简体中文"
+        case .traditionalChinese: return "繁體中文"
+        case .japanese: return "日本語"
         case .korean: return "한국어"
+        case .spanish: return "Español (España)"
         }
     }
 }
@@ -48,7 +55,7 @@ final class Localizer: ObservableObject {
             resolve()
         }
     }
-    /// The resolved table: "en", "zh-Hans" or "ko".
+    /// The resolved table: one of `AppLanguage.supported`.
     @Published private(set) var code = "en"
     private var table: Bundle?
     /// Typeset strings of the current language, by key.
@@ -68,8 +75,8 @@ final class Localizer: ObservableObject {
 
     var locale: Locale { Locale(identifier: code) }
 
-    /// Chinese and Korean set without Latin letter-spacing and with slightly more leading.
-    var isCJK: Bool { code != "en" }
+    /// Chinese, Japanese and Korean set without Latin letter-spacing and with slightly more leading.
+    var isCJK: Bool { ["zh-Hans", "zh-Hant", "ja", "ko"].contains(code) }
 
     /// Letter-spacing for a tracked heading: Latin capitals are spread, CJK glyphs are already evenly set.
     func tracking(_ latin: CGFloat) -> CGFloat { isCJK ? 0 : latin }
@@ -133,11 +140,11 @@ final class Localizer: ObservableObject {
     /// Instrument terms of more than one word, which should never break across lines. CJK text may wrap after
     /// any character, so "Multi Channel" would otherwise split at its space inside a Chinese or Korean sentence.
     private static let unbreakable = ["True Peak", "TRUE PEAK", "Core Audio", "EBU R128", "EBU Tech 3342",
-                                      "ITU-R BS.1770-5", "ATSC A/85", "Dolby Atmos", "Apple Music", "Float32 PCM"]
+                                      "ITU-R BS.1770-5", "ATSC A/85", "Float32 PCM"]
     private static let unitAfterNumber = try! NSRegularExpression(
-        pattern: #"(\d|%@|%d) (?=(?:dBFS|dBTP|dB|LUFS|LU|kHz|Hz|ms|s|ch|VU)(?![A-Za-z])|[秒个路点])"#)
+        pattern: #"(\d|%@|%d) (?=(?:dBFS|dBTP|dB|LUFS|LU|kHz|Hz|ms|s|ch|VU)(?![A-Za-z])|[秒个個路点點])"#)
 
-    /// Joins multi-word terms, and a number with its unit or Chinese measure word ("−60 dBFS", "150 ms", "8 秒"),
+    /// Joins multi-word terms, and a number with its unit or CJK measure word ("−60 dBFS", "150 ms", "8 秒"),
     /// by no-break spaces.
     static func typeset(_ text: String) -> String {
         var result = text

@@ -46,11 +46,26 @@ final class NebulaScene {
     private var glowTextures: [MTLTexture] = []
     private var wideTextures: [MTLTexture] = []
     private var sparkTexture: MTLTexture?
+    /// The Radiant body's volumes (`radiantSplatKernel`): both grids' fixed-point sums in one buffer, and per grid the
+    /// blurred volume (first) and the blur's scratch; what the splat and the ray-march were last given.
+    private var volumeSums: MTLBuffer?
+    private var fineVolume: [MTLTexture] = []
+    private var coarseVolume: [MTLTexture] = []
+    private(set) var bodySplat = VolumeSplat()
+    private(set) var bodyLook = RadiantBodyLook()
+    /// The Radiant body's point lights (Radiant's particles over the body): how they are laid in, their half-resolution
+    /// haze, and the quad they were last laid in with (nil: none this frame).
+    private(set) var pointUniforms = BodyUniforms()
+    private var pointLook = RadiantLook()
+    private var pointsTexture: MTLTexture?
+    private(set) var pointsComposite: BodyUniforms?
     /// Radiant's exposure meter (`radiantMeterKernel`): the wide glow's brightest point, and that held; the scene's
     /// clock when it was last read.
     private let meter: MTLBuffer?
     private var meterClock: Float = 0
     private var composite: BodyUniforms?
+    /// How far the dome has arrived (`DomeScene.draw`'s opacity): the composites are laid in at this.
+    private var entrance: Float = 1
     private var compositeLook = RadiantLook()
     // Cache the outgoing composite once on a style/Radiant-band change. No second particle simulation or ray march
     // runs during the transition; rapid switches capture the currently blended image instead of flashing back.
@@ -123,9 +138,28 @@ final class NebulaScene {
     private var serial: UInt32 = 0
     private(set) var peak: Float = -200
     private var newest: Float = -200
-    private var particleLayout: SpeakerLayout?
+    private var particleLayout: (layout: SpeakerLayout, hash: UInt64)?
     private var particleSpeakers: [(role: Int, name: String, direction: SIMD3<Float>)] = []
+    private var particlePositions: [(role: Int, name: String, position: SIMD3<Float>)] = []
     private var particleKey: ParticleKey?
+    /// The scene clock minus the audio time (seconds) of the newest observations, so a frame is born when its audio
+    /// was analysed, not when it arrived; set again after a jump (a pause, a break, a new stream).
+    private var audioAnchor: Double?
+    private var lastAudioTime: Double?
+    /// The newest observation frame taken (its serial and window end): the same frame shown again (a display frame
+    /// between analyses, a held result) is never added twice.
+    private var lastObserved: (serial: Float, end: UInt64)?
+    /// Observations computed with another geometry than the one drawn (a layout change on its way to the analysis, or
+    /// a plugin that computes with the standard layout): how many frames were refused, and whether the newest was.
+    private(set) var refusedFrames = 0
+    private(set) var waitingForGeometry = false
+    /// Draws the observations as they are (`NebulaSettings.rawPoints`).
+    private(set) var raw = false
+    /// Model units per unit of the observations (1 / the layout's largest distance in meters, or 1), and whether they are
+    /// in meters: the readout projects them as the particles are drawn.
+    private var observationScale: Float = 1
+    private var observationsInMeters = false
+    private var lastGeometry: UInt64?
     /// The frames heard lately with their bins (newest last, within the persistence time): a change to how the
     /// particles are drawn remakes the picture from them, so it shows what was heard rather than the newest frame
     /// repeated.
@@ -133,7 +167,7 @@ final class NebulaScene {
         var birth: Float
         var serial: UInt32
         var field: [Float]
-        var points: [Float]
+        var observations: [Float]
         var power: [Float]
     }
     private var heard: [Heard] = []
@@ -141,6 +175,7 @@ final class NebulaScene {
     private(set) var look = RadiantLook()
     private struct ParticleKey: Equatable {
         var perBand: Int
+        var raw: Bool
         var spread: Float
         var spectral: Bool
         var layers: [SpatialBody.Layer]
@@ -155,7 +190,7 @@ final class NebulaScene {
     // Content equality also catches frozen-band changes and sources whose serial restarts.
     private var cachedAnalysisSerial: Float = -1
     private var cachedField: [Float] = []
-    private var cachedPoints: [Float] = []
+    private var cachedObservations: [Float] = []
     private var cachedPower: [Float] = []
     private var cachedShown: [Bool] = []
     private var cachedLayers: [SpatialBody.Layer] = []
@@ -166,6 +201,8 @@ final class NebulaScene {
     private(set) var easedFrames = 0
     private var bound: Float = 0
     private var layerBound = [Float](repeating: 0, count: SpatialBody.maxLayers)
+    /// The first grid direction the easing covers (`SpatialBody.firstRow`'s).
+    private var easedFrom = SpatialBody.floorRow * SpatialBody.azimuthSteps
     /// Per layer: whether it has come to rest on its target (nothing to ease or upload until the target changes).
     private var settled = [Bool](repeating: false, count: SpatialBody.maxLayers)
     /// Seconds since the newest target and the interval the targets have been arriving at: the glide's progress.
@@ -197,7 +234,7 @@ final class NebulaScene {
         descriptor.textureType = .type2DArray
         descriptor.pixelFormat = .rgba16Unorm
         descriptor.width = SpatialBody.azimuthSteps
-        descriptor.height = SpatialBody.elevationSteps + 1
+        descriptor.height = SpatialBody.rows
         descriptor.arrayLength = SpatialBody.maxLayers
         descriptor.storageMode = .shared
         descriptor.usage = .shaderRead
@@ -297,8 +334,13 @@ final class NebulaScene {
             crossfade.step(target: 1, dt: displayDt)
             if crossfade.value >= 0.999 { leaving = nil }
         }
+        // A new geometry (the user's layout changed, or the source computes with another) starts afresh: its
+        // observations are another coordinate frame, never one statistical sample with the old ones.
+        let regeometry = lastGeometry != nil && lastGeometry != frame.geometry.hash
+        lastGeometry = frame.geometry.hash
         // A new measurement, stream, layout or band starts from the measured shape.
         let reset = epoch != frame.epoch || stream != frame.snapshot.streamID || lastLayout != layout || lastChoice == nil || switched
+            || regeometry
         style = n.style
         // A new colouring, or a return to the level body, redraws the body at rest.
         let recolored = lastSpectral != spectral || lastStyle != style
@@ -309,7 +351,8 @@ final class NebulaScene {
             leaving = nil
             transitionTexture = nil
             pendingTransition = false
-        } else if restyled || (switched && style == .radiant) {
+        } else if restyled || (switched && style == .radiant) || regeometry {
+            // The old picture fades out over the new one: only its image is held, none of its particles.
             pendingTransition = composite != nil
         }
         if !pendingTransition, transitionTexture != nil {
@@ -334,18 +377,23 @@ final class NebulaScene {
         let settings = SpatialBody.Settings(smoothing: n.smoothing, spread: n.spread)
         let layers = layers(choice, n)
         let started = Diagnostics.enabled ? CACurrentMediaTime() : 0
-        // New audio: a new field, its bins, or (from a source without a field) new band energies.
-        let contentChanged = cachedField != field || cachedPoints != frame.snapshot.spatialPoints || cachedPower != frame.snapshot.roleBandPower
+        // New audio: a new field, its observations, or (from a source without a field) new band energies.
+        let contentChanged = cachedField != field || cachedObservations != frame.snapshot.spatialObservations
+            || cachedPower != frame.snapshot.roleBandPower
         // The analysis clock advances even for bit-identical steady signals. Redrawing a display frame does not.
         let fresh = contentChanged || cachedAnalysisSerial != frame.snapshot.spectrogramSerial
         cachedAnalysisSerial = frame.snapshot.spectrogramSerial
-        cachedPoints = frame.snapshot.spatialPoints
+        cachedObservations = frame.snapshot.spatialObservations
         let changed = reset || restyled || contentChanged || cachedShown != shown || cachedLayers != layers || cachedSettings != settings
             || cachedFloor != floor
         if changed {
-            field.withUnsafeBufferPointer { field in
-                body.evaluate(field: field, roleBandPower: frame.snapshot.roleBandPower, layout: layout, shown: shown,
-                              layers: layers, settings: settings, floor: floor, metadataOnly: style == .radiant)
+            // The level body reads the field only when it was computed with the geometry drawn (its observations,
+            // from the same transform, carry the geometry's hash): directions only, its radius stays the level.
+            let accepted = Self.accepts(frame.snapshot.spatialObservations, geometry: frame.geometry, layout: layout)
+            let usable = accepted || frame.snapshot.spatialObservations.first != 1
+            (usable ? field : []).withUnsafeBufferPointer { field in
+                body.evaluate(field: field, roleBandPower: frame.snapshot.roleBandPower, layout: layout, geometry: frame.geometry,
+                              shown: shown, layers: layers, settings: settings, floor: floor, metadataOnly: style == .radiant)
             }
             cachedField = field; cachedPower = frame.snapshot.roleBandPower; cachedShown = shown
             cachedLayers = layers; cachedSettings = settings; cachedFloor = floor
@@ -402,12 +450,16 @@ final class NebulaScene {
         colors[base + 1] = (Theme.dark ? Theme.ochreRGB : Theme.ochreRGB.legible(on: Theme.displayRGB, ratio: 3)).simd(1)
         colors[base + 2] = Theme.displayRGB.simd(1)
         for (band, hue) in SpectralHue.bands.enumerated() { colors[base + 3 + band] = SIMD4(hue, 1) }
-        uniforms = g.bodyUniforms(opacity: presence * Float(n.opacity), layers: body.layerCount, dark: Theme.dark)
+        // The body is drawn at its own opacity and laid in at the presence (`encode`), so it fades in and out with the dome
+        // like any other picture; inside, the tone mapping would keep a faint body nearly as bright as a full one.
+        entrance = presence
+        uniforms = g.bodyUniforms(opacity: Float(n.opacity), layers: body.layerCount, dark: Theme.dark)
+        uniforms.lower = body.firstRow < SpatialBody.floorRow ? 1 : 0
         uniforms.spectral = spectral ? 1 : 0
         uniforms.grain = n.grain ? 1 : 0
         if style == .radiant {
             updateRadiant(frame: frame, dt: dt, n: n, layers: layers, shown: shown, changed: changed, fresh: fresh,
-                          reset: sourceReset || restyled || particleKey == nil)
+                          reset: sourceReset || restyled || regeometry || particleKey == nil)
             return
         }
         // The shader's afterglow feather reaches at most 0.096 radii past its edge; cover it, including quantization.
@@ -419,96 +471,172 @@ final class NebulaScene {
         uniforms.maxY = min(uniforms.maxY, uniforms.originY + reach)
     }
 
-    /// Radiant: a new frame of particles from each new field, the loudest band followed, old frames forgotten, and the
-    /// camera and composite for this frame. With the analysis' bins, a change to how they are drawn remakes the picture
-    /// from the frames heard; without them (or with nothing heard yet while frozen), after a reset or a change while
-    /// frozen, the picture a steady field leaves after the persistence time, so it shows at once as it would after a
-    /// while.
+    /// Whether `observations` (`SpatialObservations`) were computed with `geometry`: the analysis' own (its hash), or a
+    /// Bridge plugin before build 98's bins of the standard layout while the standard layout is drawn. A frame without
+    /// observations (status 0) is neither.
+    static func accepts(_ observations: [Float], geometry: SpatialGeometry, layout: SpeakerLayout) -> Bool {
+        guard observations.count >= SpatialObservations.first, observations[SpatialObservations.Header.status] == 1 else { return false }
+        switch SpatialObservations.Source(rawValue: observations[SpatialObservations.Header.source]) {
+        case .measured?:
+            let hash = observations.withUnsafeBufferPointer { SpatialObservations.hash($0.baseAddress!) }
+            return hash == geometry.hash && observations[SpatialObservations.Header.mapping] == Float(geometry.mapping.rawValue)
+        case .legacy?:
+            return geometry.isStandard(roles: layout.roles)
+        default:
+            return false
+        }
+    }
+
+    /// Radiant: a new frame of particles from each new set of observations, the loudest band followed, old frames
+    /// forgotten, and the camera and composite for this frame. Each frame is born at its audio's time (the newest
+    /// window's end, its zones by their windows' centres), so a burst of results is spread as the audio was, not as it
+    /// arrived. A change to how they are drawn remakes the picture from the frames heard; a source without
+    /// observations (or with nothing heard yet while frozen) shows, after a reset or a change while frozen, the
+    /// picture a steady field leaves after the persistence time. Observations of another geometry are never drawn.
     private func updateRadiant(frame: CanvasFrame, dt: Float, n: NebulaSettings, layers: [SpatialBody.Layer], shown: [Bool],
                                changed: Bool, fresh: Bool, reset: Bool) {
-        let lifetime = max(0.06, Float(n.persistence / 1000))
+        raw = n.rawPoints
+        // The bare observations: the newest frame only (one analysis interval), held while frozen.
+        let lifetime = raw ? 1.5 / 30 : max(0.06, Float(n.persistence / 1000))
         clock += dt
         if reset {
             particles.clear()
             peak = -200
+            audioAnchor = nil
+            lastAudioTime = nil
+            lastObserved = nil
             // The exposure meter starts again from what it next measures.
             meter?.contents().initializeMemory(as: Float.self, repeating: 0, count: 2)
             meterClock = clock
         }
-        if particleLayout != frame.layout {
-            particleLayout = frame.layout
+        let geometry = frame.geometry
+        if particleLayout?.layout != frame.layout || particleLayout?.hash != geometry.hash {
+            particleLayout = (frame.layout, geometry.hash)
             particleSpeakers = frame.layout.speakers.compactMap { speaker in
-                guard speaker.group != .lfe,
-                      let d = SpeakerGeometry.direction(role: speaker.role, sidesAtNinety: frame.layout.sidesAtNinety) else { return nil }
+                guard speaker.group != .lfe, let d = geometry.direction(role: speaker.role) else { return nil }
                 return (speaker.role, speaker.name, SIMD3(Float(d.x), Float(d.y), Float(d.z)))
             }
+            particlePositions = frame.layout.speakers.compactMap { speaker in
+                guard speaker.group != .lfe, let p = geometry.position(role: speaker.role) else { return nil }
+                return (speaker.role, speaker.name, SIMD3(Float(p.x), Float(p.y), Float(p.z)))
+            }
         }
+        let toModel = Float(1 / geometry.extent(roles: frame.layout.roles))
+        observationScale = toModel
+        observationsInMeters = geometry.mapping == .positions
         let layerColors = (0..<layers.count).map { SIMD3(colors[$0].x, colors[$0].y, colors[$0].z) }
-        let key = ParticleKey(perBand: Int(n.particles), spread: Float(n.spread), spectral: spectral, layers: layers,
+        let key = ParticleKey(perBand: Int(n.particles), raw: raw, spread: Float(n.spread), spectral: spectral, layers: layers,
                               colors: layerColors, floor: floor, range: Float(n.range))
         let selectionChanged = particleKey?.layers != key.layers
         let remade = particleKey != key
         particleKey = key
         let snapshot = frame.snapshot
-        func input(_ field: UnsafeBufferPointer<Float>, _ points: UnsafeBufferPointer<Float>, _ power: [Float]) -> RadiantParticles.Input {
-            RadiantParticles.Input(field: field, points: points, roleBandPower: power, speakers: particleSpeakers, shown: shown,
-                                   layers: layers, spectral: spectral, layerColors: layerColors, perBand: Int(n.particles),
-                                   size: 1, spread: Float(n.spread), floor: floor, range: Float(n.range))
+        let observations = snapshot.spatialObservations
+        // Each zone's delay before the newest: its window's centre against the shortest zone's.
+        var delays: [Float] = [0]
+        if observations.count >= SpatialObservations.first, observations[SpatialObservations.Header.status] == 1 {
+            let zones = max(1, min(4, Int(observations[SpatialObservations.Header.zones])))
+            let rate = max(1, observations[SpatialObservations.Header.sampleRate])
+            let windows = observations.withUnsafeBufferPointer { v in (0..<zones).map { SpatialObservations.window(v.baseAddress!, zone: $0) } }
+            let shortest = windows.min() ?? 0
+            delays = windows.map { max(0, ($0 - shortest) / 2 / rate) }
         }
-        let pointed = snapshot.spatialField.first == 1 && snapshot.spatialPoints.first == 1
-        if reset || !pointed { heard.removeAll(keepingCapacity: true) }
-        if pointed {
-            // The bins: each new frame added as it is heard; the picture remade from the frames heard when how they
-            // are drawn changes.
-            if fresh || reset || remade || changed {
-                snapshot.spatialField.withUnsafeBufferPointer { field in
-                    snapshot.spatialPoints.withUnsafeBufferPointer { points in
-                        newest = particles.loudestBand(input(field, points, snapshot.roleBandPower))
-                    }
-                }
-                if selectionChanged || newest > peak { peak = newest }
+        func input(_ field: UnsafeBufferPointer<Float>, _ observations: UnsafeBufferPointer<Float>, _ power: [Float]) -> RadiantParticles.Input {
+            RadiantParticles.Input(field: field, observations: observations, roleBandPower: power, speakers: particleSpeakers,
+                                   positions: particlePositions, toModel: toModel, zoneDelays: delays, raw: raw,
+                                   lower: geometry.reachesBelow(roles: frame.layout.roles), shown: shown,
+                                   layers: layers, spectral: spectral, layerColors: layerColors, perBand: Int(n.particles),
+                                   spread: Float(n.spread), floor: floor, range: Float(n.range))
+        }
+        let hasObservations = snapshot.spatialField.first == 1 && observations.first == 1
+        let accepted = hasObservations && Self.accepts(observations, geometry: geometry, layout: frame.layout)
+        // A new frame of observations: another serial or window end than the newest taken (the analysis' own clock).
+        let identity = hasObservations ? observations.withUnsafeBufferPointer {
+            (serial: $0[SpatialObservations.Header.serial], end: SpatialObservations.windowEnd($0.baseAddress!)) } : nil
+        var newFrame = false
+        if let identity {
+            newFrame = lastObserved.map { last in last.serial != identity.serial || last.end != identity.end } ?? true
+        }
+        let freshFrame = hasObservations ? newFrame : fresh
+        waitingForGeometry = hasObservations && !accepted
+        if waitingForGeometry && freshFrame && dt > 0 {
+            refusedFrames += 1
+            lastObserved = identity
+        }
+        if reset || !hasObservations { heard.removeAll(keepingCapacity: true) }
+        if hasObservations {
+            // The audio time of the newest window's end, and the scene time it maps to.
+            let audioTime = observations.withUnsafeBufferPointer { v -> Double? in
+                let rate = Double(v[SpatialObservations.Header.sampleRate])
+                return rate > 0 ? Double(SpatialObservations.windowEnd(v.baseAddress!)) / rate : nil
             }
-            let rebuild = reset || remade || (changed && !fresh)
-            // After a reset the newest frame is the first heard of what comes next.
-            if (fresh || reset) && dt > 0 {
-                serial &+= 1
-                heard.append(Heard(birth: clock, serial: serial, field: snapshot.spatialField, points: snapshot.spatialPoints,
-                                   power: snapshot.roleBandPower))
-                if !rebuild {
+            func birth() -> Float {
+                guard let audioTime else { return clock }
+                // Anchored to the first frame heard; again after a jump of more than a quarter second either way.
+                if let anchor = audioAnchor, let last = lastAudioTime, audioTime >= last, abs(audioTime + anchor - Double(clock)) < 0.25 {
+                    lastAudioTime = audioTime
+                    return min(clock, Float(audioTime + anchor))
+                }
+                audioAnchor = Double(clock) - audioTime
+                lastAudioTime = audioTime
+                return clock
+            }
+            if accepted {
+                // The observations: each new frame added as it is heard; the picture remade from the frames heard
+                // when how they are drawn changes.
+                if freshFrame || reset || remade || changed {
                     snapshot.spatialField.withUnsafeBufferPointer { field in
-                        snapshot.spatialPoints.withUnsafeBufferPointer { points in
-                            particles.add(input(field, points, snapshot.roleBandPower), birth: clock, serial: serial, peak: peak)
+                        observations.withUnsafeBufferPointer { points in
+                            newest = particles.loudestBand(input(field, points, snapshot.roleBandPower))
                         }
                     }
+                    if selectionChanged || newest > peak { peak = newest }
                 }
-            }
-            heard.removeAll { clock - $0.birth > lifetime }
-            if rebuild || (particles.frames.isEmpty && dt == 0 && changed) {
-                particles.clear()
-                if heard.isEmpty {
-                    // Frozen with nothing heard since the reset: show only the available measurement.
-                    snapshot.spatialField.withUnsafeBufferPointer { field in
-                        snapshot.spatialPoints.withUnsafeBufferPointer { points in
-                            serial &+= 1
-                            particles.add(input(field, points, snapshot.roleBandPower), birth: clock, serial: serial, peak: peak)
-                        }
-                    }
-                } else {
-                    for h in heard {
-                        h.field.withUnsafeBufferPointer { field in
-                            h.points.withUnsafeBufferPointer { points in
-                                particles.add(input(field, points, h.power), birth: h.birth, serial: h.serial, peak: peak)
+                let rebuild = reset || remade || (changed && !freshFrame)
+                // After a reset the newest frame is the first heard of what comes next.
+                if (freshFrame || reset) && dt > 0 {
+                    serial &+= 1
+                    lastObserved = identity
+                    let born = birth()
+                    heard.append(Heard(birth: born, serial: serial, field: snapshot.spatialField, observations: observations,
+                                       power: snapshot.roleBandPower))
+                    if !rebuild {
+                        snapshot.spatialField.withUnsafeBufferPointer { field in
+                            observations.withUnsafeBufferPointer { points in
+                                particles.add(input(field, points, snapshot.roleBandPower), birth: born, serial: serial, peak: peak)
                             }
                         }
                     }
                 }
+                heard.removeAll { clock - $0.birth > lifetime }
+                if rebuild || (particles.frames.isEmpty && dt == 0 && changed) {
+                    particles.clear()
+                    if heard.isEmpty {
+                        // Frozen with nothing heard since the reset: show only the available measurement.
+                        snapshot.spatialField.withUnsafeBufferPointer { field in
+                            observations.withUnsafeBufferPointer { points in
+                                serial &+= 1
+                                particles.add(input(field, points, snapshot.roleBandPower), birth: clock, serial: serial, peak: peak)
+                            }
+                        }
+                    } else {
+                        for h in heard {
+                            h.field.withUnsafeBufferPointer { field in
+                                h.observations.withUnsafeBufferPointer { points in
+                                    particles.add(input(field, points, h.power), birth: h.birth, serial: h.serial, peak: peak)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if freshFrame || reset {
+                // Computed with another geometry: nothing of it is drawn (the old particles have been cleared by the
+                // geometry's change; the analysis' next frames will carry the new hash).
+                heard.removeAll(keepingCapacity: true)
             }
         } else if fresh || changed || remade || particles.frames.isEmpty {
             frame.snapshot.spatialField.withUnsafeBufferPointer { field in
-                let input = RadiantParticles.Input(field: field, roleBandPower: frame.snapshot.roleBandPower,
-                                                   speakers: particleSpeakers, shown: shown, layers: layers, spectral: spectral,
-                                                   layerColors: layerColors, perBand: Int(n.particles), size: 1,
-                                                   spread: Float(n.spread), floor: floor, range: Float(n.range))
+                let input = input(field, UnsafeBufferPointer(start: nil, count: 0), frame.snapshot.roleBandPower)
                 newest = particles.loudestBand(input)
                 if newest > peak { peak = newest }
                 if dt > 0 && !reset && !particles.frames.isEmpty {
@@ -528,21 +656,64 @@ final class NebulaScene {
         if dt > 0, newest < peak { peak += (max(newest, floor) - peak) * (1 - exp(-dt / Radiant.peakRelease)) }
         particles.prune(clock: clock, lifetime: lifetime)
         let ochre = colors[SpatialBody.maxLayers + 1]
+        // The bare observations: every particle the same small size, no smear, glint, depth shading or glow.
+        let size = raw ? Radiant.size : Radiant.size * Float(n.particleSize)
         camera = RadiantCamera(originX: uniforms.originX, originY: uniforms.originY, scale: uniforms.scale,
                                sinElevation: uniforms.sinElevation, cosElevation: uniforms.cosElevation,
                                sinYaw: uniforms.sinYaw, cosYaw: uniforms.cosYaw, viewportX: uniforms.viewportX,
-                               viewportY: uniforms.viewportY, pixels: camera.pixels, clock: clock, fade: lifetime / 3,
-                               lifetime: lifetime, size: Radiant.size * Float(n.particleSize), blur: Radiant.blur * Float(n.blur),
-                               minimum: Radiant.minimumPixels, depthFade: Radiant.depthFade, ochreR: ochre.x, ochreG: ochre.y,
+                               viewportY: uniforms.viewportY, pixels: camera.pixels, clock: clock, fade: raw ? 1_000 : lifetime / 3,
+                               lifetime: lifetime, size: size, blur: raw ? 0 : Radiant.blur * Float(n.blur),
+                               minimum: Radiant.minimumPixels, depthFade: raw ? 0 : Radiant.depthFade, ochreR: ochre.x, ochreG: ochre.y,
                                ochreB: ochre.z, pass: 0, sparkSize: Radiant.sparkSize * Float(n.particleSize),
-                               sparkFade: Radiant.sparkFade, sparkGain: Radiant.sparkGain * Float(n.sparkle))
-        look = RadiantLook(sparkle: n.sparkle > 0 ? 1 : 0, glowNear: Radiant.glowNear, glowFar: Radiant.glowFar,
-                           chroma: Radiant.chroma, hotFrom: Radiant.hotFrom, hotTo: Radiant.hotTo,
-                           limit: Radiant.denseLimit, ease: Radiant.denseEase)
+                               sparkFade: Radiant.sparkFade, sparkGain: raw ? 0 : Radiant.sparkGain * Float(n.sparkle))
+        let core = colors[SpatialBody.maxLayers]
+        look = raw ? RadiantLook(sparkle: 0, glowNear: 0, glowFar: 0, chroma: 1, hotFrom: 1_000, hotTo: 2_000, limit: 1e9, ease: 0,
+                                 palette: 0)
+            : RadiantLook(sparkle: n.sparkle > 0 ? 1 : 0, glowNear: Radiant.glowNear, glowFar: Radiant.glowFar,
+                          chroma: Radiant.paletteChroma, hotFrom: Radiant.hotFrom, hotTo: Radiant.hotTo,
+                          limit: Radiant.denseLimit, ease: Radiant.denseEase, blend: Radiant.blend,
+                          grain: n.grain ? Radiant.grain : 0, coreR: core.x, coreG: core.y, coreB: core.z, palette: 1)
+        if !raw {
+            // Its point lights: the particles as Radiant draws them, over the whole canvas (they smear wherever they
+            // have been), with less glow than Radiant's own.
+            pointUniforms = uniforms
+            pointUniforms.style = 1
+            pointUniforms.gain = uniforms.opacity * Radiant.exposure * Radiant.presence(peak: peak, floor: floor) * Radiant.burn
+                * RadiantBody.pointExposure * Float(n.points)
+            pointUniforms.spare = Radiant.bloom
+            pointUniforms.bound = particles.liveCount > 0 && n.points > 0 ? 1 : 0
+            pointUniforms.minX = 0; pointUniforms.minY = 0
+            pointUniforms.maxX = uniforms.viewportX; pointUniforms.maxY = uniforms.viewportY
+            pointLook = look
+            pointLook.glowNear = RadiantBody.pointGlowNear
+            pointLook.glowFar = RadiantBody.pointGlowFar
+            // The Radiant body: the particles gathered into the volumes and marched as the level body's gas, in the
+            // body's quad around the dome. How loud the loudest band is sets how dense the whole body is.
+            let born = RadiantBody.size * Float(n.particleSize)
+            let rate = RadiantBody.blur * Float(n.blur)
+            bodySplat = VolumeSplat(clock: clock, lifetime: lifetime, fade: lifetime / 3, bornVariance: born * born, blurRate: rate,
+                                    coarseVariance: born * born + max(rate * lifetime, 1e-4), ochreR: ochre.x, ochreG: ochre.y,
+                                    ochreB: ochre.z, reach: RadiantBody.reach, fixedScale: RadiantBody.fixedScale,
+                                    least: RadiantBody.least, fineSize: UInt32(RadiantBody.fineSize),
+                                    coarseSize: UInt32(RadiantBody.coarseSize))
+            bodyLook = RadiantBodyLook(reach: RadiantBody.reach,
+                                       density: RadiantBody.density * Radiant.presence(peak: peak, floor: floor),
+                                       edgeFrom: RadiantBody.edgeFrom, edgeTo: RadiantBody.edgeTo, base: RadiantBody.base,
+                                       absorb: RadiantBody.absorb, chroma: RadiantBody.chroma, shellFrom: RadiantBody.shellFrom,
+                                       wash: RadiantBody.wash,
+                                       glow: 1 + (RadiantBody.underPoints - 1) * Float(min(1, max(0, n.points))))
+            uniforms.style = 2
+            uniforms.lower = geometry.reachesBelow(roles: frame.layout.roles) ? 1 : 0
+            uniforms.bound = particles.liveCount > 0 && bodyLook.density > 0 ? RadiantBody.shell : 0
+            let reach = uniforms.bound * uniforms.scale + 2
+            uniforms.minX = max(0, uniforms.originX - reach); uniforms.maxX = min(uniforms.viewportX, uniforms.originX + reach)
+            uniforms.minY = max(0, uniforms.originY - reach); uniforms.maxY = min(uniforms.viewportY, uniforms.originY + reach)
+            return
+        }
         // The composite covers the canvas: particles smear wherever they have been.
         uniforms.style = 1
-        uniforms.gain = uniforms.opacity * Radiant.exposure * Radiant.presence(peak: peak, floor: floor)
-        uniforms.spare = Radiant.bloom
+        uniforms.gain = uniforms.opacity * Radiant.exposure * Radiant.presence(peak: peak, floor: floor) * (raw ? 1 : Radiant.burn)
+        uniforms.spare = raw ? 0 : Radiant.bloom
         uniforms.bound = particles.liveCount > 0 ? 1 : 0
         uniforms.minX = 0; uniforms.minY = 0
         uniforms.maxX = uniforms.viewportX; uniforms.maxY = uniforms.viewportY
@@ -626,6 +797,18 @@ final class NebulaScene {
         // The simd module's functions, not the standard library's generic SIMD ones, which run lane by lane.
         @inline(__always) func peak(_ v: SIMD8<Float>) -> SIMD8<Float> { simd_abs(v) }
         let floorShare = SpatialBody.floorShare
+        // Rows below the body's first (the lower hemisphere, while no speaker of the layout is there) hold nothing:
+        // cleared once when they leave use, then never eased or written again.
+        let firstIndex = body.firstRow * columns
+        if firstIndex != easedFrom {
+            if firstIndex > easedFrom {
+                let all = self.store
+                for plane in 0..<Self.planeCount { (all + plane * Self.size).update(repeating: 0, count: Self.size) }
+                for plane in [0, 1, 4 + Self.bandCount, 5 + Self.bandCount] { (all + plane * Self.size).update(repeating: -200, count: Self.size) }
+                planes.update(repeating: 0, count: Self.uploadPlanes * count)
+            }
+            easedFrom = firstIndex
+        }
         for layer in 0..<body.layerCount where !settled[layer] {
             let base = layer * count
             let easing = Diagnostics.enabled ? CACurrentMediaTime() : 0
@@ -639,7 +822,7 @@ final class NebulaScene {
             let reach = reachScratch
             for a in 0..<columns { reachIndex[a] = -1 }
             reach.update(repeating: 0, count: columns)
-            var i = 0
+            var i = firstIndex
             while i < count {
                 let start = load(starts, i)
                 let goal = start + (load(goals, i) - start) * glide
@@ -726,7 +909,7 @@ final class NebulaScene {
             if progress >= 1 && moved < 0.001 { settled[layer] = true }
             easedFrames += 1
             let uploading = Diagnostics.enabled ? CACurrentMediaTime() : 0
-            let region = MTLRegionMake2D(0, 0, SpatialBody.azimuthSteps, SpatialBody.elevationSteps + 1)
+            let region = MTLRegionMake2D(0, 0, SpatialBody.azimuthSteps, SpatialBody.rows)
             let row = SpatialBody.azimuthSteps * 4 * MemoryLayout<UInt16>.stride, image = count * 4 * MemoryLayout<UInt16>.stride
             version &+= 1
             texture?.replace(region: region, mipmapLevel: 0, slice: layer, withBytes: upload, bytesPerRow: row, bytesPerImage: image)
@@ -851,6 +1034,7 @@ final class NebulaScene {
     /// Radiant's particles added into the half-resolution texture (their haze) and a full-resolution one (their sparks),
     /// every frame they age (kept while frozen and the camera holds still), and the haze's glow.
     private func encodeRadiant(_ command: MTLCommandBuffer, gpu: MeterGPU, pixels: CGSize) {
+        if uniforms.style > 1.5 { encodeRadiantBody(command, gpu: gpu, pixels: pixels); return }
         guard uniforms.bound > 0, uniforms.gain > 0.0001, let offscreen = target(gpu: gpu, pixels: pixels),
               let sparks = sparkTarget(gpu: gpu, pixels: pixels) else {
             composite = nil
@@ -864,6 +1048,13 @@ final class NebulaScene {
         let key = RenderKey(passes: [RenderKey.Pass(state: uniforms, colors: [], set: -1)], version: particles.version, camera: camera)
         guard key != renderedKey else { return }
         renderedKey = key
+        if !encodeParticles(command, gpu: gpu, haze: offscreen, sparks: sparks, camera: camera) { composite = nil }
+    }
+
+    /// Radiant's particles: their haze added into `haze` (half resolution), their sparks into `sparks` (the canvas'
+    /// resolution), the haze's glow near and wide, and the exposure meter. False when a pass could not be made.
+    private func encodeParticles(_ command: MTLCommandBuffer, gpu: MeterGPU, haze offscreen: MTLTexture, sparks: MTLTexture,
+                                 camera: RadiantCamera) -> Bool {
         func draw(into texture: MTLTexture, _ camera: RadiantCamera, lifetime: Float) -> Bool {
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = texture
@@ -878,7 +1069,7 @@ final class NebulaScene {
             encoder.endEncoding()
             return true
         }
-        guard draw(into: offscreen, camera, lifetime: camera.lifetime) else { composite = nil; return }
+        guard draw(into: offscreen, camera, lifetime: camera.lifetime) else { return false }
         // The sparks: only the newest frames, at the canvas' own resolution, so they stay sharp. Drawn (cleared) even at
         // Sparkle 0, so the composite never reads what the texture held before.
         var spark = camera
@@ -886,8 +1077,7 @@ final class NebulaScene {
         spark.pixels = Float(sparks.width) / max(1, camera.viewportX)
         spark.minimum = Radiant.sparkMinimumPixels
         guard draw(into: sparks, spark, lifetime: camera.sparkGain > 0 ? min(camera.lifetime, 4 * camera.sparkFade) : -1) else {
-            composite = nil
-            return
+            return false
         }
         // The glow: averaged down to a quarter, then blurred across and down, twice; that averaged down to half again
         // and blurred the same way for the wide glow.
@@ -903,7 +1093,7 @@ final class NebulaScene {
         }
         glowTextures = textures(glowTextures, width, height)
         wideTextures = textures(wideTextures, wideWidth, wideHeight)
-        guard glowTextures.count == 2, wideTextures.count == 2 else { return }
+        guard glowTextures.count == 2, wideTextures.count == 2 else { return false }
         func run(_ state: MTLRenderPipelineState, from source: MTLTexture, into destination: MTLTexture, step: SIMD2<Float>?) {
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = destination
@@ -938,6 +1128,140 @@ final class NebulaScene {
                                          threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
             encoder.endEncoding()
         }
+        return true
+    }
+
+    /// The Radiant body: the live particles added into the volumes, each volume resolved and blurred, then ray-marched
+    /// into the half-resolution texture as the level body is, every frame they age (kept while frozen and the camera
+    /// holds still).
+    private func encodeRadiantBody(_ command: MTLCommandBuffer, gpu: MeterGPU, pixels: CGSize) {
+        guard uniforms.bound > 0, let offscreen = target(gpu: gpu, pixels: pixels), let particleBuffer = particles.buffer,
+              let grainTexture, prepareVolumes(device: gpu.device), let sums = volumeSums else {
+            composite = nil
+            return
+        }
+        composite = uniforms
+        // The point lights share the body's camera and clock; their haze has a half-resolution texture of its own.
+        var camera = self.camera
+        camera.pixels = Float(offscreen.width) / max(1, camera.viewportX)
+        self.camera.pixels = camera.pixels
+        let points = pointUniforms.bound > 0 && pointUniforms.gain > 0.0001 ? pointUniforms : nil
+        let pointTargets = points == nil ? nil : pointsTarget(gpu: gpu, like: offscreen).flatMap { haze in
+            sparkTarget(gpu: gpu, pixels: pixels).map { (haze: haze, sparks: $0) }
+        }
+        pointsComposite = pointTargets == nil ? nil : points
+        compositeLook = pointLook
+        let key = RenderKey(passes: [RenderKey.Pass(state: uniforms, colors: [colors[SpatialBody.maxLayers]], set: -2),
+                                     RenderKey.Pass(state: pointsComposite ?? BodyUniforms(), colors: [], set: -3)],
+                            version: particles.version, camera: pointsComposite == nil ? nil : camera, splat: bodySplat,
+                            look: bodyLook, pointLook: pointsComposite == nil ? nil : pointLook)
+        guard key != renderedKey else { return }
+        renderedKey = key
+        guard let blit = command.makeBlitCommandEncoder() else { composite = nil; return }
+        blit.fill(buffer: sums, range: 0..<sums.length, value: 0)
+        blit.endEncoding()
+        guard let compute = command.makeComputeCommandEncoder() else { composite = nil; return }
+        let fineCount = RadiantBody.fineSize * RadiantBody.fineSize * RadiantBody.fineSize
+        compute.setComputePipelineState(gpu.radiantSplat)
+        compute.setBuffer(particleBuffer, offset: 0, index: 0)
+        compute.setBuffer(sums, offset: 0, index: 2)
+        compute.setBuffer(sums, offset: fineCount * 4 * MemoryLayout<UInt32>.stride, index: 3)
+        let width = min(256, gpu.radiantSplat.maxTotalThreadsPerThreadgroup)
+        for segment in particles.segments(clock: bodySplat.clock, lifetime: bodySplat.lifetime) {
+            var splat = bodySplat
+            splat.first = UInt32(segment.start)
+            splat.count = UInt32(segment.count)
+            compute.setBytes(&splat, length: MemoryLayout<VolumeSplat>.stride, index: 1)
+            compute.dispatchThreads(MTLSize(width: segment.count, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
+        }
+        // Each grid: resolved and blurred along x into its volume, along y into the scratch, along z back into the volume.
+        let grids: [(textures: [MTLTexture], size: Int, offset: Int, sigma: Float)] = [
+            (fineVolume, RadiantBody.fineSize, 0, bodySplat.bornVariance.squareRoot()),
+            (coarseVolume, RadiantBody.coarseSize, fineCount * 4 * MemoryLayout<UInt32>.stride, bodySplat.coarseVariance.squareRoot())
+        ]
+        for grid in grids {
+            let voxel = 2 * RadiantBody.reach / Float(grid.size)
+            // The trilinear splat and the trilinear sampling each widen a particle by about a voxel's ⅓ in variance.
+            let sigma = max(0.5, (max(0, grid.sigma * grid.sigma - voxel * voxel / 3)).squareRoot() / voxel)
+            // Without speakers below the ear plane only the rows from just under the floor up are worked on.
+            let floorRow = Int(((RadiantBody.reach - 0.2) / voxel).rounded(.down))
+            let firstRow = uniforms.lower > 0.5 ? 0 : max(0, min(grid.size - 1, floorRow))
+            var pass = VolumeBlur(size: UInt32(grid.size), firstRow: UInt32(firstRow), radius: Int32(min(16, (2.5 * sigma).rounded(.up))),
+                                  sigma: sigma, unit: RadiantBody.unit / (RadiantBody.fixedScale * voxel * voxel * voxel), axis: 0)
+            let threads = MTLSize(width: grid.size, height: grid.size - firstRow, depth: grid.size)
+            let group = MTLSize(width: 8, height: 8, depth: 4)
+            compute.setComputePipelineState(gpu.radiantResolve)
+            compute.setBuffer(sums, offset: grid.offset, index: 0)
+            compute.setBytes(&pass, length: MemoryLayout<VolumeBlur>.stride, index: 1)
+            compute.setTexture(grid.textures[0], index: 0)
+            compute.dispatchThreads(threads, threadsPerThreadgroup: group)
+            compute.setComputePipelineState(gpu.radiantBlur)
+            for (axis, from, to) in [(UInt32(1), 0, 1), (UInt32(2), 1, 0)] {
+                pass.axis = axis
+                compute.setTexture(grid.textures[from], index: 0)
+                compute.setTexture(grid.textures[to], index: 1)
+                compute.setBytes(&pass, length: MemoryLayout<VolumeBlur>.stride, index: 0)
+                compute.dispatchThreads(threads, threadsPerThreadgroup: group)
+            }
+        }
+        compute.endEncoding()
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = offscreen
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+        guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { composite = nil; return }
+        var state = uniforms
+        var look = bodyLook
+        encoder.setRenderPipelineState(gpu.radiantBody)
+        encoder.setVertexBytes(&state, length: MemoryLayout<BodyUniforms>.stride, index: 2)
+        encoder.setFragmentBytes(&state, length: MemoryLayout<BodyUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(colors, length: colors.count * MemoryLayout<SIMD4<Float>>.stride, index: 1)
+        encoder.setFragmentBytes(&look, length: MemoryLayout<RadiantBodyLook>.stride, index: 2)
+        encoder.setFragmentTexture(fineVolume[0], index: 0)
+        encoder.setFragmentTexture(coarseVolume[0], index: 1)
+        encoder.setFragmentTexture(grainTexture, index: 2)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        encoder.endEncoding()
+        if let pointTargets, !encodeParticles(command, gpu: gpu, haze: pointTargets.haze, sparks: pointTargets.sparks, camera: camera) {
+            pointsComposite = nil
+        }
+    }
+
+    /// The half-resolution texture the Radiant body's point lights are drawn into, the size of the body's own.
+    private func pointsTarget(gpu: MeterGPU, like body: MTLTexture) -> MTLTexture? {
+        if pointsTexture?.width != body.width || pointsTexture?.height != body.height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: body.width, height: body.height,
+                                                                      mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            pointsTexture = gpu.device.makeTexture(descriptor: descriptor)
+            renderedKey = nil
+        }
+        return pointsTexture
+    }
+
+    /// The Radiant body's sums and volumes, made once (about 6 MB).
+    private func prepareVolumes(device: MTLDevice) -> Bool {
+        if volumeSums != nil && fineVolume.count == 2 && coarseVolume.count == 2 { return true }
+        let fine = RadiantBody.fineSize, coarse = RadiantBody.coarseSize
+        let bytes = (fine * fine * fine + coarse * coarse * coarse) * 4 * MemoryLayout<UInt32>.stride
+        volumeSums = device.makeBuffer(length: bytes, options: .storageModePrivate)
+        func volumes(_ size: Int) -> [MTLTexture] {
+            let descriptor = MTLTextureDescriptor()
+            descriptor.textureType = .type3D
+            descriptor.pixelFormat = .rgba16Float
+            descriptor.width = size
+            descriptor.height = size
+            descriptor.depth = size
+            descriptor.storageMode = .private
+            descriptor.usage = [.shaderRead, .shaderWrite]
+            return (0..<2).compactMap { _ in device.makeTexture(descriptor: descriptor) }
+        }
+        fineVolume = volumes(fine)
+        coarseVolume = volumes(coarse)
+        return volumeSums != nil && fineVolume.count == 2 && coarseVolume.count == 2
     }
 
     /// The full-resolution texture Radiant's sparks are drawn into, made again when the canvas' size changes.
@@ -985,7 +1309,7 @@ final class NebulaScene {
         let progress = transitionTexture == nil ? Float(1) : max(0, transition.value)
         if let texture = transitionTexture {
             var quad = transitionQuad
-            var alpha = 1 - progress
+            var alpha = (1 - progress) * entrance
             encoder.setRenderPipelineState(gpu.bodyComposite)
             encoder.setVertexBytes(&quad, length: MemoryLayout<BodyUniforms>.stride, index: 2)
             encoder.setFragmentBytes(&quad, length: MemoryLayout<BodyUniforms>.stride, index: 0)
@@ -994,26 +1318,49 @@ final class NebulaScene {
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
         }
         guard var quad = composite, let offscreen else { return }
-        var alpha = progress
-        encoder.setRenderPipelineState(quad.style > 0.5 ? gpu.radiantComposite : gpu.bodyComposite)
+        var alpha = progress * entrance
+        // Radiant's light is tone-mapped on its way in; the level body and the Radiant body are laid in as drawn.
+        let light = quad.style > 0.5 && quad.style < 1.5
+        encoder.setRenderPipelineState(light ? gpu.radiantComposite : gpu.bodyComposite)
         encoder.setVertexBytes(&quad, length: MemoryLayout<BodyUniforms>.stride, index: 2)
         encoder.setFragmentBytes(&quad, length: MemoryLayout<BodyUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.stride, index: 3)
         encoder.setFragmentTexture(offscreen, index: 0)
-        if quad.style > 0.5 {
+        if light {
             var look = compositeLook
             encoder.setFragmentTexture(glowTextures.first ?? offscreen, index: 1)
             encoder.setFragmentTexture(wideTextures.first ?? offscreen, index: 2)
             encoder.setFragmentTexture(sparkTexture ?? offscreen, index: 3)
+            encoder.setFragmentTexture(grainTexture, index: 4)
             encoder.setFragmentBytes(&look, length: MemoryLayout<RadiantLook>.stride, index: 1)
-            if let meter {
-                encoder.setFragmentBuffer(meter, offset: 0, index: 2)
-            } else {
-                var unmetered: [Float] = [0, 0]
-                encoder.setFragmentBytes(&unmetered, length: 2 * MemoryLayout<Float>.stride, index: 2)
-            }
+            setMeter(encoder)
         }
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        // The Radiant body's point lights: on dark their light adds to the body's, on light they are laid over it.
+        if quad.style > 1.5, var points = pointsComposite, let pointsTexture {
+            var look = compositeLook
+            encoder.setRenderPipelineState(points.dark > 0.5 ? gpu.radiantPoints : gpu.radiantComposite)
+            encoder.setVertexBytes(&points, length: MemoryLayout<BodyUniforms>.stride, index: 2)
+            encoder.setFragmentBytes(&points, length: MemoryLayout<BodyUniforms>.stride, index: 0)
+            encoder.setFragmentBytes(&alpha, length: MemoryLayout<Float>.stride, index: 3)
+            encoder.setFragmentTexture(pointsTexture, index: 0)
+            encoder.setFragmentTexture(glowTextures.first ?? pointsTexture, index: 1)
+            encoder.setFragmentTexture(wideTextures.first ?? pointsTexture, index: 2)
+            encoder.setFragmentTexture(sparkTexture ?? pointsTexture, index: 3)
+            encoder.setFragmentTexture(grainTexture, index: 4)
+            encoder.setFragmentBytes(&look, length: MemoryLayout<RadiantLook>.stride, index: 1)
+            setMeter(encoder)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        }
+    }
+
+    private func setMeter(_ encoder: MTLRenderCommandEncoder) {
+        if let meter {
+            encoder.setFragmentBuffer(meter, offset: 0, index: 2)
+        } else {
+            var unmetered: [Float] = [0, 0]
+            encoder.setFragmentBytes(&unmetered, length: 2 * MemoryLayout<Float>.stride, index: 2)
+        }
     }
 
     /// What the offscreen texture last showed: each body drawn (its camera, quad, opacity and colours, and the set it
@@ -1027,6 +1374,9 @@ final class NebulaScene {
         var passes: [Pass]
         var version: Int
         var camera: RadiantCamera?
+        var splat: VolumeSplat?
+        var look: RadiantBodyLook?
+        var pointLook: RadiantLook?
     }
 
     // MARK: Pointer
@@ -1034,10 +1384,10 @@ final class NebulaScene {
     /// The displayed radius of `layer` toward (`azimuth`, `elevation`), degrees, interpolated as the shader's sampler
     /// interpolates the texture.
     func radius(layer: Int, azimuth: Double, elevation: Double) -> Float {
-        let columns = SpatialBody.azimuthSteps, rows = SpatialBody.elevationSteps
+        let columns = SpatialBody.azimuthSteps, rows = SpatialBody.rows - 1
         var a = (azimuth / SpatialBody.step).truncatingRemainder(dividingBy: Double(columns))
         if a < 0 { a += Double(columns) }
-        let e = max(0, min(Double(rows), elevation / SpatialBody.step))
+        let e = max(0, min(Double(rows), elevation / SpatialBody.step + Double(SpatialBody.lowerSteps)))
         let a0 = Int(a) % columns, a1 = (a0 + 1) % columns, e0 = min(rows, Int(e)), e1 = min(rows, e0 + 1)
         let ta = Float(a - Double(Int(a))), te = Float(e - Double(e0))
         let base = layer * SpatialBody.count
@@ -1074,7 +1424,10 @@ final class NebulaScene {
         guard rr < 1 else { return nil }
         let half = (1 - rr).squareRoot()
         var far = -half
-        if s.sinElevation > 0.001 { far = max(far, -y * s.cosElevation / s.sinElevation) } else if y < 0 { return nil }
+        // Above the floor only, unless the layout reaches below the ear plane (the shader's `lower`).
+        if s.lower < 0.5 {
+            if s.sinElevation > 0.001 { far = max(far, -y * s.cosElevation / s.sinElevation) } else if y < 0 { return nil }
+        }
         var t = half
         while t > far {
             defer { t -= 0.01 }
@@ -1084,7 +1437,8 @@ final class NebulaScene {
             let rho = simd_length(p)
             guard rho > 0.01 else { continue }
             let d = SIMD3(p.x, p.z, p.y) / rho
-            let azimuth = Double(atan2(d.x, d.y)) * 180 / .pi, elevation = Double(asin(max(0, min(1, d.z)))) * 180 / .pi
+            let azimuth = Double(atan2(d.x, d.y)) * 180 / .pi
+            let elevation = Double(asin(max(s.lower > 0.5 ? -1 : 0, min(1, d.z)))) * 180 / .pi
             var best: (layer: Int, radius: Float)?
             for layer in 0..<body.layerCount {
                 let r = radius(layer: layer, azimuth: azimuth, elevation: elevation)
@@ -1116,7 +1470,7 @@ final class NebulaScene {
             }
         }
         return DomeProbe(kind: kind, band: groups.count > 1 ? BandChoice.range(choice.resolution, group) : nil,
-                         hue: tint(layer: layer, azimuth: azimuth, elevation: max(0, elevation), rho: rho),
+                         hue: tint(layer: layer, azimuth: azimuth, elevation: elevation, rho: rho),
                          decibels: Double(floor + value * -floor), azimuth: azimuth, elevation: elevation,
                          width: width, stability: stability, coherence: coherence, centroid: centroid)
     }
@@ -1126,9 +1480,10 @@ final class NebulaScene {
     /// image or energy out of phase).
     private func radiantProbe(at point: CGPoint) -> DomeProbe? {
         let s = uniforms
+        let toModel = observationScale
         func project(_ p: SIMD3<Float>) -> CGPoint {
-            // The field's frame (x right, y front, z up) to model coordinates, then the camera.
-            let m = SIMD3(p.x, p.z, p.y)
+            // The field's frame (x right, y front, z up) to model coordinates at the layout's scale, then the camera.
+            let m = SIMD3(p.x, p.z, p.y) * toModel
             let q = SIMD3(m.x * s.cosYaw + m.z * s.sinYaw, m.y, m.z * s.cosYaw - m.x * s.sinYaw)
             return CGPoint(x: CGFloat(s.originX + q.x * s.scale), y: CGFloat(s.originY - (q.z * s.sinElevation + q.y * s.cosElevation) * s.scale))
         }
@@ -1142,7 +1497,9 @@ final class NebulaScene {
         return DomeProbe(kind: r.kind, band: groups.count > 1 ? BandChoice.range(choice.resolution, group) : nil,
                          hue: Theme.dark ? rgb : rgb.legible(on: Theme.displayRGB, ratio: 3), decibels: Double(r.level),
                          azimuth: azimuth, elevation: elevation, width: r.width.map(Double.init),
-                         stability: r.stability.map(Double.init), coherence: r.coherence.map(Double.init), centroid: hz)
+                         stability: r.stability.map(Double.init), coherence: r.coherence.map(Double.init),
+                         centroid: r.frequency.map(Double.init) ?? hz, meters: observationsInMeters ? Double(length) : nil,
+                         directionless: length < 0.02 / max(observationScale, 1e-6))
     }
 }
 
@@ -1237,18 +1594,32 @@ extension NebulaScene {
             radiant.update(frame: live, geometry: geometry, dt: dt, displayDt: dt, options: look, presence: 1)
         }
         step()
-        check(radiant.particles.liveCount > 0 && radiant.uniforms.style == 1 && radiant.uniforms.gain > 0,
-              "Radiant makes particles from the field")
+        check(radiant.particles.liveCount > 0 && radiant.uniforms.style == 2 && radiant.bodyLook.density > 0
+              && radiant.uniforms.bound == RadiantBody.shell, "Radiant body gathers particles from the field into its volume")
         check(radiant.peak > -200 && radiant.peak <= 0, "Radiant's range hangs from the loudest band")
         check(look.nebula.rings.isEmpty, "Radiant has no level rings")
-        check(radiant.camera.sparkGain > 0 && radiant.look.sparkle == 1 && radiant.camera.blur > 0,
-              "new particles glint, older ones smear")
-        look.nebula.sparkle = 0
+        let splat = radiant.bodySplat
+        check(splat.bornVariance > 0 && splat.blurRate > 0 && splat.coarseVariance > splat.bornVariance
+              && splat.lifetime > 0 && splat.fade > 0, "new light is compact, older light swells into haze")
+        check(radiant.uniforms.minX > 0 && radiant.uniforms.maxX < radiant.uniforms.viewportX,
+              "the body is marched in the dome's quad, not the whole canvas")
+        check(radiant.pointUniforms.bound == 1 && radiant.pointUniforms.gain > 0 && radiant.pointUniforms.style == 1
+              && radiant.bodyLook.glow < 1, "point lights over the body, the body dimmed under them")
+        look.nebula.points = 0
         step(0)
-        check(radiant.camera.sparkGain == 0 && radiant.look.sparkle == 0 && radiant.particles.liveCount > 0,
-              "Sparkle 0 leaves only the glow")
-        look.nebula.sparkle = 1
+        check(radiant.pointUniforms.bound == 0 && radiant.bodyLook.glow == 1 && radiant.uniforms.style == 2,
+              "Points 0 shows the body alone")
+        look.nebula.points = 1
+        look.nebula.blur = 0
         step(0)
+        check(radiant.bodySplat.blurRate == 0 && radiant.particles.liveCount > 0, "Blur 0 keeps light as compact as when heard")
+        look.nebula.blur = 1
+        look.nebula.rawPoints = true
+        step(0)
+        check(radiant.uniforms.style == 1 && radiant.raw, "raw observations draw the particles themselves")
+        look.nebula.rawPoints = false
+        step(0)
+        check(radiant.uniforms.style == 2, "and back to the body")
         let frozen = radiant.particles.version
         for _ in 0..<10 { step(0) }
         check(radiant.particles.version == frozen, "a frozen picture holds still")
@@ -1275,7 +1646,7 @@ extension NebulaScene {
         check(radiant.uniforms.style == 0 && radiant.easedFrames > 0, "switching to the level body draws it")
         look.nebula.style = .radiant
         step()
-        check(radiant.uniforms.style == 1, "and back to Radiant")
+        check(radiant.uniforms.style == 2, "and back to Radiant body")
         live.snapshot.spatialField[SpatialField.status] = 0
         for i in 0..<120 {
             live.snapshot.spatialField[SpatialField.threshold] = Float(i)
@@ -1283,75 +1654,146 @@ extension NebulaScene {
         }
         check(radiant.particles.liveCount == 0 && radiant.uniforms.bound == 0, "silence leaves no particles")
 
-        // Radiant from the analysis' bins: each new frame added as heard; a change to how they are drawn remakes the
-        // picture from the frames heard (not the newest repeated); frozen, it holds; a reset starts afresh.
-        func withBins(_ snapshot: MeterSnapshot, _ shift: Float) -> MeterSnapshot {
+        // Radiant from the analysis' observations: each new frame added as heard, born at its audio's time; a change
+        // to how they are drawn remakes the picture from the frames heard (not the newest repeated); frozen, it holds;
+        // the same frame shown twice is added once; a reset starts afresh; observations of another geometry are never
+        // drawn, and a geometry change leaves no particles of the old one.
+        var frameSerial: Float = 0
+        var windowEnd: UInt64 = 48_000 * 4
+        func observed(_ snapshot: MeterSnapshot, _ shift: Float, hash: UInt64, source: SpatialObservations.Source = .measured,
+                      next: Bool = true) -> MeterSnapshot {
             var s = snapshot
-            s.spatialPoints[SpatialPoints.status] = 1
+            if next { frameSerial += 1; windowEnd += 1_600 }
+            var list: [Float] = []
+            var counts = [Float](repeating: 0, count: SpatialField.bandCount)
             for band in 0..<SpatialField.bandCount {
                 var total: Float = 0
                 for role in 0..<Role.count where role != Role.lfe { total += s.spatialField[SpatialField.independent(band: band, role: role)] }
                 for slot in 0..<SpatialField.coherentSlots { total += s.spatialField[SpatialField.component(band: band, slot: slot)] }
                 guard total > 0 else { continue }
-                s.spatialPoints[SpatialPoints.count(band: band)] = 2
+                counts[band] = 2
                 for index in 0..<2 {
-                    let o = SpatialPoints.point(band: band, index: index)
-                    s.spatialPoints[o] = (index == 0 ? -0.3 : 0.3) + shift
-                    s.spatialPoints[o + 1] = 0.8
-                    s.spatialPoints[o + 3] = total / 2
+                    list += [(index == 0 ? -0.3 : 0.3) + shift, 0.8, 0, total / 2, Float(SpatialField.centre(band)),
+                             Float(SpatialField.edge(band)), Float(SpatialField.edge(band + 1)), 0, 0]
                 }
             }
+            var v = [Float](repeating: 0, count: SpatialObservations.first)
+            typealias H = SpatialObservations.Header
+            v[H.status] = 1; v[H.version] = SpatialObservations.version; v[H.source] = source.rawValue
+            v[H.sampleRate] = 48_000; v[H.windowLength] = 8_192; v[H.zones] = 1; v[H.serial] = frameSerial
+            v[H.count] = Float(list.count / SpatialObservations.fields)
+            v.withUnsafeMutableBufferPointer { p in
+                SpatialObservations.store(hash, parts: 4, at: p.baseAddress! + H.hash)
+                SpatialObservations.store(windowEnd, parts: 3, at: p.baseAddress! + H.windowEnd, bits: 24)
+            }
+            for band in 0..<SpatialField.bandCount { v[SpatialObservations.counts + band] = counts[band] }
+            s.spatialObservations = v + list
             return s
         }
         let bins = NebulaScene(device: nil)
         var heard = CanvasFrame(running: true)
-        heard.snapshot = withBins(DemoSignal.snapshot(at: 4.5, sequence: 135), 0)
+        let drawn = heard.geometry.hash
+        heard.snapshot = observed(DemoSignal.snapshot(at: 4.5, sequence: 135), 0, hash: drawn)
         func hear(_ dt: Float = 1.0 / 60) {
             bins.update(frame: heard, geometry: geometry, dt: dt, displayDt: dt, options: look, presence: 1)
         }
         hear()
         check(bins.particles.frames.count == 1 && bins.particles.recent.last?.allSatisfy { abs(abs($0.position.x) - 0.3) < 1e-5 } == true,
-              "the bins make one frame of particles where the bins are")
+              "the observations make one frame of particles where they are")
         for i in 1...5 {
-            heard.snapshot = withBins(DemoSignal.snapshot(at: 4.5 + Double(i) / 30, sequence: 135 + i), Float(i) * 0.01)
+            heard.snapshot = observed(DemoSignal.snapshot(at: 4.5 + Double(i) / 30, sequence: 135 + i), Float(i) * 0.01, hash: drawn)
             hear()
             hear()
         }
-        check(bins.particles.frames.count == 6, "each new frame of bins adds one frame (\(bins.particles.frames.count))")
+        check(bins.particles.frames.count == 6, "each new frame of observations adds one frame, shown twice or not (\(bins.particles.frames.count))")
         let xs = Set(bins.particles.recent.joined().map { ($0.position.x * 1000).rounded() })
-        look.nebula.particles = 12
+        look.nebula.particleSize = 1.5
         hear()
         check(bins.particles.frames.count == 6 && Set(bins.particles.recent.joined().map { ($0.position.x * 1000).rounded() }) == xs,
               "a change of how they are drawn remakes the frames heard")
         let still = bins.particles.version
         for _ in 0..<10 { hear(0) }
-        check(bins.particles.version == still, "a frozen picture of bins holds still")
+        check(bins.particles.version == still, "a frozen picture of observations holds still")
+        // A burst: after a gap, two frames arriving in one display frame are born 1/30 s apart, as their audio was
+        // (the older in the past, never one in the future).
+        heard.snapshot = observed(heard.snapshot, 0.05, hash: drawn)
+        hear(1.0 / 30)
+        hear(1.0 / 30)
+        hear(1.0 / 30)
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: drawn)
+        hear(0.001)
+        let earlier = bins.particles.frames.last?.birth ?? 0
+        heard.snapshot = observed(heard.snapshot, 0.07, hash: drawn)
+        hear(0.001)
+        let later = bins.particles.frames.last?.birth ?? 0
+        check(abs((later - earlier) - 1.0 / 30) < 0.002 && later <= bins.clock,
+              "a burst is spread as its audio was (\(later - earlier) s apart)")
         heard.snapshot.streamID += 1
         hear()
         check(bins.particles.frames.count == 1, "a new stream starts afresh from what it hears")
-        // Bit-identical steady audio still arrives at the analysis rate; display-only redraws add nothing.
+        // Bit-identical steady audio still arrives at the analysis rate (each frame its own serial and time);
+        // display-only redraws add nothing.
         for _ in 0..<90 {
-            heard.snapshot.spectrogramSerial += 1
+            heard.snapshot = observed(heard.snapshot, 0.06, hash: drawn)
             hear(1.0 / 30)
         }
         check(bins.particles.frames.count >= 14 && bins.particles.liveCount > 0,
               "steady measured audio remains visible beyond its persistence time")
         let steadyFrames = bins.particles.frames.count
         hear(0)
-        check(bins.particles.frames.count == steadyFrames, "held measurement is not emitted twice")
+        check(bins.particles.frames.count == steadyFrames, "a held measurement is not emitted twice")
         let ages = bins.heard.map(\.birth)
         look.domeBands = BandChoice(.five)
         hear(0)
         check(bins.heard.map(\.birth) == ages && bins.particles.frames.count == steadyFrames,
               "band switches preserve the measured history and its ages")
         let bodyEvaluations = bins.easedFrames
-        heard.snapshot.spectrogramSerial += 1
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: drawn)
         hear()
         check(bins.easedFrames == bodyEvaluations, "Radiant never uploads the unused level grid")
+        // The same frame on the next display frames (the analysis is slower than the display) is not added again.
+        let newest = bins.particles.frames.last?.birth
+        hear()
+        hear()
+        check(bins.particles.frames.last?.birth == newest, "a frame shown on several display frames is added once")
+        // Another geometry drawn (the user changed the layout): no particle of the old one stays, and observations
+        // still computed with the old one are never drawn; those with the new one are.
+        var moved = heard.geometry.placements
+        moved[Role.left].azimuth = -40
+        heard.geometry = SpatialGeometry(placements: moved, roles: heard.layout.roles)
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: drawn)
+        hear()
+        check(bins.particles.liveCount == 0 && bins.waitingForGeometry && bins.refusedFrames >= 1,
+              "observations of the old geometry are not drawn after a layout change, and none of its particles stay")
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: heard.geometry.hash)
+        hear()
+        check(bins.particles.liveCount > 0 && !bins.waitingForGeometry, "observations of the new geometry are drawn")
+        // A plugin before build 98: its bins (the standard layout's) are drawn only while the standard layout is.
+        let lastDrawn = bins.particles.frames.last?.birth
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: 0, source: .legacy)
+        hear()
+        check(bins.waitingForGeometry && bins.particles.frames.last?.birth == lastDrawn,
+              "a plugin's standard-layout bins are not drawn beside a custom layout")
+        heard.geometry = SpatialGeometry.standard(roles: heard.layout.roles)
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: 0, source: .legacy)
+        hear()
+        check(!bins.waitingForGeometry && bins.particles.liveCount > 0, "…and drawn with the standard layout")
         // A held measured frame starts with the one observation available, not a fabricated trail.
         let heldScene = NebulaScene(device: nil)
         heldScene.update(frame: heard, geometry: geometry, dt: 0, displayDt: 0, options: look, presence: 1)
         check(heldScene.particles.frames.count == 1, "first frozen measurement has no invented past")
+        // The bare observations: the newest frame only, no spread, glint, glow or depth shading.
+        look.nebula.rawPoints = true
+        heard.snapshot = observed(heard.snapshot, 0.06, hash: 0, source: .legacy)
+        hear()
+        for _ in 0..<6 {
+            heard.snapshot = observed(heard.snapshot, 0.06, hash: 0, source: .legacy)
+            hear(1.0 / 30)
+        }
+        check(bins.raw && bins.camera.blur == 0 && bins.camera.sparkGain == 0 && bins.camera.depthFade == 0
+                  && bins.look.glowNear == 0 && bins.uniforms.spare == 0 && bins.particles.frames.count <= 2,
+              "raw points: only the newest frame, nothing smeared, glinting or glowing (\(bins.particles.frames.count) frames)")
+        look.nebula.rawPoints = false
         // Hover data must expire with the particles, even if no replacement frame arrives.
         bins.particles.prune(clock: bins.clock + 10, lifetime: 0.5)
         check(bins.particles.liveCount == 0 && bins.particles.recent.isEmpty,
@@ -1429,6 +1871,149 @@ extension NebulaScene {
             return failures == 0
         } catch {
             print("FAIL GPU transitions: \(error)")
+            return false
+        }
+    }
+}
+
+extension NebulaScene {
+    /// The three coordinate frames kept apart and checked against each other (`--test-spatial-projection`): the
+    /// observations' mathematical positions, their projection by the CPU (`DomeGeometry.project`, which the labels,
+    /// markers and hover readout use), and where the GPU actually draws them (each particle's brightness centroid in the
+    /// rendered image, raw points: no smear, glint, glow or depth shading). Several cameras, the directions and the
+    /// meters mapping, points below the ear plane. Also the hover readout at each projected point. Returns whether every
+    /// centroid is within 0.5 logical points of the CPU's projection and every readout names the right direction.
+    static func checkProjection() -> Bool {
+        do {
+            let gpu = try MeterGPU.shared.get()
+            let size = CGSize(width: 520, height: 440), scale = 2
+            let width = Int(size.width) * scale, height = Int(size.height) * scale
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.storageMode = .shared
+            descriptor.usage = .renderTarget
+            guard let target = gpu.device.makeTexture(descriptor: descriptor) else { throw MetalError.allocation }
+            var failures = 0, worst = 0.0, worstReading = 0.0, checked = 0
+            let layout = SpeakerLayout.s714
+            var below = SpatialGeometry.standardPlacements(sidesAtNinety: true)
+            below[Role.leftTopRear] = SpeakerPlacement(azimuth: -135, elevation: -25)
+            below[Role.rightTopRear] = SpeakerPlacement(azimuth: 135, elevation: -25)
+            var meters = below
+            for role in 0..<Role.count { meters[role].distance = 2.5 }
+            meters[Role.left].distance = 1.5
+            meters[Role.rightTopRear].distance = 3
+            let geometries = [SpatialGeometry.standard(roles: layout.roles),
+                              SpatialGeometry(placements: below, roles: layout.roles),
+                              SpatialGeometry(placements: meters, mapping: .positions, roles: layout.roles)]
+            let poses = [DomePose(view: .perspective, yaw: 0, pitch: DomeGeometry.defaultPitch, zoom: 1),
+                         DomePose(view: .perspective, yaw: 37, pitch: 50, zoom: 1.4),
+                         DomePose(view: .top, yaw: -20, pitch: 90, zoom: 1),
+                         DomePose(view: .side, yaw: 90, pitch: 0, zoom: 1)]
+            for geometry in geometries {
+                // Points where the observations would put sound: on speakers, between them, and below the ear plane.
+                let roles = [Role.left, Role.right, Role.center, Role.leftSurround, Role.leftTopFront, Role.rightTopRear]
+                var points = roles.compactMap { geometry.position(role: $0) }.map { SIMD3<Float>(Float($0.x), Float($0.y), Float($0.z)) }
+                let l = points[0], r = points[1]
+                points.append((2 * l + r) / 3)
+                points.append((points[5] + l) / 2)
+                for pose in poses {
+                    let scene = NebulaScene(device: gpu.device)
+                    var frame = CanvasFrame(running: true)
+                    frame.layout = layout
+                    frame.geometry = geometry
+                    var options = DisplayOptions()
+                    options.nebula.style = .radiant
+                    options.nebula.rawPoints = true
+                    options.domeView = pose.elevation == 90 ? .top : (pose.elevation == 0 ? .side : .perspective)
+                    frame.snapshot.spatialField[SpatialField.status] = 1
+                    // One observation per band, each band equally loud, so every particle has the same light.
+                    var v = [Float](repeating: 0, count: SpatialObservations.first)
+                    typealias H = SpatialObservations.Header
+                    v[H.status] = 1; v[H.version] = SpatialObservations.version; v[H.source] = SpatialObservations.Source.measured.rawValue
+                    v[H.mapping] = Float(geometry.mapping.rawValue); v[H.sampleRate] = 48_000; v[H.windowLength] = 8_192; v[H.zones] = 1
+                    v[H.serial] = 1; v[H.count] = Float(points.count)
+                    v.withUnsafeMutableBufferPointer { p in
+                        SpatialObservations.store(geometry.hash, parts: 4, at: p.baseAddress! + H.hash)
+                        SpatialObservations.store(48_000, parts: 3, at: p.baseAddress! + H.windowEnd, bits: 24)
+                    }
+                    var list: [Float] = []
+                    for (i, p) in points.enumerated() {
+                        let band = 10 + 8 * i
+                        v[SpatialObservations.counts + band] = 1
+                        let hz = Float(SpatialField.centre(band))
+                        list += [p.x, p.y, p.z, 1e-3, hz, hz, hz, 0, 0]
+                    }
+                    frame.snapshot.spatialObservations = v + list
+                    let g = DomeGeometry(size: size, view: options.domeView, pose: pose, lower: geometry.reachesBelow(roles: layout.roles))
+                    scene.update(frame: frame, geometry: g, dt: 1.0 / 60, displayDt: 1.0 / 60, options: options, presence: 1)
+                    guard let command = gpu.queue.makeCommandBuffer() else { throw MetalError.allocation }
+                    scene.encodeOffscreen(command, gpu: gpu, pixels: CGSize(width: width, height: height))
+                    let pass = MTLRenderPassDescriptor()
+                    pass.colorAttachments[0].texture = target
+                    pass.colorAttachments[0].loadAction = .clear
+                    pass.colorAttachments[0].storeAction = .store
+                    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+                    guard let encoder = command.makeRenderCommandEncoder(descriptor: pass) else { throw MetalError.allocation }
+                    scene.encode(encoder, gpu: gpu)
+                    encoder.endEncoding()
+                    command.commit()
+                    command.waitUntilCompleted()
+                    if let error = command.error { throw error }
+                    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+                    target.getBytes(&pixels, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+                    let toModel = 1 / geometry.extent(roles: layout.roles)
+                    let projected = points.map { p in
+                        g.project(DomeGeometry.Point(Double(p.x), Double(p.z), Double(p.y)) * (geometry.mapping == .positions ? toModel : 1))
+                    }
+                    for (i, point) in projected.enumerated() {
+                        // Skip points another one would overlap on screen in this camera.
+                        let clear = projected.enumerated().allSatisfy { j, q in j == i || hypot(q.x - point.x, q.y - point.y) > 12 }
+                        guard clear, point.x > 10, point.y > 10, point.x < size.width - 10, point.y < size.height - 10 else { continue }
+                        // The brightness centroid within 8 points of the CPU's projection, in pixels of the target.
+                        var sum = 0.0, sx = 0.0, sy = 0.0
+                        let cx = Int(point.x * CGFloat(scale)), cy = Int(point.y * CGFloat(scale))
+                        for y in max(0, cy - 16)..<min(height, cy + 17) {
+                            for x in max(0, cx - 16)..<min(width, cx + 17) {
+                                let o = (y * width + x) * 4
+                                let luma = 0.0722 * Double(pixels[o]) + 0.7152 * Double(pixels[o + 1]) + 0.2126 * Double(pixels[o + 2])
+                                guard luma > 2 else { continue }
+                                sum += luma; sx += luma * (Double(x) + 0.5); sy += luma * (Double(y) + 0.5)
+                            }
+                        }
+                        checked += 1
+                        guard sum > 0 else { failures += 1; print("FAIL projection: nothing drawn at \(point)"); continue }
+                        let gx = sx / sum / Double(scale), gy = sy / sum / Double(scale)
+                        let error = hypot(gx - Double(point.x), gy - Double(point.y))
+                        worst = max(worst, error)
+                        if error > 0.5 {
+                            failures += 1
+                            print(String(format: "FAIL projection: GPU centroid %.2f pt from the CPU's (point %d, %@ mapping, camera %.0f/%.0f°)",
+                                         error, i, geometry.mapping == .positions ? "meters" : "directions", pose.turn, pose.elevation))
+                        }
+                        // The hover readout at the projected point names the observation's own direction.
+                        if let probe = scene.probe(at: point, layout: layout) {
+                            let p = points[i]
+                            let d = p / max(1e-6, simd_length(p))
+                            let azimuth = Double(atan2(d.x, d.y)) * 180 / .pi, elevation = Double(asin(d.z)) * 180 / .pi
+                            var da = abs(probe.azimuth - azimuth).truncatingRemainder(dividingBy: 360)
+                            if da > 180 { da = 360 - da }
+                            let off = max(da * cos(elevation * .pi / 180), abs(probe.elevation - elevation))
+                            worstReading = max(worstReading, off)
+                            if off > 0.5 {
+                                failures += 1
+                                print(String(format: "FAIL readout: %.2f° off (point %d)", off, i))
+                            }
+                        } else {
+                            failures += 1
+                            print("FAIL readout: nothing read at point \(i)")
+                        }
+                    }
+                }
+            }
+            print(String(format: "Spatial projection: %d points, GPU centroid within %.3f pt of the CPU projection, readouts within %.3f°, %d failures",
+                         checked, worst, worstReading, failures))
+            return failures == 0 && checked > 40
+        } catch {
+            print("FAIL projection: \(error)")
             return false
         }
     }

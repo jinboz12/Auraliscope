@@ -23,10 +23,13 @@
 //   plugin → app   RESULT    while subscribed: the newest analysis state plus the spectrogram and waveform columns
 //                            the subscriber has not had (fields: Sources/AnalysisCore/ResultProtocol.swift)
 //   plugin → app   ACK       the outcome of a COMMAND
+//   plugin → app   SPATIAL_ACK  what came of a SPATIAL_CONFIG: applied (its revision and hash) or why not (build 98)
 //   plugin → app   FOCUS     the user clicked "Show in Auraliscope Labs": make this instance the active source
 //   app → plugin   WELCOME   reply to HELLO: u32 protocol_version, u32 reserved, then fields
 //   app → plugin   SUBSCRIBE / UNSUBSCRIBE   start or stop RESULTs for this instance (a new number each time)
 //   app → plugin   COMMAND   reset, reset true peak, pause or resume the instance's measurement
+//   app → plugin   SPATIAL_CONFIG  the speaker geometry and spatial options the display draws with, for a plugin
+//                            with ABR_CAPABILITY_SPATIAL_CONFIG only (an older one would close a message this long)
 //
 // Results are never replayed: every RESULT names the subscription it answers and carries the plugin's current
 // state, so a receiver drops anything of an earlier subscription and never mistakes queued results for new ones.
@@ -47,10 +50,12 @@ enum {
     ABR_MSG_FOCUS = 5,        // no payload
     ABR_MSG_RESULT = 6,
     ABR_MSG_ACK = 7,
+    ABR_MSG_SPATIAL_ACK = 8,
     ABR_MSG_WELCOME = 16,
     ABR_MSG_SUBSCRIBE = 17,
     ABR_MSG_UNSUBSCRIBE = 18,  // no payload
     ABR_MSG_COMMAND = 19,
+    ABR_MSG_SPATIAL_CONFIG = 20,
 };
 // Version 2 types, never sent by version 3: FORMAT (3) and AUDIO (4).
 
@@ -115,6 +120,25 @@ enum {
     ABR_CAPABILITY_RESET = 1u << 1,
     ABR_CAPABILITY_RESET_TRUE_PEAK = 1u << 2,
     ABR_CAPABILITY_PAUSE = 1u << 3,
+    ABR_CAPABILITY_SPATIAL_CONFIG = 1u << 4,  // applies SPATIAL_CONFIG and then sends observations (RESULT 58)
+};
+
+// SPATIAL_CONFIG: fields written and read by the analysis core (SpatialConfigWire.swift); the transport only checks the
+// length. SPATIAL_ACK outcomes, and its fields.
+#define ABR_SPATIAL_CONFIG_MAX 1000u
+enum {
+    ABR_SPATIAL_APPLIED = 0,        // in force from the next spatial transform; RESULT 58 carries its hash
+    ABR_SPATIAL_INVALID = 1,        // a field missing, malformed or out of range, or unusable for this bus: unchanged
+    ABR_SPATIAL_HASH_MISMATCH = 2,  // the content does not match its hash: unchanged
+    ABR_SPATIAL_UNSUPPORTED = 3,    // a version or option this plugin does not know: unchanged
+};
+enum {  // SPATIAL_ACK
+    ABR_SPATIAL_ACK_REVISION = 1,    // u32: the configuration's revision
+    ABR_SPATIAL_ACK_HASH = 2,        // u64: its content hash (0 when refused)
+    ABR_SPATIAL_ACK_OUTCOME = 3,     // u32: ABR_SPATIAL_*
+    ABR_SPATIAL_ACK_GENERATION = 4,  // u32: the analysis generation it applies to
+    ABR_SPATIAL_ACK_FRAMES = 5,      // u64: frames that generation had analysed when it took effect
+    ABR_SPATIAL_ACK_SESSION_ID = 6,  // bytes[16]: the instance that answered
 };
 
 // COMMAND codes and ACK outcomes.
@@ -147,6 +171,12 @@ enum {  // HELLO, after the fixed prefix
 };
 enum {  // WELCOME, after the fixed prefix
     ABR_WELCOME_SCHEMA = 1,          // u32: newest RESULT schema the application reads
+    ABR_WELCOME_CAPABILITIES = 2,    // u32: ABR_DISPLAY_* (after build 98; absent: none)
+};
+// WELCOME capabilities: what the display does with the results.
+enum {
+    ABR_DISPLAY_KEEPS_OBSERVATIONS = 1u << 0,  // keeps a RESULT's observations (tag 58) until one carries new ones, so
+                                               // each observation frame is sent to it once
 };
 enum {  // STATUS
     ABR_STATUS_STATE = 1,            // u32: ABR_STATE_*

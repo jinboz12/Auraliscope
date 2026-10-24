@@ -14,6 +14,9 @@ import Foundation
 ///   tick; `waveformPerTick` paces a catch-up). A gap leaves a flat notch, as a break does.
 /// - A new generation (a reset, a format change) or another source is a new stream: the displays clear their
 ///   histories, as they do when local capture restarts.
+/// - The spatial observations (RESULT 58) stand until a result carries new ones: a plugin sends each frame once to a
+///   display that keeps them (WELCOME capability `ABR_DISPLAY_KEEPS_OBSERVATIONS`), about every second result. Every
+///   result is looked at for them, not only the newest at a publish, so a frame is never passed over.
 package final class ResultAssembler {
     package static let spectrogramLag = 8
     package static let maxBlankColumns = 30
@@ -33,6 +36,12 @@ package final class ResultAssembler {
     private var waveSerial = 0
     private var waveWindow = [Float](repeating: 0, count: WaveformEnvelope.publishedFloats)
     private var pendingState = false
+    /// The stream's newest observations as received (tag 58), or the bins of the standard layout (tag 54: a plugin before
+    /// build 98, or one no display configured), which every result carries; nil when the newest result has no spatial
+    /// field. `spatialPending`: not yet in the snapshot.
+    private enum SpatialFrame { case observations([UInt8]), points([UInt8]) }
+    private var spatialFrame: SpatialFrame?
+    private var spatialPending = false
     /// Counters for diagnostics and tests.
     package private(set) var received = 0
     package private(set) var rejected = 0
@@ -64,6 +73,20 @@ package final class ResultAssembler {
             waveSerial = 0
             for i in waveWindow.indices { waveWindow[i] = 0 }
             values = [Float](repeating: 0, count: SnapshotSlots.total)
+            spatialFrame = nil
+            spatialPending = false
+        }
+        // Observations, or bins, whenever a result carries them; a result without a field ends them. One with a field
+        // and neither leaves the newest standing (its frame was sent before), or none (a plugin before build 87).
+        if let bytes = message.spatialObservations {
+            spatialFrame = .observations(bytes)
+            spatialPending = true
+        } else if let bytes = message.spatialPoints {
+            spatialFrame = .points(bytes)
+            spatialPending = true
+        } else if message.spatialField == nil && spatialFrame != nil {
+            spatialFrame = nil
+            spatialPending = true
         }
         // Spectrogram: columns after the newest one taken, oldest first; a gap before them leaves blank columns.
         let rows = message.spectrogramRows
@@ -173,13 +196,28 @@ package final class ResultAssembler {
                 field.update(repeating: 0, count: SpatialField.floats)
                 if m.spectrumChannels == 1 { field[SpatialField.status] = SpatialFieldWire.unsupported }
             }
-            // Its bins, from a plugin that sends them (build 87 and later); otherwise none, and the display draws
-            // particles from the field's statistics.
+            // Its observations, with the hash of the geometry the plugin used (build 98 and later, once this display
+            // configured it); or its bins of the standard layout, as observations marked so; otherwise none, and the
+            // display draws particles from the field's statistics. Decoded when new; until then the last stand.
             let points = buffer.baseAddress! + SnapshotSlots.spatialPoints
-            if let bytes = m.spatialPoints, m.spatialField != nil {
-                bytes.withUnsafeBytes { _ = SpatialPointsWire.decode($0, into: points) }
-            } else {
+            let observations = buffer.baseAddress! + SnapshotSlots.spatialObservations
+            if m.spatialField == nil {
+                spatialPending = false
                 points.update(repeating: 0, count: SpatialPoints.floats)
+                observations.update(repeating: 0, count: SpatialObservations.first)
+            } else if spatialPending {
+                spatialPending = false
+                points.update(repeating: 0, count: SpatialPoints.floats)
+                switch spatialFrame {
+                case .observations(let bytes)?:
+                    bytes.withUnsafeBytes { _ = SpatialObservationsWire.decode($0, sampleRate: m.sampleRate, into: observations) }
+                case .points(let bytes)?:
+                    bytes.withUnsafeBytes { _ = SpatialPointsWire.decode($0, into: points) }
+                    SpatialObservations.fromLegacy(points: points, into: observations)
+                    observations[SpatialObservations.Header.sampleRate] = Float(m.sampleRate)
+                case nil:
+                    observations.update(repeating: 0, count: SpatialObservations.first)
+                }
             }
         }
         let detected: ChannelFormat = m.detectedFormat == UInt32(ChannelFormat.spatial.rawValue) ? .spatial : .stereo
@@ -248,8 +286,20 @@ package final class ResultAssembler {
             m.spatialField = [SpatialFieldWire.version, 0, UInt8(SpatialField.bandCount), UInt8(SpatialField.coherentSlots),
                               UInt8(m.channels), 0, 0, 0, 0, 0, 0, 0]
         }
-        if m.spatialPoints != nil {
-            m.spatialPoints = [SpatialPointsWire.version, 0, UInt8(SpatialField.bandCount), UInt8(SpatialPoints.perBand), 0, 0]
+        switch spatialFrame {
+        case .points?:
+            spatialFrame = .points([SpatialPointsWire.version, 0, UInt8(SpatialField.bandCount), UInt8(SpatialPoints.perBand), 0, 0])
+            spatialPending = true
+        case .observations(let bytes)? where bytes.count >= SpatialObservationsWire.headerBytes:
+            // The same geometry (its hash and mapping kept), with nothing observed.
+            var silent = Array(bytes.prefix(SpatialObservationsWire.headerBytes))
+            silent[1] = 0
+            silent[3] = 1
+            for i in 34..<36 { silent[i] = 0 }
+            spatialFrame = .observations(silent)
+            spatialPending = true
+        default:
+            break
         }
         latest = m
         pendingState = true

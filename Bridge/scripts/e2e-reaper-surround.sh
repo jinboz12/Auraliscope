@@ -3,7 +3,7 @@
 # (build-dev-vst3.sh: the source under a class ID of its own, so REAPER cannot load an installed Bridge instead), and
 # plays the 12-channel test WAV on a 12-channel track through it in the private REAPER profile (daw-reaper.sh vst3
 # surround) twice: once watched by the probe (the plugin's results against Auraliscope's own analysis of the signal),
-# once by Auraliscope (what it shows). REAPER must give the plugin all 12 channels as 7.1.4, and each channel must
+# once by Auraliscope LABS (what it shows). REAPER must give the plugin all 12 channels as 7.1.4, and each channel must
 # read its own level on its own speaker. Private sockets; REAPER and LABS must not be running. Logs:
 # .build/bridge/validation/.
 set -uo pipefail
@@ -36,7 +36,7 @@ echo "== REAPER 7.1.4 track, probe: $(tail -1 "$logs/probe-reaper-surround.txt")
 grep -hE "pins|takes|playing\?" "$logs/reaper-vst3-surround.txt" | sed 's/^/   /'
 grep -hE "STATUS|roles|names|switched|band energy|integrated|momentary|spectrum within|FAIL" "$logs/probe-reaper-surround.txt" | sed 's/^/   /'
 
-# 2. Auraliscope: the plugin's own format, Immersive by Auto, every channel on its speaker.
+# 2. Auraliscope LABS: the plugin's own format, Immersive by Auto, every channel on its speaker.
 app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
 "$app" --diagnostic --bridge-selftest "REAPER vst3 track" --expect-layout 7.1.4 --expect-format spatial --expect-channels 12 \
     --expect-rate 48000 --expect-peak-db $peaks --measure-seconds 4 -formatMode auto -inputDeviceUID daw.00 \
@@ -48,7 +48,7 @@ waited=0
 while kill -0 $app_pid 2>/dev/null && (( waited < 60 )); do sleep 1; (( ++waited )); done
 kill $app_pid 2>/dev/null
 wait $app_pid || failed=1
-echo "== REAPER 7.1.4 track, Auraliscope: $(tail -1 "$logs/app-reaper-surround.txt")"
+echo "== REAPER 7.1.4 track, Auraliscope LABS: $(tail -1 "$logs/app-reaper-surround.txt")"
 grep -hE '\[bridge-selftest\] (streaming|stream:|bus|integrated|FAIL)' "$logs/app-reaper-surround.txt" | sed 's/^/   /'
 echo; (( failed )) && echo "REAPER immersive check FAILED" || echo "REAPER immersive check passed"
 exit $failed

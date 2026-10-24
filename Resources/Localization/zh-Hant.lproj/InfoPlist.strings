@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Auraliscope";
+"NSMicrophoneUsageDescription" = "Auraliscope 測量你所選的音訊輸入：頻譜、聲道電平與響度，從單聲道到 9.1.6。音訊絕不會被錄製或上傳。";
+"NSAudioCaptureUsageDescription" = "Auraliscope 測量各 App 播放到你所選輸出的聲音。音訊絕不會被錄製或上傳。";

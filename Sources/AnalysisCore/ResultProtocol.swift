@@ -218,6 +218,11 @@ package enum ResultTag: UInt16 {
                                    // (build 80 and later)
     case spatialPoints = 54        // bytes: the same transform's bins, each at its amplitude-weighted centre of
                                    // gravity of the speakers (`SpatialPointsWire`), with tag 53 (build 87 and later)
+                                   // until the observations (tag 58) of a configured geometry are in force
+    case spatialObservations = 58  // bytes: the same transform's observations with the configured geometry's hash
+                                   // (`SpatialObservationsWire`), with tag 53, once the display has sent SPATIAL_CONFIG
+                                   // (build 98 and later); to a display that keeps them (WELCOME capability 1), only
+                                   // in a result whose frame it has not been sent (after build 98)
     case dcOffset = 55             // f32[channels]: each channel's DC offset, linear, 1 s mean (build 90 and later)
     case infrasonic = 56           // f32[channels]: each channel's mean square below 20 Hz without DC, linear
     case healthStatus = 57         // f32: 1 settled, 0.5 settling (the 1 s integrators have not run a full second)
@@ -297,6 +302,9 @@ package struct ResultMessage {
     package var spatialField: [UInt8]?
     /// The bins as sent (`SpatialPointsWire`); nil from a plugin before build 87 or while only L and R are analysed.
     package var spatialPoints: [UInt8]?
+    /// The observations as sent (`SpatialObservationsWire`); nil from a plugin before build 98, before the display's
+    /// SPATIAL_CONFIG, while only L and R are analysed, or when the display was sent this frame already (it keeps it).
+    package var spatialObservations: [UInt8]?
     /// DC offset and infrasonic mean square per channel, and their status; empty from a plugin before build 90.
     package var dcOffset: [Float] = [], infrasonic: [Float] = []
     package var healthStatus: Float = 0
@@ -401,6 +409,7 @@ package struct ResultMessage {
                 take(field.bytes(limit: SpatialFieldWire.headerBytes + SpatialField.bandCount * perChannel
                                  + SpatialField.bandCount * SpatialField.coherentSlots * SpatialFieldWire.componentBytes)) { m.spatialField = $0 }
             case .spatialPoints: take(field.bytes(limit: SpatialPointsWire.largest)) { m.spatialPoints = $0 }
+            case .spatialObservations: take(field.bytes(limit: SpatialObservationsWire.largest)) { m.spatialObservations = $0 }
             case .spectrogramFirst: take(field.u64) { m.spectrogramFirst = $0 }
             case .spectrogramRows:
                 take(field.u32.flatMap { $0 == UInt32(spectrogramRows) ? Int($0) : nil }) { m.spectrogramRows = $0 }

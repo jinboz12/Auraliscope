@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Real plugin binaries → plugin-side analysis → results → Auraliscope's displays, checked by the app's own
+# Real plugin binaries → plugin-side analysis → results → Auraliscope Labs's displays, checked by the app's own
 # --bridge-selftest against the known signal (and, with --compare-reference, against Labs' own analysis of it).
 # Every measurement also checks that Labs shows the plugin's results and analyses nothing itself. Needs a logged-in GUI session; no microphone or system-audio
 # permission (the app is pointed at a DAW source from launch). Logs go to .build/bridge/validation/app-*.txt.

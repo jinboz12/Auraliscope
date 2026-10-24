@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Builds Auraliscope Bridge as a VST3 and an AUv2 bundle (universal: arm64 + x86_64), signs them ad hoc and puts
-# them in experimental-dist/Auraliscope <label> build <n>/. Nothing is installed; see install-plugins.sh.
+# them in experimental-dist/Auraliscope Labs <label> build <n>/. Nothing is installed; see install-plugins.sh.
 #
 # Plain clang, no CMake: the VST3 SDK and AudioUnitSDK sources the wrappers need are compiled directly.
 set -euo pipefail
@@ -103,7 +103,10 @@ bundle() {  # bundle <name.ext> <plist> <exports> <objects…>
     plutil -lint "$contents/Info.plist" >/dev/null
     printf 'BNDL????' > "$contents/PkgInfo"
     clang++ "${link_flags[@]}" -exported_symbols_list "$exports" "$@" -o "$contents/MacOS/Auraliscope Bridge"
+    # Local symbols only: the exported factory entry points the hosts look up stay.
+    strip -x "$contents/MacOS/Auraliscope Bridge"
     cp Bridge/THIRD_PARTY_NOTICES.md "$contents/Resources/"
+    cp LICENSE COPYRIGHT.md docs/SOURCE_DISTRIBUTION.md docs/ASSET_RIGHTS.md "$contents/Resources/"
     find "$stage/$name" -name '._*' -delete
     xattr -cr "$stage/$name"
     codesign --force --sign - --timestamp=none "$stage/$name"

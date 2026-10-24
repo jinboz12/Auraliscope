@@ -12,7 +12,7 @@
 // the rest, never the audio thread:
 //   the analysis thread (BridgeAnalysisHub.cpp) drains each instance's ring into its analyser (the shared analysis
 //     core, Sources/AnalysisCore) and prepares the newest result for sending;
-//   the sender thread (BridgeSender.cpp) talks to Auraliscope: identity, status, results, commands.
+//   the sender thread (BridgeSender.cpp) talks to Auraliscope Labs: identity, status, results, commands.
 // The analysis runs whether or not Labs is open and whether or not the plugin window is.
 
 #include <atomic>
@@ -152,6 +152,10 @@ private:
     struct Ack {
         uint32_t id, code, outcome, generation, measurement;
     };
+    struct SpatialAck {
+        uint32_t revision, outcome, generation;
+        uint64_t hash, frames;
+    };
 
     uint32_t effectiveState() const noexcept;
     void growRing(uint32_t channels);
@@ -164,6 +168,8 @@ private:
     void sendResult();
     void sendAcks();
     void runCommands();
+    void runSpatial();
+    void applySpatial(const uint8_t *bytes, uint32_t length);
     bool startGeneration(double sampleRate, uint32_t channels, uint64_t roles, uint32_t epoch);
 
     const uint32_t format_;
@@ -238,16 +244,29 @@ private:
     std::vector<Command> commands_;              // reserved up front; bounded
     std::vector<Ack> acks_;
     // The newest RESULT, encoded by the analysis thread for the sender: replaced while unsent, so a slow receiver
-    // gets the latest state, and the columns it has not had are carried again until one is sent.
+    // gets the latest state, and the columns (and the observation frame) it has not had are carried again until one
+    // is sent.
     std::mutex mailboxLock_;
     std::unique_ptr<uint8_t[]> mailbox_;
     uint32_t mailboxBytes_ = 0;
     uint32_t mailboxSubscription_ = 0;
     uint32_t mailboxGeneration_ = 0;
-    uint64_t mailboxSpectrogram_ = 0, mailboxWaveform_ = 0;
-    // Columns delivered to the current subscription (serials of `sentGeneration_`), under `mailboxLock_`.
+    uint64_t mailboxSpectrogram_ = 0, mailboxWaveform_ = 0, mailboxObservations_ = 0;
+    // Columns delivered to the current subscription (serials of `sentGeneration_`), and the observation frame it holds
+    // (0: none), under `mailboxLock_`.
     uint32_t sentSubscription_ = 0, sentGeneration_ = 0;
-    uint64_t sentSpectrogram_ = 0, sentWaveform_ = 0;
+    uint64_t sentSpectrogram_ = 0, sentWaveform_ = 0, sentObservations_ = 0;
+    // The display's spatial geometry (SPATIAL_CONFIG): kept by the sender thread as it arrives, applied by the analysis
+    // thread at its next pass and to every later generation, its outcome acknowledged by the sender; a disconnection
+    // asks for the standard layout again. Under `spatialLock_` (the applied copy: analysis thread only).
+    std::mutex spatialLock_;
+    uint8_t spatialPending_[ABR_SPATIAL_CONFIG_MAX];
+    uint32_t spatialPendingBytes_ = 0;
+    bool spatialPendingReset_ = false;
+    SpatialAck spatialAcks_[4];
+    uint32_t spatialAckCount_ = 0;
+    uint8_t spatialApplied_[ABR_SPATIAL_CONFIG_MAX];
+    uint32_t spatialAppliedBytes_ = 0;
 
     // Sender thread state (the atomics are also read by other threads).
     std::atomic<uint32_t> subscription_{0};     // 0: not sending results
@@ -255,6 +274,9 @@ private:
     std::atomic<uint32_t> spectrumChannels_{0}; // what its spectrum sums (ABR_SUBSCRIBE_SPECTRUM)
     std::atomic<uint32_t> spatialCoherence_{0}; // its spatial field's coherence threshold, ‰ (ABR_SUBSCRIBE_COHERENCE)
     std::atomic<bool> connected_{false};
+    // The display keeps a RESULT's observations until one carries new ones (WELCOME, ABR_DISPLAY_KEEPS_OBSERVATIONS):
+    // each frame is sent to it once. Otherwise (a display of build 98) every result carries them.
+    std::atomic<bool> displayKeepsObservations_{false};
     std::atomic<bool> receiverTooOld_{false};
     std::atomic<bool> receiverTooNew_{false};
     std::atomic<uint64_t> resultsSent_{0};

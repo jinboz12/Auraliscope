@@ -25,7 +25,7 @@ struct LoudnessStandard: Hashable, Identifiable {
     /// The specification measures dialogue loudness (dialogue-gated). The meter measures the full programme with the
     /// BS.1770 gates, so its reading can differ on programmes with music and effects louder than speech.
     var dialogue = false
-    /// A published specification keeps its own name; a description of a use is a localization key.
+    /// Technical standards retain their names; commercial presets use neutral descriptions.
     let names: [String]
 
     /// Menu label in the current language.
@@ -36,23 +36,23 @@ struct LoudnessStandard: Hashable, Identifiable {
     /// From loudest to quietest.
     static let all: [LoudnessStandard] = [
         LoudnessStandard(id: "club", target: -9, ceiling: -1, kind: .reference, names: [LKey("Loud master · club, EDM")]),
-        LoudnessStandard(id: "spotify-loud", target: -11, ceiling: -2, kind: .normalization, names: ["Spotify Loud"]),
+        LoudnessStandard(id: "spotify-loud", target: -11, ceiling: -2, kind: .normalization, names: [LKey("Streaming · loud")]),
         LoudnessStandard(id: "streaming", target: -14, ceiling: -1, kind: .normalization,
-                         names: [LKey("Streaming · Spotify, YouTube, Tidal")]),
-        LoudnessStandard(id: "deezer", target: -15, ceiling: -1, kind: .normalization, names: ["Deezer"]),
-        LoudnessStandard(id: "apple", target: -16, ceiling: -1, kind: .normalization, names: [LKey("Apple Music · podcasts")]),
-        LoudnessStandard(id: "atmos-music", target: -18, ceiling: -1, kind: .maximum, names: ["Dolby Atmos Music"]),
+                         names: [LKey("Music streaming")]),
+        LoudnessStandard(id: "deezer", target: -15, ceiling: -1, kind: .normalization, names: [LKey("Music streaming")]),
+        LoudnessStandard(id: "apple", target: -16, ceiling: -1, kind: .normalization, names: [LKey("Music & podcasts")]),
+        LoudnessStandard(id: "atmos-music", target: -18, ceiling: -1, kind: .maximum, names: [LKey("Immersive music")]),
         LoudnessStandard(id: "aswg-mobile", target: -18, ceiling: -1, kind: .delivery(tolerance: 2),
                          names: [LKey("Games · mobile (ASWG-R001)")]),
         LoudnessStandard(id: "r128", target: -23, ceiling: -1, kind: .delivery(tolerance: 0.5), names: ["EBU R128"]),
-        LoudnessStandard(id: "arib", target: -24, ceiling: -1, kind: .reference, names: ["ARIB TR-B32"]),
+        LoudnessStandard(id: "arib", target: -24, ceiling: -1, kind: .delivery(tolerance: 1), names: ["ARIB TR-B32"]),
         LoudnessStandard(id: "aswg-console", target: -24, ceiling: -1, kind: .delivery(tolerance: 2),
                          names: [LKey("Games · console (ASWG-R001)")]),
         LoudnessStandard(id: "atsc", target: -24, ceiling: -2, kind: .delivery(tolerance: 2), names: ["ATSC A/85"]),
-        LoudnessStandard(id: "op59", target: -24, ceiling: -2, kind: .delivery(tolerance: 1), names: ["Free TV OP-59"]),
-        LoudnessStandard(id: "prime", target: -24, ceiling: -2, kind: .delivery(tolerance: 2), names: ["Prime Video"]),
+        LoudnessStandard(id: "op59", target: -24, ceiling: -2, kind: .delivery(tolerance: 1), names: ["OP-59"]),
+        LoudnessStandard(id: "prime", target: -24, ceiling: -2, kind: .delivery(tolerance: 2), names: [LKey("Online video")]),
         LoudnessStandard(id: "netflix", target: -27, ceiling: -2, kind: .delivery(tolerance: 2), dialogue: true,
-                         names: [LKey("Netflix · film and series")])
+                         names: [LKey("Film & series · dialogue")])
     ]
     /// True-peak ceilings offered on the summary, in dBTP.
     static let ceilings: [Double] = [-0.1, -0.5, -1, -1.5, -2, -3]
@@ -104,10 +104,6 @@ struct ComplianceResult: Equatable {
         let peakLine = peakOK ? L("TP %@ dBTP, within %@", MeterScale.tenths(Float(peakShown)), MeterScale.tenths(Float(ceiling)))
                               : L("TP %@ dBTP, above %@", MeterScale.signedTenths(Float(peakShown)), MeterScale.tenths(Float(ceiling)))
         let deltaText = MeterScale.signedTenths(Float(delta))
-        if standard?.dialogue == true {
-            return ComplianceResult(state: peakOK ? .info : .check, headline: peakOK ? L("REFERENCE") : L("CHECK"),
-                reasons: [L("Dialogue-gated loudness is not measured; this is a full-programme reference."), peakLine])
-        }
         switch standard?.kind ?? .delivery(tolerance: LoudnessStandard.customTolerance) {
         case .delivery(let tolerance):
             let inside = abs(delta) <= tolerance + 1e-9
@@ -129,7 +125,7 @@ struct ComplianceResult: Equatable {
                 line = L("Plays %@ dB quieter after normalization", MeterScale.tenths(Float(delta)))
             } else if delta < -0.05 {
                 headline = "\(deltaText) LU"
-                line = L("%@ LU below the reference; playback gain depends on the service and settings", MeterScale.tenths(Float(-delta)))
+                line = L("%@ LU below the service's level; most play it as it is", MeterScale.tenths(Float(-delta)))
             } else {
                 headline = L("ON TARGET")
                 line = L("Plays at its own level")

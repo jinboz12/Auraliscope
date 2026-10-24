@@ -23,9 +23,11 @@ import simd
 /// along the lobe's two principal axes across its direction u (a² + b² = 1 − c²; where both vanish, on the lobe's axis
 /// and right opposite it, a small ε keeps their mean). Near the lobe it is a Gaussian of the angles (S₁, S₂ the angular
 /// standard deviations); a round one is the von Mises–Fisher kernel exp(−(1 − c)/S²), so it is defined, and smooth,
-/// over the whole sphere. Directions run azimuth-major in rows of rising elevation, `step` degrees apart, the layout of
-/// the volume shader's texture, in the field's frame (x right, y front, z up). Allocates only when created and when
-/// the layout or the smoothing changes.
+/// over the whole sphere. Directions run azimuth-major in rows of rising elevation, `step` degrees apart, from −90° (the
+/// lower hemisphere, used once a speaker of the layout sits below the ear plane: `firstRow`) to +90°, the layout of the
+/// volume shader's texture, in the field's frame (x right, y front, z up). Speakers stand where the geometry puts them
+/// (`SpatialGeometry`, custom directions included); the radius stays the level. Allocates only when created and when
+/// the layout, the geometry or the smoothing changes.
 ///
 /// Every lobe also carries how its energy divides among the five analysis bands (`StereoBands`), and lobes add those
 /// as they add their energies, so the body knows, in every direction, how loud each band is heard from there: the
@@ -33,16 +35,24 @@ import simd
 /// spectral scale, `SpectralHue`, mixed by energy) and centre frequency name it in the pointer's reading.
 final class SpatialBody {
     static let azimuthSteps = 120
+    /// Rows above the ear plane (0° to 90°) and below it (−90° to −3°).
     static let elevationSteps = 30
+    static let lowerSteps = 30
+    static let rows = lowerSteps + elevationSteps + 1
+    /// The row of the ear plane (0°).
+    static let floorRow = lowerSteps
     /// Degrees between neighbouring directions.
     static let step = 3.0
-    static let count = azimuthSteps * (elevationSteps + 1)
+    static let count = azimuthSteps * rows
     static let maxLayers = StereoBands.count
 
+    /// The elevation (degrees) of grid row `row`.
+    static func elevation(row: Int) -> Double { Double(row - lowerSteps) * step }
+
     /// The grid's unit directions, in the field's frame.
-    static let directions: [SIMD3<Float>] = (0...elevationSteps).flatMap { e in
+    static let directions: [SIMD3<Float>] = (0..<rows).flatMap { r in
         (0..<azimuthSteps).map { a in
-            let d = SpeakerGeometry.direction(azimuth: Double(a) * step, elevation: Double(e) * step)
+            let d = SpeakerGeometry.direction(azimuth: Double(a) * step, elevation: elevation(row: r))
             return SIMD3(Float(d.x), Float(d.y), Float(d.z))
         }
     }
@@ -51,7 +61,7 @@ final class SpatialBody {
     /// Keeps the kernel's direction-dependent mean defined where both its axes vanish.
     static let epsilon: Float = 1e-4
     /// cos(elevation) of each row: how far a radius at that height reaches out over the floor.
-    static let floorShare: [Float] = (0...elevationSteps).map { Float(cos(Double($0) * step * .pi / 180)) }
+    static let floorShare: [Float] = (0..<rows).map { Float(cos(elevation(row: $0) * .pi / 180)) }
 
     /// One loudspeaker's image as an angle (radians, σ): `SpatialField.speakerSpread` seen from the listener, so its
     /// half-maximum width is 10.7°.
@@ -109,6 +119,9 @@ final class SpatialBody {
     }
 
     private(set) var layerCount = 0
+    /// The lowest row the body uses: the ear plane's, or the bottom of the sphere once a speaker of the layout sits
+    /// below the ear plane. Rows below it hold nothing.
+    private(set) var firstRow = SpatialBody.floorRow
     /// Per layer and direction (`count` each): the energy heard from it (mean square) and the part of it out of phase
     /// (energy × instability).
     private(set) var energy = [Float](repeating: 0, count: SpatialBody.count * SpatialBody.maxLayers)
@@ -129,8 +142,8 @@ final class SpatialBody {
     /// The LFE's mean square over every layer's bands: it has no direction, so it never shapes the body.
     private(set) var lfe: Float = 0
 
-    // Speaker kernels for the layout and smoothing last used: speaker-major, `count` each.
-    private var speakerKey: (layout: SpeakerLayout, smoothing: Double)?
+    // Speaker kernels for the layout, geometry and smoothing last used: speaker-major, `count` each.
+    private var speakerKey: (layout: SpeakerLayout, geometry: UInt64, smoothing: Double)?
     private var speakers: [(role: Int, direction: SIMD3<Float>)] = []
     private var speakerKernels: [Float] = []
     private var speakerInverse: Float = 1
@@ -157,12 +170,12 @@ final class SpatialBody {
         for layer in 0..<Self.maxLayers { lobes[layer].reserveCapacity(Role.count + 32) }
     }
 
-    /// The grid direction nearest `d` (a unit vector at or above the floor).
+    /// The grid direction nearest `d` (a unit vector).
     static func nearest(_ d: SIMD3<Float>) -> Int {
         let azimuth = atan2(Double(d.x), Double(d.y)) * 180 / .pi
-        let elevation = asin(Double(max(0, min(1, d.z)))) * 180 / .pi
+        let elevation = asin(Double(max(-1, min(1, d.z)))) * 180 / .pi
         let a = (Int((azimuth / step).rounded()) % azimuthSteps + azimuthSteps) % azimuthSteps
-        let e = max(0, min(elevationSteps, Int((elevation / step).rounded())))
+        let e = max(0, min(rows - 1, Int((elevation / step).rounded()) + lowerSteps))
         return e * azimuthSteps + a
     }
 
@@ -194,11 +207,12 @@ final class SpatialBody {
         atan2f(1.1774 * sigma, max(1e-3, distance)) / 1.1774
     }
 
-    private func prepareSpeakers(layout: SpeakerLayout, settings: Settings) {
-        if let key = speakerKey, key.layout == layout, key.smoothing == settings.smoothing { return }
-        speakerKey = (layout, settings.smoothing)
+    private func prepareSpeakers(layout: SpeakerLayout, geometry: SpatialGeometry, settings: Settings) {
+        if let key = speakerKey, key.layout == layout, key.geometry == geometry.hash, key.smoothing == settings.smoothing { return }
+        speakerKey = (layout, geometry.hash, settings.smoothing)
+        firstRow = geometry.reachesBelow(roles: layout.roles) ? 0 : Self.floorRow
         speakers = layout.speakers.compactMap { speaker in
-            guard speaker.group != .lfe, let d = SpeakerGeometry.direction(role: speaker.role, sidesAtNinety: layout.sidesAtNinety) else { return nil }
+            guard speaker.group != .lfe, let d = geometry.direction(role: speaker.role) else { return nil }
             return (speaker.role, SIMD3(Float(d.x), Float(d.y), Float(d.z)))
         }
         speakerInverse = 1 / (Self.speakerAngle * Self.speakerAngle + settings.blur)
@@ -214,8 +228,10 @@ final class SpatialBody {
     /// one, or `SpatialFieldWire.unsupported` for a source with only `roleBandPower`, each role's five band powers).
     /// `shown`: per role, whether its speaker is drawn. Lobes whose energy stays below `floor` (dBFS) everywhere are
     /// left out.
-    func evaluate(field: UnsafeBufferPointer<Float>, roleBandPower: [Float], layout: SpeakerLayout, shown: [Bool],
-                  layers: [Layer], settings: Settings, floor: Float, metadataOnly: Bool = false) {
+    func evaluate(field: UnsafeBufferPointer<Float>, roleBandPower: [Float], layout: SpeakerLayout,
+                  geometry: SpatialGeometry? = nil, shown: [Bool], layers: [Layer], settings: Settings, floor: Float,
+                  metadataOnly: Bool = false) {
+        let geometry = geometry ?? SpatialGeometry.standard(roles: layout.roles)
         let count = Self.count
         layerCount = min(Self.maxLayers, layers.count)
         // Radiant only needs the layer count and the separate LFE reading. Its points already carry positions.
@@ -237,7 +253,7 @@ final class SpatialBody {
             if !lfe.isFinite { lfe = 0 }
             return
         }
-        prepareSpeakers(layout: layout, settings: settings)
+        prepareSpeakers(layout: layout, geometry: geometry, settings: settings)
         lfe = 0
         let used = layerCount * count
         energy.withUnsafeMutableBufferPointer { UnsafeMutableBufferPointer(rebasing: $0[0..<used]).update(repeating: 0) }
@@ -275,14 +291,17 @@ final class SpatialBody {
                     }
                 }
                 guard e.isFinite, tint.x.isFinite, e > floorEnergy * 0.001 else { continue }
+                // Only the rows the body uses: below the ear plane only while a speaker of the layout is there.
+                let lowest = firstRow * Self.azimuthSteps
                 speakerKernels.withUnsafeBufferPointer { kernels in
                 energy.withUnsafeMutableBufferPointer { energy in
                 bands.withUnsafeMutableBufferPointer { planes in
-                    let kernel = kernels.baseAddress! + s * count, n = vDSP_Length(count)
-                    vDSP_vsma(kernel, 1, &e, energy.baseAddress! + base, 1, energy.baseAddress! + base, 1, n)
+                    let kernel = kernels.baseAddress! + s * count + lowest, n = vDSP_Length(count - lowest)
+                    let out = energy.baseAddress! + base + lowest
+                    vDSP_vsma(kernel, 1, &e, out, 1, out, 1, n)
                     for f in 0..<StereoBands.count where fives[f] > 0 {
                         var part = fives[f]
-                        let plane = planes.baseAddress! + f * Self.planeStride + base
+                        let plane = planes.baseAddress! + f * Self.planeStride + base + lowest
                         vDSP_vsma(kernel, 1, &part, plane, 1, plane, 1, n)
                     }
                 }}}
@@ -390,8 +409,8 @@ final class SpatialBody {
             // nothing it adds could show.
             let reach = 1 - Foundation.log(max(1, e / floorEnergy * 4)) / min(lobe.inverse1, lobe.inverse2)
             let angle = Double(acosf(max(-1, min(1, reach)))), elevation = Double(asinf(max(-1, min(1, u.z))))
-            let first = max(0, Int(((elevation - angle) * 180 / .pi / Self.step).rounded(.down)))
-            let last = min(Self.elevationSteps, Int(((elevation + angle) * 180 / .pi / Self.step).rounded(.up)))
+            let first = max(firstRow, Int(((elevation - angle) * 180 / .pi / Self.step).rounded(.down)) + Self.lowerSteps)
+            let last = min(Self.rows - 1, Int(((elevation + angle) * 180 / .pi / Self.step).rounded(.up)) + Self.lowerSteps)
             if first <= last {
                 accumulate(lobe, from: base + first * Self.azimuthSteps, count: (last - first + 1) * Self.azimuthSteps)
             }

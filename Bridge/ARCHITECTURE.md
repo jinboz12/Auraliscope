@@ -1,11 +1,7 @@
-# Auraliscope Bridge architecture
-
-Release 2.0 build 91 uses the normal app identity `com.jinboz.SoundMeterJBZ` and `bridge-v2.sock`.
-The app remains outside App Sandbox. Historical feasibility notes below are not release validation;
-see [build 91 validation](../docs/2.0_BUILD91_VALIDATION.md).
+# Auraliscope Bridge 1.3dev build 3: architecture note
 
 Plugin-side analysis with result-only delivery. The DAW hosts the Bridge (VST3 or AUv2) on a track, bus or master;
-**the Bridge analyses its own audio**; Auraliscope shows the results. Labs still analyses physical inputs and
+**the Bridge analyses its own audio**; Auraliscope LABS shows the results. Labs still analyses physical inputs and
 system audio itself, with the same code.
 
 ```
@@ -16,7 +12,7 @@ analysis thread (one per plugin binary) ─► StreamAnalyzer = MeterPipeline (s
                                                  │  newest RESULT in a one-slot mailbox; ordered columns queued
 sender thread (one per plugin binary) ─► Unix socket (protocol 3: HELLO, STATUS, RESULT, ACK) ◄─ SUBSCRIBE, COMMAND
                                                  │
-Auraliscope: receiver thread ─► ResultInbox (decode) ─► ResultAssembler ─► 60 Hz ResultWorker
+Auraliscope LABS: receiver thread ─► ResultInbox (decode) ─► ResultAssembler ─► 60 Hz ResultWorker
                                                  ─► the same snapshot triple buffer ─► every canvas and readout, unchanged
 ```
 
@@ -110,7 +106,7 @@ a snapshot. A host that renders ahead in bursts therefore produces bursts of res
 audio. When the host stops calling the plugin, the analyser ticks on the clock for up to 9 ticks (meters fall to
 silence), then rests.
 
-Measured cost (`measure-resources.sh`, `Bridge/VALIDATION.md`): see the resource table in the validation report.
+Measured cost: run `scripts/measure-resources.sh`.
 
 ## Result delivery
 
@@ -119,10 +115,16 @@ newest state after every tick into a one-slot mailbox (a newer one replaces an u
 to the socket when the connection has room (16 KB high-water mark, 32 KB socket buffers). Spectrogram and waveform
 columns are serial-numbered per generation and kept in bounded queues (64 and 512 columns, about 2 s); each result
 carries the columns after the last one sent to this subscriber. A subscriber more than about 2 s behind sees a gap,
-and the count of skipped columns; nothing is ever sent twice or replayed into a later subscription.
+and the count of skipped columns; nothing is ever sent twice or replayed into a later subscription. The spatial
+observations (RESULT 58, about 30 new frames a second against 60 results) go the same way to a display that keeps
+them (WELCOME capability 1, after build 98): the mailbox records the frame its result leaves the display holding, only
+a result actually sent counts, so each frame is sent once and a replaced, unsent result's frame goes with the next; a
+display that does not announce it (build 98) gets them in every result. An unconfigured plugin makes no observations at
+all (it places tag 54's bins instead), so nothing is computed that no display receives.
 
 In Labs, `ResultInbox` decodes on the receiver thread; `ResultWorker` publishes one snapshot per display tick from
-`ResultAssembler`: the newest state; at most one spectrogram column per tick, skipping ahead when more than 8 wait (the
+`ResultAssembler`: the newest state; the newest observations any result carried (taken from every result, decoded once,
+kept until a result carries new ones); at most one spectrogram column per tick, skipping ahead when more than 8 wait (the
 waterfall stays within about 0.27 s of real time); waveform columns into the 64-column window the waveform display
 reads; a gap leaves blank columns (spectrogram) or a flat notch (waveform). After 0.3 s without results the
 instantaneous readings fall to silence and the measured values stay.
@@ -153,6 +155,39 @@ Integrated loudness and loudness range carry on across breaks and count only ana
 filters, FFT and true-peak interpolation restart at a break. Each result carries the number of breaks and the audio
 known missing, and Labs shows "Interrupted N× · x s missing", so a reading that spans breaks never passes for one
 continuous measurement.
+
+## Build 98 SoundStage V2: one exact reduction, the display's speaker geometry
+
+- **Geometry.** `SpatialGeometry` (AnalysisCore): each role's azimuth, elevation, optional distance and inclusion, the
+  mapping (speaker directions, or positions in meters), the detail (Particles) and the spatial window; values rounded
+  to `Float` when made; an FNV-1a content hash (never 0). The display makes it from the user's layout
+  (`SpeakerLayoutStore`; file and settings in docs/SPEAKER_LAYOUT_FORMAT.md); its revision mixes the store's change
+  count with the hash, so every different geometry carries its own.
+- **Analysis.** `SpatialFieldAnalyzer` places every bin of a band at Σ|X_i| s_i / Σ|X_i| (s_i the unit direction or the
+  position in meters; the LFE and excluded speakers take no part) and reduces the transform once with
+  `SpatialObservationBuilder`: exact same-place runs, every component of at least E_band / budget kept, the rest merged
+  on a grid from 1/100 of the layout's extent, doubling; a water-filling budget of detail × 96 (at most 3072, 96 a
+  band). Each band's energy, centre of gravity and second moment are kept; runs below 10⁻¹⁴ of the strongest dropped
+  run are left out with their energy recorded. Multi-resolution window: bands centred from 1 kHz on a quarter, from
+  4 kHz on an eighth of the transform, each window ending at the newest sample; the coherence field stays on the full
+  transform. Timestamps are window ends in frames. Published in `SnapshotSlots.spatialObservations`
+  (METER_SNAPSHOT_FLOATS 49441); silent partners of a pair are zeroed so float leakage cannot pull a lone speaker's sound.
+- **Bridge.** HELLO capability 16; SPATIAL_CONFIG (display → plugin, at most 1000 bytes, only to a capable plugin)
+  applied on the analysis thread and answered by SPATIAL_ACK; RESULT 58 carries the observations with the geometry's
+  hash; tag 54 only while no configuration is in force; the standard geometry again on disconnection; mailbox 256 KB,
+  output buffer 512 KB. The server sends the configuration again whenever its bytes change (a change counter), not only
+  on a new revision.
+- **Display.** `NebulaScene.accepts`: observations are drawn only with the hash of the geometry the speakers are drawn
+  with (or tag 54's bins with the standard geometry); a geometry change clears the particles behind a crossfade;
+  particles are born on the audio's clock (window end) and a frame shown twice is added once. `RadiantParticles`: one
+  particle per observation, where it is (no clamping: below the ear plane, in meters), its light the band's times its
+  share of the band's energy (Σ = 1, any number of particles); `Radiant.exposure` 3.4 · √20 keeps the default picture's
+  light near build 97's (whose particles each carried 1/√N); every particle at the particle size (drawn as wide as its
+  spread, diffuse treble became one broad splat). Raw observations draws the newest frame bare. The level body's grid
+  covers the full sphere when a speaker sits below the ear plane.
+- **UI.** The Speaker Layout window (a utility window that never reopens on its own at launch); Soundstage settings:
+  Speaker layout, Spatial window (Standard | Fast), Raw observations, and notes for a plugin that is older or refused
+  the layout.
 
 ## Build 88 display lifecycle and transitions
 
@@ -389,7 +424,7 @@ The analysis is unchanged from build 69/70 except for one addition: the fine spe
 
 - **Fine spectrum.** `SpectrumAnalyzer` maps the same power spectrum it reads for the 64 display bands onto 128
   (`MeterSnapshot.fineBandCount`, each of the 64 halved, about 1/13 octave) with the same band reading (loudest bin
-  with Hann peak correction, or the interpolated peak for bands narrower than 1.5 bins); plugin CPU in VALIDATION.md.
+  with Hann peak correction, or the interpolated peak for bands narrower than 1.5 bins); plugin CPU via `scripts/measure-resources.sh`.
   They travel as snapshot slots (`SnapshotSlots.spectrumFine`, appended after `missing`) and as RESULT tag 51; the
   assembler shows a result without them (a build 70 plugin) as each of its 64 bands across its two halves.
   The live curve, peak holds, average and spectrum hover read them. They are deliberately not read from the
@@ -434,7 +469,7 @@ causes of blur that measurement found in it.
   frequency, the analysis behind the row, and the 2nd–8th harmonics of the frequency under the pointer.
 - **Cost.** One column: 78 µs at 48 kHz (build 68: 44), 140 µs at 96 kHz (67), 257 µs at 192 kHz (81); one
   spectrum transform (60 per second): 19 µs at 48 kHz, 41 µs at 96, 152 µs at 192 (P-core micro-benchmark).
-  Plugin CPU in VALIDATION.md.
+  Plugin CPU via `scripts/measure-resources.sh`.
 
 ## Build 68 spectrogram
 

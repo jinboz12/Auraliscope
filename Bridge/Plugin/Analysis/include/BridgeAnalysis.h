@@ -57,13 +57,24 @@ void abr_analyzer_set_spectrogram_mode(AbrAnalyzer *analyzer, uint32_t mode);
 void abr_analyzer_set_spectrum_channels(AbrAnalyzer *analyzer, uint32_t channels);
 // The spatial field's coherence threshold in thousandths (ABR_SUBSCRIBE_COHERENCE); 0 is the default (300).
 void abr_analyzer_set_spatial_coherence(AbrAnalyzer *analyzer, uint32_t thousandths);
+// A display's SPATIAL_CONFIG payload (`length` bytes, Bridge/PROTOCOL.md): the geometry the spatial analysis uses from
+// its next transform on, and the observations (RESULT tag 58) instead of the bins (tag 54). Returns the outcome
+// (ABR_SPATIAL_APPLIED, …) and, when applied, the geometry's revision and hash.
+uint32_t abr_analyzer_configure_spatial(AbrAnalyzer *analyzer, const void *bytes, uint32_t length, uint32_t *revision,
+                                        uint64_t *hash);
+// The display that configured it is gone: the standard layout and the bins (tag 54) again.
+void abr_analyzer_reset_spatial(AbrAnalyzer *analyzer);
 // Ticks published so far (a new result is ready when this grows).
 uint64_t abr_analyzer_ticks(const AbrAnalyzer *analyzer);
 // Writes a RESULT payload (Bridge/PROTOCOL.md) into `buffer`; returns its size, 0 when there is nothing yet or it
-// does not fit. `*spectrogram_through` / `*waveform_through` receive the newest column serials it carries.
+// does not fit. `*spectrogram_through` / `*waveform_through` receive the newest column serials it carries. The
+// observations (tag 58) are left out when `after_observations` is the frame the analysis holds (the receiver keeps
+// the last it was sent; 0: it holds none, or does not keep them); `*observations_through` receives the frame the
+// receiver holds after this result (0: none).
 uint32_t abr_analyzer_encode(AbrAnalyzer *analyzer, void *buffer, uint32_t capacity, uint32_t subscription,
                              uint32_t layout, uint64_t after_spectrogram, uint64_t after_waveform,
-                             uint64_t *spectrogram_through, uint64_t *waveform_through);
+                             uint64_t after_observations, uint64_t *spectrogram_through, uint64_t *waveform_through,
+                             uint64_t *observations_through);
 void abr_analyzer_summary(const AbrAnalyzer *analyzer, AbrAnalysisSummary *summary);
 
 #ifdef __cplusplus

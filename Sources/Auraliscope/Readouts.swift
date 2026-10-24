@@ -35,6 +35,8 @@ final class Readouts: ObservableObject {
         var elapsed: TimeInterval = 0
         /// Short-term and momentary loudness, oldest first, one entry per tick.
         var shortHistory: [Float] = []
+        /// When the newest history reading was taken: the plot glides left from it until the next (`LoudnessHistory`).
+        var historyTime = Date.distantPast
         var momentaryHistory: [Float] = []
         var peak = PeakTracker()
         /// Every note the keyboard lights (the dominant one is `peak`).
@@ -94,7 +96,9 @@ final class Readouts: ObservableObject {
     }
 
     /// Hidden, minimised or covered by a full-screen app: re-rendering the readouts would be wasted work.
-    private var onScreen: Bool { MainWindow.window?.occlusionState.contains(.visible) ?? true }
+    private var onScreen: Bool {
+        (MainWindow.window?.occlusionState.contains(.visible) ?? true) || PanelPlacement.shared.hasVisiblePanelWindows
+    }
 
     private func publish() {
         if onScreen && latest != values { values = latest }
@@ -175,6 +179,7 @@ final class Readouts: ObservableObject {
         next.peak.update(frequency: snapshot.peakFrequency, level: snapshot.peakLevel, deltaTime: 1 / Self.rate)
         next.notes.update(snapshot.notes, deltaTime: 1 / Self.rate)
         next.shortHistory.append(snapshot.shortLUFS)
+        next.historyTime = Date()
         next.momentaryHistory.append(snapshot.momentaryLUFS)
         if next.shortHistory.count > Self.historyLength {
             next.shortHistory.removeFirst(next.shortHistory.count - Self.historyLength)

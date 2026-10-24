@@ -21,6 +21,11 @@ final class DomeScene {
         var floor: Double
         var ink: Theme.RGB
         var dark: Bool
+        /// The lower hemisphere's grid too (a speaker below the ear plane); the meter rings' scale (the layout's
+        /// largest distance, 0 without the positions mapping).
+        var lower: Bool
+        var metric: Double
+        var rings: [Int]
     }
     private var key: Key?
     private var grid: [ShapeVertex] = []
@@ -32,6 +37,8 @@ final class DomeScene {
     /// Whether the nebula was updated this frame (it is encoded only then).
     private(set) var active = false
     /// The floor's unit directions at the body's azimuth steps, once round (model coordinates), for its footprint.
+    /// The listener's head, in radii of the speakers' sphere (schematic: a real head is about 0.05 of a 2 m layout).
+    static let headRadius = 0.075
     private static let floorDirections = (0...SpatialBody.azimuthSteps).map {
         DomeGeometry.direction(azimuth: Double($0) * SpatialBody.step, elevation: 0)
     }
@@ -64,9 +71,24 @@ final class DomeScene {
                             DomeGeometry.direction(azimuth: azimuth, elevation: Double(step + 1) * 5), width: 0.7, alpha: 0.15)
                 }
             }
+            // Below the ear plane, fainter, while a speaker of the layout is there: the picture reaches it too.
+            if key.lower {
+                for elevation in [-30.0, -60] { circle(radius: 1, elevation: elevation, width: 0.6, alpha: 0.09) }
+                for azimuth in stride(from: 0.0, to: 360, by: 45) {
+                    for step in 0..<18 {
+                        segment(DomeGeometry.direction(azimuth: azimuth, elevation: -Double(step) * 5),
+                                DomeGeometry.direction(azimuth: azimuth, elevation: -Double(step + 1) * 5), width: 0.6, alpha: 0.09)
+                    }
+                }
+            }
+            // In meters (Radiant, the positions mapping): a ring on the floor at every meter (every half meter for a
+            // small layout), at the layout's fixed scale; labelled by `DomeLabels`.
+            for meters in Self.meterRings(key.metric) {
+                circle(radius: meters / key.metric, width: 0.6, alpha: 0.16)
+            }
             // The level rings (every 20 dB, labelled in place by `DomeLabels`): concentric hairlines like the
             // stereometer's, brightest nearest the listener.
-            for (index, decibels) in n.rings.reversed().enumerated() {
+            for (index, decibels) in key.rings.reversed().enumerated() {
                 circle(radius: Double(n.radius(decibels: Float(decibels))), width: 0.6, alpha: max(0.11, 0.2 - 0.04 * Float(index)))
             }
             segment(.zero, DomeGeometry.direction(azimuth: 0, elevation: 0), width: 0.7, alpha: 0.2)
@@ -81,7 +103,8 @@ final class DomeScene {
 
     /// Adds the dome's shapes to `b`, leaving the body's place under them (`ShapeBuilder.overlayStart`); `opacity` is
     /// the Immersive presence. `dt` moves the signal (0 while frozen), `displayDt` the camera, which glides even then.
-    func draw(_ b: inout ShapeBuilder, frame: CanvasFrame, size: CGSize, dt: Float, displayDt: Float, opacity: Float) {
+    /// Draws the dome at `opacity`, its camera's zoom times `zoom` (Immersive arriving or leaving, `FormatMix.relay`).
+    func draw(_ b: inout ShapeBuilder, frame: CanvasFrame, size: CGSize, dt: Float, displayDt: Float, opacity: Float, zoom: Double = 1) {
         let started = Diagnostics.enabled ? CACurrentMediaTime() : 0
         defer {
             if Diagnostics.enabled {
@@ -97,10 +120,18 @@ final class DomeScene {
         }
         let options = frame.options
         let n = options.nebula
-        let pose = poseSpring.step(target: options.cameraPose, glides: options.domeGlides, dt: Double(displayDt))
-        let g = DomeGeometry(size: size, view: options.domeView, pose: pose)
+        var pose = poseSpring.step(target: options.cameraPose, glides: options.domeGlides, dt: Double(displayDt))
+        pose.zoom *= zoom
+        // The speakers and the observations share one transform: unit directions, or (Radiant, the positions mapping)
+        // positions in meters at the layout's scale.
+        let geometry = frame.geometry
+        let positions = n.style == .radiant && geometry.mapping == .positions
+        let extent = geometry.extent(roles: frame.layout.roles)
+        let toModel = positions ? 1 / extent : 1
+        let lower = geometry.reachesBelow(roles: frame.layout.roles)
+        let g = DomeGeometry(size: size, view: options.domeView, pose: pose, lower: lower)
         let next = Key(size: size, view: g.view, yaw: g.yaw, pitch: g.pitch, zoom: g.zoom, grid: n.grid, floor: n.floor,
-                       ink: Theme.inkRGB, dark: Theme.dark)
+                       ink: Theme.inkRGB, dark: Theme.dark, lower: lower, metric: positions ? extent : 0, rings: n.rings)
         if key != next { key = next; buildGrid(g, key: next, nebula: n) }
         nebula.update(frame: frame, geometry: g, dt: dt, displayDt: displayDt, options: options, presence: opacity)
         active = true
@@ -137,20 +168,50 @@ final class DomeScene {
         }
         if n.speakers {
             for speaker in frame.layout.speakers where speaker.group != .lfe {
-                guard let d = DomeGeometry.direction(speaker) else { continue }
+                guard let d = DomeGeometry.speaker(speaker.role, geometry: geometry, positions: positions, toModel: toModel) else { continue }
                 let near = Float((g.depth(d) + 1) / 2)
                 let lit = frame.activeRoles.indices.contains(speaker.role) && frame.activeRoles[speaker.role]
                 b.disk(g.project(d), radius: 2.2, Theme.displayRGB.simd(0.7 * (0.5 + 0.5 * near)))
                 b.ring(g.project(d), radius: 2.6, width: 1, ink.simd((lit ? 0.62 : 0.2) * (0.5 + 0.5 * near)))
             }
         }
+        // The listener: a head facing the front (its nose toward 0°, ears at ±90°), so the dome's front, sides and back
+        // read at a glance from any view. Schematic size, the same in every mapping.
+        let head = Self.headRadius * g.scale
+        if n.listener {
+            let r = Self.headRadius
+            b.disk(origin, radius: head, Theme.displayRGB.simd(0.92))
+            // Its equator on the ear plane: an ellipse that turns with the camera.
+            for step in 0..<36 {
+                let a = DomeGeometry.direction(azimuth: Double(step) * 10, elevation: 0) * r
+                let c = DomeGeometry.direction(azimuth: Double(step + 1) * 10, elevation: 0) * r
+                let near = Float((g.depth((a + c) / 2) / r + 1) / 2)
+                b.line(g.project(a), g.project(c), width: 1, ink.simd(0.18 + 0.32 * near))
+            }
+            b.ring(origin, radius: head, width: 1.2, ink.simd(0.55))
+            // Ears, dimmer when turned away from the camera.
+            for side in [-1.0, 1.0] {
+                let ear = DomeGeometry.Point(side * r * 1.04, 0, 0)
+                let near = Float((g.depth(ear) / r + 1) / 2)
+                b.disk(g.project(ear), radius: max(2, head * 0.2), ink.simd(0.25 + 0.45 * near))
+            }
+            // The nose: a wedge pointing to the front, seen through the head when it faces away from the camera.
+            let tip = DomeGeometry.Point(0, 0, r * 1.45), left = DomeGeometry.Point(-r * 0.32, 0, r * 0.92)
+            let right = DomeGeometry.Point(r * 0.32, 0, r * 0.92)
+            let facing = Float((g.depth(tip) / (r * 1.45) + 1) / 2)
+            let nose = ink.simd(0.35 + 0.55 * facing)
+            b.line(g.project(left), g.project(tip), width: 1.6, nose)
+            b.line(g.project(right), g.project(tip), width: 1.6, nose)
+            b.line(g.project(left), g.project(right), width: 1, nose)
+        }
         // The LFE has no direction: a ring around the listener whose sweep is its level on the body's scale.
         if n.lfe && frame.layout.hasLFE {
-            b.ring(origin, radius: 9, width: 1, ink.simd(0.15))
-            if nebula.lfeRadius > 0.001 { b.ring(origin, radius: 9, width: 2, Theme.clayRGB.simd(0.85), sweep: nebula.lfeRadius) }
+            let around = n.listener ? max(9, head * 1.6 + 4) : 9
+            b.ring(origin, radius: around, width: 1, ink.simd(0.15))
+            if nebula.lfeRadius > 0.001 { b.ring(origin, radius: around, width: 2, Theme.clayRGB.simd(0.85), sweep: nebula.lfeRadius) }
         }
-        b.disk(origin, radius: 2.1, ink.simd(0.8))
-        if options.domeCentroid, let center = centroid(frame: frame) {
+        if !n.listener { b.disk(origin, radius: 2.1, ink.simd(0.8)) }
+        if options.domeCentroid, let center = centroid(frame: frame, positions: positions, toModel: toModel) {
             // The stereometer's focal dot: one point where the energy centres, on a faint stem from the listener.
             let at = g.project(center)
             let lit = Theme.dark ? Theme.creamRGB : Theme.inkRGB
@@ -172,8 +233,15 @@ final class DomeScene {
         return (Theme.dark ? rgb : rgb.legible(on: Theme.displayRGB, ratio: 3)).simd(1)
     }
 
+    /// The meter rings of a layout `extent` meters across (none for 0): every meter, every half meter under 2 m.
+    static func meterRings(_ extent: Double) -> [Double] {
+        guard extent > 0 else { return [] }
+        let step = extent < 2 ? 0.5 : 1.0
+        return stride(from: step, through: extent + 1e-9, by: step).map { $0 }
+    }
+
     /// The power-weighted balance point of the speakers for the bands shown (full band: each channel's RMS).
-    private func centroid(frame: CanvasFrame) -> DomeGeometry.Point? {
+    private func centroid(frame: CanvasFrame, positions: Bool, toModel: Double) -> DomeGeometry.Point? {
         let choice = frame.options.domeBands
         var powers = [Float](repeating: 0, count: Role.count)
         for role in 0..<Role.count where frame.shown && frame.activeRoles[role] {
@@ -183,7 +251,8 @@ final class DomeScene {
                 powers[role] = DomeGeometry.power(role: role, band: DomeBand.full, snapshot: frame.snapshot)
             }
         }
-        return DomeGeometry.centroid(layout: frame.layout, active: frame.activeRoles, powers: powers)
+        return DomeGeometry.centroid(layout: frame.layout, active: frame.activeRoles, powers: powers, geometry: frame.geometry,
+                                     positions: positions, toModel: toModel)
     }
 }
 
@@ -207,6 +276,12 @@ struct DomeProbe: Equatable {
     var coherence: Double?
     /// The energy-weighted centre frequency (Hz) of what forms the body there most.
     var centroid: Double?
+    /// With the positions mapping: how far from the listener the feeds' distribution puts it (meters), not a measured
+    /// distance of a source.
+    var meters: Double? = nil
+    /// The centre of gravity is at the listener (opposite speakers in balance): it has no direction, and the angles mean
+    /// nothing.
+    var directionless = false
 }
 
 extension DomeScene {
@@ -239,15 +314,23 @@ struct DomeProbeTag: View {
             case .none:
                 EmptyView()
             }
-            Text(verbatim: String(format: "↻ %@°", MeterScale.signedInteger(Float(probe.azimuth.rounded()))))
-                .font(font).foregroundStyle(Theme.secondary)
-            Text(verbatim: String(format: "↑ %d°", Int(probe.elevation.rounded()))).font(font).foregroundStyle(Theme.secondary)
+            if probe.directionless {
+                Text(L("no direction")).font(font).foregroundStyle(Theme.secondary)
+            } else {
+                Text(verbatim: String(format: "↻ %@°", MeterScale.signedInteger(Float(probe.azimuth.rounded()))))
+                    .font(font).foregroundStyle(Theme.secondary)
+                Text(verbatim: String(format: "↑ %d°", Int(probe.elevation.rounded()))).font(font).foregroundStyle(Theme.secondary)
+            }
             if let width = probe.width {
-                Text(L("width %d°", Int(width.rounded()))).font(font).foregroundStyle(Theme.secondary)
+                // Frank's regression, from frontal pairs: an estimate elsewhere.
+                Text(L("width %d° (frontal model)", Int(width.rounded()))).font(font).foregroundStyle(Theme.secondary)
             }
             if let stability = probe.stability, let coherence = probe.coherence {
                 Text(L("in phase %d%%", Int((stability * 100).rounded()))).font(font).foregroundStyle(Theme.secondary)
                 Text(L("coherence %.2f", coherence)).font(font).foregroundStyle(Theme.secondary)
+            }
+            if let meters = probe.meters, meters.isFinite {
+                Text(L("%@ m, distribution", String(format: "%.2f", meters))).font(font).foregroundStyle(Theme.secondary)
             }
             if let centroid = probe.centroid, centroid.isFinite {
                 Text(L("centre %@", centroid >= 1_000 ? String(format: "%.1f kHz", centroid / 1_000) : "\(Int(centroid.rounded())) Hz"))
@@ -266,10 +349,17 @@ struct DomeLabelsHost: View {
     let size: CGSize
     let layout: SpeakerLayout
     let options: DisplayOptions
+    /// The geometry the dome is drawn with (`MeterModel.displayGeometry`).
+    var geometry: SpatialGeometry? = nil
+    /// The camera's zoom times this: the dome settling in as Immersive arrives (`FormatMix.relay`), as `DomeScene` draws it.
+    var zoom: Double = 1
     @ObservedObject private var camera = DomeCamera.shared
 
     var body: some View {
-        DomeLabels(size: size, layout: layout, options: options, view: camera.state.settings.view, pose: camera.state.pose)
+        var pose = camera.state.pose
+        pose.zoom *= zoom
+        return DomeLabels(size: size, layout: layout, options: options, view: camera.state.settings.view, pose: pose,
+                          geometry: geometry ?? SpatialGeometry.standard(roles: layout.roles))
     }
 }
 
@@ -282,7 +372,15 @@ struct DomeLabels: View, Animatable {
     let options: DisplayOptions
     let view: DomeView
     var pose: DomePose
+    var geometry: SpatialGeometry
     @ObservedObject private var l10n = Localizer.shared
+
+    /// The speakers' transform, as `DomeScene` draws them.
+    private var positions: Bool { options.nebula.style == .radiant && geometry.mapping == .positions }
+    private var extent: Double { geometry.extent(roles: layout.roles) }
+    private func point(_ speaker: Speaker) -> DomeGeometry.Point? {
+        DomeGeometry.speaker(speaker.role, geometry: geometry, positions: positions, toModel: positions ? 1 / extent : 1)
+    }
 
     var animatableData: AnimatablePair<AnimatablePair<Double, Double>, Double> {
         get { pose.animatableData }
@@ -313,6 +411,16 @@ struct DomeLabels: View, Animatable {
                 place(MeterScale.signedInteger(Float(decibels)), point, width: 22, quiet: true)
             }
         }
+        // The meter rings (Radiant, the positions mapping), where they cross the floor at the right of the screen.
+        if n.grid && positions && g.view != .side && g.view != .front {
+            let right = g.screenRightAzimuth
+            for meters in DomeScene.meterRings(extent) {
+                var point = g.project(DomeGeometry.direction(azimuth: right, elevation: 0) * (meters / extent))
+                point.y += g.view == .top ? 0 : 7
+                point.x += g.view == .top ? 0 : 2
+                place(meters.rounded() == meters ? "\(Int(meters)) m" : String(format: "%.1f m", meters), point, width: 30, quiet: true)
+            }
+        }
         // The front: a chevron on the floor marks it (`DomeScene`); the word is added only when no centre speaker
         // names that direction already, or when the view looks along the front.
         if g.view == .side || g.view == .front || !n.speakers || !layout.speakers.contains(where: { $0.azimuth == 0 && $0.group != .height }) {
@@ -329,10 +437,9 @@ struct DomeLabels: View, Animatable {
         }
         guard n.speakers else { return result }
         // Nearer speakers first: when labels collide at small sizes, the ones in front of the dome win.
-        let speakers = layout.speakers.filter { $0.group != .lfe && $0.azimuth != nil }
-            .sorted { g.depth(DomeGeometry.direction($0)!) > g.depth(DomeGeometry.direction($1)!) }
-        for speaker in speakers {
-            let d = DomeGeometry.direction(speaker)!
+        let speakers = layout.speakers.compactMap { speaker in point(speaker).map { (speaker, $0) } }
+            .sorted { g.depth($0.1) > g.depth($1.1) }
+        for (speaker, d) in speakers {
             let anchor = g.project(d)
             var point = g.project(d * 1.12)
             // Push the label away from the dome's centre on screen, so it never sits on the shell line.
@@ -346,7 +453,7 @@ struct DomeLabels: View, Animatable {
     }
 
     var body: some View {
-        let g = DomeGeometry(size: size, view: view, pose: pose)
+        let g = DomeGeometry(size: size, view: view, pose: pose, lower: geometry.reachesBelow(roles: layout.roles))
         let lfe = layout.hasLFE && options.nebula.lfe
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
@@ -363,7 +470,7 @@ struct DomeLabels: View, Animatable {
                 NebulaKey(choice: options.domeBands, nebula: options.nebula)
                     .frame(width: size.width - 16).position(x: size.width / 2, y: size.height - 11)
             } else if g.keyInCorners {
-                NebulaCornerKey(choice: options.domeBands, nebula: options.nebula, room: g.sideRoom)
+                NebulaCornerKey(choice: options.domeBands, nebula: options.nebula)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .frame(width: size.width, height: size.height)
             }
@@ -378,41 +485,24 @@ extension DomeLabels {
     private var accessibility: String {
         let n = options.nebula
         if n.style == .radiant {
-            return L("Particles of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom is a bright point between two speakers, a wide stereo programme a streak along the line between them, sound all round gathers toward the listener. The loudest band glows white and quieter ones fade out %d dB below it; particles fade and smear as they age. Energy out of phase scatters and is tinted ochre. Height channels use a schematic 45 degree elevation.", Int(n.range.rounded()))
-                + (n.spectral(options.domeBands) ? " " + L("Each particle wears its band's color, warm for bass and cool for treble; where many bands meet, their light adds up toward white.") : "")
+            return L("A glowing body of the speaker feeds' frequency bands, each where its band is heard: at the centre of gravity of the speakers that carry it, weighted by its level in each. A centred phantom gathers between two speakers, a wide stereo programme stretches along the line between them, sound all round gathers toward the listener. The loudest band burns white and quieter ones fade out %d dB below it; older light swells into haze. Point lights mark exactly where each band's frequencies sit. Energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees).", Int(n.range.rounded()))
+                + (n.spectral(options.domeBands) ? " " + L("The body wears the colors of the frequencies at each place, warm for bass and cool for treble; where many bands meet, their light adds up toward white.") : "")
         }
-        return L("Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Height channels use a schematic 45 degree elevation.", MeterScale.signedInteger(Float(n.floor)))
+        return L("Spatial energy body of the speaker feeds. Its radius in each direction is the level heard from there, from %@ dBFS at the listener to 0 dBFS at the speakers, not a distance. Energy several speakers carry coherently points between them; energy out of phase is tinted ochre. Speakers stand where the speaker layout puts them (the standard one puts every height at 45 degrees).", MeterScale.signedInteger(Float(n.floor)))
             + (n.spectral(options.domeBands) ? " " + L("Its color shows the frequencies heard from each direction: near the listener every band mixes toward white, near the edge only the loudest bands remain, warm for bass and cool for treble.") : "")
     }
 }
 
 /// The nebula's key beside the dome in a wide panel: in the lower corners, name-over-value readings like the
-/// stereometer's (the bands' hues on the left when the dome shows several, the radius' scale on the right), and what
-/// direction and tint mean in the upper right corner, clear of the speakers.
+/// stereometer's (the bands' hues on the left when the dome shows several, the radius' or glow's scale on the right).
+/// What direction and tint mean is left to the accessibility description, so the corners above stay clear.
 struct NebulaCornerKey: View {
     let choice: BandChoice
     let nebula: NebulaSettings
-    /// The width beside the dome the explanation may take.
-    let room: CGFloat
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Spacer(minLength: 0)
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(L("Between speakers: phantom image"))
-                    Text(L("Ochre: out of phase"))
-                    if nebula.style == .radiant {
-                        Text(L("Each particle: a band, where it is heard"))
-                    } else if nebula.spectral(choice) {
-                        Text(L("Edge color: loudest band"))
-                    }
-                }
-                .font(.axis).foregroundStyle(Theme.tertiary).multilineTextAlignment(.trailing)
-                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: max(60, room - 6), alignment: .trailing)
-            }
             Spacer(minLength: 0)
             HStack(alignment: .bottom) {
                 if choice.groups.count > 1 || nebula.spectral(choice) {
@@ -436,8 +526,8 @@ struct NebulaCornerKey: View {
     }
 }
 
-/// The nebula's key, one line under it: the bands' hues (when the dome shows several), the radius' scale in dBFS, then
-/// what direction and tint mean, each left out from the end when the panel is too narrow.
+/// The nebula's key, one line under it: the bands' hues (when the dome shows several) and the radius' scale in dBFS,
+/// the hues left out when the panel is too narrow.
 struct NebulaKey: View {
     let choice: BandChoice
     let nebula: NebulaSettings
@@ -457,7 +547,6 @@ struct NebulaKey: View {
             }
         case .line:
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) { bands; scaleLine; meaning }
                 HStack(spacing: 12) { bands; scaleLine }
                 scaleLine
             }
@@ -510,10 +599,6 @@ struct NebulaKey: View {
         .lineLimit(1).fixedSize()
     }
 
-    private var meaning: some View {
-        Text(L("Between speakers: phantom image · Ochre: out of phase"))
-            .font(.axis).foregroundStyle(Theme.tertiary).lineLimit(1).fixedSize()
-    }
 }
 
 /// Radiant's brightness over its glow range as a small capsule, from the range's foot to the loudest direction: on

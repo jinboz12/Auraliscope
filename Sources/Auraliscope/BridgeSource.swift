@@ -69,7 +69,14 @@ struct BridgeSource: Equatable {
     let acksReceived: UInt32
     let lastAck: BridgeAck
     let capabilities: UInt32
-    /// Grows each time the user clicks "Show in Auraliscope" in this instance's window.
+    /// The newest spatial geometry sent to it (its revision), and its newest answer (SPATIAL_ACK): which revision, the
+    /// hash it applied, and what came of it (ABR_SPATIAL_*); nil before any.
+    let spatialRevisionSent: UInt32
+    struct SpatialAnswer: Equatable { var revision: UInt32; var hash: UInt64; var outcome: UInt32 }
+    let spatialAck: SpatialAnswer?
+    /// Whether it applies the display's speaker geometry (build 98 and later).
+    var takesSpatialGeometry: Bool { capabilities & UInt32(ABR_CAPABILITY_SPATIAL_CONFIG) != 0 }
+    /// Grows each time the user clicks "Show in Auraliscope Labs" in this instance's window.
     let focusRequests: UInt32
     /// Unique per accepted connection: changes when the same live insert reconnects.
     let connectionSerial: UInt32
@@ -187,6 +194,9 @@ struct BridgeSource: Equatable {
         lastAck = BridgeAck(id: info.last_ack_id, command: info.last_ack_command, outcome: info.last_ack_outcome,
                             generation: info.last_ack_generation, measurement: info.last_ack_measurement)
         capabilities = info.capabilities
+        spatialRevisionSent = info.spatial_revision_sent
+        spatialAck = info.spatial_acks_received > 0
+            ? SpatialAnswer(revision: info.spatial_ack_revision, hash: info.spatial_ack_hash, outcome: info.spatial_ack_outcome) : nil
         focusRequests = info.focus_requests
         connectionSerial = info.connection_serial
     }
@@ -220,7 +230,7 @@ struct BridgeAck: Equatable {
     }
 }
 
-/// Launched by a plugin's "Open Auraliscope" button: start waiting for that plugin instead of opening the default
+/// Launched by a plugin's "Open Auraliscope Labs" button: start waiting for that plugin instead of opening the default
 /// output, and skip the welcome sheet.
 let launchedByBridge = CommandLine.arguments.contains("--bridge-launch")
 
@@ -342,6 +352,16 @@ final class BridgeReceiver {
         abr_server_set_coherence(server, thousandths)
     }
     private var coherence: UInt32 = 0
+
+    /// The speaker geometry every subscription is sent (SPATIAL_CONFIG), to plugins that take it; a change reaches the
+    /// subscribed instance at once. Its results carry the geometry's hash once applied.
+    func setSpatial(_ geometry: SpatialGeometry) {
+        guard geometry != spatial else { return }
+        spatial = geometry
+        let bytes = SpatialConfigWire.encode(geometry)
+        bytes.withUnsafeBufferPointer { abr_server_set_spatial_config(server, $0.baseAddress, UInt32($0.count), geometry.revision) }
+    }
+    private var spatial: SpatialGeometry?
 
     /// Delivers the selected instance's results into `inbox` until `detach`. The inbox must outlive the attachment.
     func attach(_ inbox: ResultInbox) {

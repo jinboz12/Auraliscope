@@ -95,8 +95,6 @@ struct DomeGeometry {
     /// it when the panel is tall enough, else nowhere.
     let keyInCorners: Bool
     let showsFooter: Bool
-    /// The width beside the dome (and its speaker labels) on each side, in points.
-    let sideRoom: CGFloat
     let elevation: Double
     let sinElevation: Double
     let cosElevation: Double
@@ -104,6 +102,8 @@ struct DomeGeometry {
     private let cosYaw: Double
     /// The yaw the camera actually turns by (degrees): the user's in the Dome and Top views, the view's own otherwise.
     let turn: Double
+    /// The whole sphere is fitted (a speaker of the layout sits below the ear plane), not only the dome over the floor.
+    let lower: Bool
 
     static func elevation(_ view: DomeView, pitch: Double = defaultPitch) -> Double {
         if let camera = view.camera { return camera.pitch * .pi / 180 }
@@ -111,16 +111,18 @@ struct DomeGeometry {
         return p * .pi / 180
     }
 
-    init(size: CGSize, view: DomeView = .perspective, yaw: Double = 0, pitch: Double = DomeGeometry.defaultPitch, zoom: Double = 1) {
+    init(size: CGSize, view: DomeView = .perspective, yaw: Double = 0, pitch: Double = DomeGeometry.defaultPitch, zoom: Double = 1,
+         lower: Bool = false) {
         // The top view keeps the yaw it is turned to; the other fixed views have their own.
-        self.init(size: size, view: view, pose: DomePose(view: view, yaw: yaw, pitch: pitch, zoom: zoom))
+        self.init(size: size, view: view, pose: DomePose(view: view, yaw: yaw, pitch: pitch, zoom: zoom), lower: lower)
     }
 
     /// The camera at `pose` (a glide passes through poses between views); `view` decides only the layout's choices
     /// (labels, the footprint, the key).
-    init(size: CGSize, view: DomeView, pose: DomePose) {
+    init(size: CGSize, view: DomeView, pose: DomePose, lower: Bool = false) {
         self.size = size
         self.view = view
+        self.lower = lower
         yaw = pose.turn
         pitch = pose.elevation
         zoom = pose.zoom
@@ -137,7 +139,8 @@ struct DomeGeometry {
         let w = Double(size.width), h = Double(size.height)
         let cramped = h < 160
         let top = cramped ? 6.0 : 12.0
-        let span = 1 + sinElevation
+        // With the lower hemisphere the whole sphere: one radius above the listener and one below, whatever the camera.
+        let span = lower ? 2 : 1 + sinElevation
         func budget(footer: Bool) -> Double {
             max(1, h - top - (cramped ? 14.0 : 22.0) - (footer ? Double(Self.footerHeight) : 0))
         }
@@ -145,7 +148,6 @@ struct DomeGeometry {
         keyInCorners = !cramped && w / 2 - fit(footer: false) * 1.12 - 15 >= Double(Self.cornerKeyWidth)
         showsFooter = !keyInCorners && size.height >= Self.footerMinimumHeight
         let fitted = fit(footer: showsFooter)
-        sideRoom = CGFloat(max(0, w / 2 - fitted * 1.12 - 15))
         scale = fitted * self.zoom
         origin = CGPoint(x: size.width / 2, y: top + (budget(footer: showsFooter) - fitted * span) / 2 + fitted)
     }
@@ -159,6 +161,14 @@ struct DomeGeometry {
     static func direction(_ speaker: Speaker) -> Point? {
         guard let a = speaker.azimuth else { return nil }
         return direction(azimuth: a, elevation: SpeakerGeometry.elevation(role: speaker.role))
+    }
+    /// Where `role`'s speaker is drawn in model coordinates with `geometry`: its unit direction, or with `positions`
+    /// (Radiant in the positions mapping) its position at the layout's scale, meters × `toModel`, the transform the
+    /// observations get. Nil for the LFE and a speaker left out.
+    static func speaker(_ role: Int, geometry: SpatialGeometry, positions: Bool, toModel: Double) -> Point? {
+        if positions, let p = geometry.position(role: role) { return Point(p.x, p.z, p.y) * toModel }
+        guard let d = geometry.direction(role: role) else { return nil }
+        return Point(d.x, d.z, d.y)
     }
     /// The spatial field's frame (x right, y front, z up) in model coordinates.
     static func model(_ p: SIMD3<Float>) -> Point { Point(Double(p.x), Double(p.z), Double(p.y)) }
@@ -182,7 +192,7 @@ struct DomeGeometry {
     /// the dome's outline (the sphere above the floor's near edge) within the canvas.
     func bodyUniforms(opacity: Float, layers: Int, dark: Bool) -> BodyUniforms {
         let reach = CGFloat(scale) + 2
-        let below = CGFloat(scale * max(0, sinElevation)) + 2
+        let below = CGFloat(lower ? scale : scale * max(0, sinElevation)) + 2
         return BodyUniforms(minX: Float(max(0, origin.x - reach)), minY: Float(max(0, origin.y - reach)),
                             maxX: Float(min(size.width, origin.x + reach)), maxY: Float(min(size.height, origin.y + below)),
                             viewportX: Float(max(1, size.width)), viewportY: Float(max(1, size.height)),
@@ -205,10 +215,12 @@ struct DomeGeometry {
         return rms.isFinite ? max(0, rms) * max(0, rms) : 0
     }
     /// The power-weighted balance point of the speakers: a summary, not a source position.
-    static func centroid(layout: SpeakerLayout, active: [Bool], powers: [Float]) -> Point? {
+    static func centroid(layout: SpeakerLayout, active: [Bool], powers: [Float], geometry: SpatialGeometry? = nil,
+                         positions: Bool = false, toModel: Double = 1) -> Point? {
         var sum = Point.zero, total = 0.0
         for speaker in layout.speakers {
-            guard let direction = direction(speaker), active.indices.contains(speaker.role), active[speaker.role],
+            let place = geometry.map { DomeGeometry.speaker(speaker.role, geometry: $0, positions: positions, toModel: toModel) } ?? direction(speaker)
+            guard let direction = place, active.indices.contains(speaker.role), active[speaker.role],
                   powers.indices.contains(speaker.role), powers[speaker.role].isFinite, powers[speaker.role] > 0 else { continue }
             let p = Double(powers[speaker.role])
             sum += direction * p
@@ -219,7 +231,7 @@ struct DomeGeometry {
 }
 
 /// The body shader's camera and quad, in canvas points (see `bodyVertex`): scalars only, so Swift and Metal agree on
-/// the layout, 88 bytes.
+/// the layout, 92 bytes.
 struct BodyUniforms: Equatable {
     var minX: Float = 0
     var minY: Float = 0
@@ -247,6 +259,8 @@ struct BodyUniforms: Equatable {
     /// Radiant: the light's gain in the composite.
     var gain: Float = 0
     var spare: Float = 0
+    /// 1 marches the whole sphere (a speaker of the layout sits below the ear plane), 0 only above the floor.
+    var lower: Float = 0
 }
 
 /// Radiant's camera and particle look (`RadiantCamera` in Metal): scalars only, 96 bytes.
@@ -285,8 +299,10 @@ struct RadiantCamera: Equatable {
 
 /// How Radiant's light is laid into the canvas (`RadiantLook` in Metal, `radiantCompositeFragment`): the sparks' share,
 /// the near and wide glow's, the chroma added, the exposure over which the densest light burns toward white, and the
-/// broad density (exposed) past which the exposure eases, and how much (0 not at all, 1 down to it). Scalars only, 32
-/// bytes.
+/// broad density (exposed) past which the exposure eases, and how much (0 not at all, 1 down to it). Then the level
+/// body's palette (`Radiant.blend`…): how far a point's hue moves toward the hues heard around it, the grain's depth (0
+/// none), the core's tint (cream on dark, ink on light), and whether that palette is used (1) or the light keeps its own
+/// hues (0, the bare observations). Scalars only, 56 bytes.
 struct RadiantLook: Equatable {
     var sparkle: Float = 1
     var glowNear: Float = 1
@@ -296,6 +312,60 @@ struct RadiantLook: Equatable {
     var hotTo: Float = 6
     var limit: Float = 2
     var ease: Float = 0
+    var blend: Float = 0
+    var grain: Float = 0
+    var coreR: Float = 1
+    var coreG: Float = 1
+    var coreB: Float = 1
+    var palette: Float = 1
+}
+
+/// The Radiant body's particle splat (`radiantSplatKernel`; Metal's `VolumeSplat`): the clock and how particles age
+/// and fade, the variances of the fine and coarse volumes (radii²) and the smear's growth per second, the out-of-phase
+/// tint, the cube's reach, the fixed-point scale and the faintest light added; the ring's segment and both grids' sizes.
+struct VolumeSplat: Equatable {
+    var clock: Float = 0
+    var lifetime: Float = 0.5
+    var fade: Float = 0.2
+    var bornVariance: Float = 0
+    var blurRate: Float = 0
+    var coarseVariance: Float = 1
+    var ochreR: Float = 0.8
+    var ochreG: Float = 0.6
+    var ochreB: Float = 0.3
+    var reach: Float = 1
+    var fixedScale: Float = 1
+    var least: Float = 0
+    var first: UInt32 = 0
+    var count: UInt32 = 0
+    var fineSize: UInt32 = 0
+    var coarseSize: UInt32 = 0
+}
+
+/// One pass of a volume's separable blur (`radiantResolveKernel`, `radiantBlurKernel`; Metal's `VolumeBlur`): the
+/// grid's side, the first row (y) it covers, the kernel's reach in voxels and σ, the scale from fixed-point sums to the
+/// stored density, and the axis (1 y, 2 z; the resolve runs along x).
+struct VolumeBlur: Equatable {
+    var size: UInt32 = 0
+    var firstRow: UInt32 = 0
+    var radius: Int32 = 0
+    var sigma: Float = 1
+    var unit: Float = 1
+    var axis: UInt32 = 0
+}
+
+/// The Radiant body's look (`radiantBodyFragment`; Metal's `RadiantBodyLook`), see `RadiantBody`.
+struct RadiantBodyLook: Equatable {
+    var reach: Float = 1
+    var density: Float = 1
+    var edgeFrom: Float = 0.02
+    var edgeTo: Float = 0.2
+    var base: Float = 0.3
+    var absorb: Float = 0.5
+    var chroma: Float = 1.3
+    var shellFrom: Float = 0.95
+    var wash: Float = 0.7
+    var glow: Float = 1
 }
 
 /// The full band in `DomeGeometry.power`: the channel's RMS rather than one analysis band.

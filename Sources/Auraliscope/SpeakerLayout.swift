@@ -17,7 +17,8 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
     case s70 = "7.0", s71 = "7.1", s712 = "7.1.2", s714 = "7.1.4", s716 = "7.1.6"
     case s914 = "9.1.4", s916 = "9.1.6"
 
-    static let standard = SpeakerLayout.s512
+    /// Until a format is chosen (and stored as "speakerLayout"), Immersive shows the largest one.
+    static let standard = SpeakerLayout.s916
     var id: String { rawValue }
     var name: String { rawValue }
 
@@ -45,6 +46,43 @@ enum SpeakerLayout: String, CaseIterable, Identifiable {
         case .s914: return bed91 + top4
         case .s916: return bed91 + top6
         }
+    }
+
+    /// The same roles in film order, as Pro Tools and other film-style hosts send them: L C R, the wides, the (side)
+    /// surrounds, the rear surrounds, then the LFE, then the heights as in SMPTE order (5.1: L C R Ls Rs LFE).
+    var filmRoles: [Int] {
+        let front = [Role.left, Role.center, Role.right, Role.leftWide, Role.rightWide, Role.leftSurround, Role.rightSurround,
+                     Role.leftRearSurround, Role.rightRearSurround, Role.lfe].filter(contains)
+        return front + roles.filter { !front.contains($0) }
+    }
+
+    /// The same roles in VST3 order, as Nuendo, Cubase and other VST3 hosts send a bus: by the VST3 speaker's bit, so
+    /// L R C LFE, then the rear surrounds of a 7.x or 9.x bed (VST3's Ls Rs; a 5.x bed's surrounds), its side surrounds
+    /// (Sl Sr), the heights as top front, top rear, top middle (Tsl Tsr), and the wides last (9.1.6: L R C LFE Lrs Rrs
+    /// Lss Rss Ltf Rtf Ltr Rtr Ltm Rtm Lw Rw). The Bridge plugin maps the same speakers (`layoutFor` in BridgeVST3.cpp).
+    var vst3Roles: [Int] {
+        let rear = contains(Role.leftRearSurround)
+        func bit(_ role: Int) -> Int {
+            switch role {
+            case Role.left: return 0
+            case Role.right: return 1
+            case Role.center: return 2
+            case Role.lfe: return 3
+            case Role.leftSurround: return rear ? 9 : 4
+            case Role.rightSurround: return rear ? 10 : 5
+            case Role.leftRearSurround: return 4
+            case Role.rightRearSurround: return 5
+            case Role.leftTopFront: return 12
+            case Role.rightTopFront: return 14
+            case Role.leftTopRear: return 15
+            case Role.rightTopRear: return 17
+            case Role.leftTopMiddle: return 24
+            case Role.rightTopMiddle: return 25
+            case Role.leftWide: return 59
+            default: return 60  // Rw
+            }
+        }
+        return roles.sorted { bit($0) < bit($1) }
     }
 
     var channelCount: Int { roles.count }

@@ -4,10 +4,12 @@
     {
       "layers" : [
         {
+          "blend-mode" : "normal",
+          "fill" : "automatic",
           "image-name" : "soundmeter icon.png",
           "name" : "soundmeter icon",
           "position" : {
-            "scale" : 0.25,
+            "scale" : 0.3,
             "translation-in-points" : [
               0,
               0
@@ -40,10 +42,11 @@
     {
       "layers" : [
         {
-          "blend-mode" : "overlay",
+          "blend-mode" : "normal",
           "fill" : {
-            "solid" : "display-p3:0.17175,0.17175,0.17175,1.00000"
+            "solid" : "display-p3:0.00000,0.00000,0.00000,0.93371"
           },
+          "glass" : false,
           "image-name" : "black 2.png",
           "name" : "black 2"
         }

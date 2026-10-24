@@ -164,14 +164,14 @@ NSTextField *heading(NSRect frame, NSString *title) {
     self.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     const CGFloat width = abr::kEditorWidth, margin = 16, inner = width - 2 * margin;
 
-    // Header: mark, name, format and the LABS badge.
+    // Header: mark, name, format and the BETA badge.
     ABR_LOGO_CLASS *logo = [[ABR_LOGO_CLASS alloc] initWithFrame:NSMakeRect(margin, 16, 20 * 2 / std::sqrt(3.0), 20)];
     [self addSubview:logo];
     NSTextField *title = label(NSMakeRect(margin + 32, 14, 250, 22), expanded(15, NSFontWeightSemibold), ink());
     title.stringValue = @"Auraliscope Bridge";
     [self addSubview:title];
     NSTextField *badge = label(NSMakeRect(width - margin - 46, 18, 46, 15), expanded(9, NSFontWeightBold), darkInk());
-    badge.stringValue = @"2.0";
+    badge.stringValue = @"BETA";
     badge.alignment = NSTextAlignmentCenter;
     badge.wantsLayer = YES;
     badge.layer.backgroundColor = ochre().CGColor;
@@ -348,6 +348,7 @@ static NSURL *appApplicationURL() {
         if (!url || [url.pathComponents containsObject:@".Trash"] || [url.pathComponents containsObject:@".Trashes"])
             return false;
         NSString *executable = [NSBundle bundleWithURL:url].executablePath;
+        // Auraliscope before 2.0 (build 91) shares the bundle ID but cannot receive DAW audio.
         return executable && [NSFileManager.defaultManager isExecutableFileAtPath:executable]
             && [[NSBundle bundleWithURL:url].infoDictionary[@"CFBundleVersion"] integerValue] >= 91;
     };

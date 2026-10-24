@@ -1,17 +1,24 @@
-# Copyright
+# Copyright and license
 
-Copyright © 2026 JINBOZ. All rights reserved.
+Copyright © 2026 JINBOZ.
 
-Auraliscope and Auraliscope Bridge, including their original source code, interface, graphics and documentation,
-are proprietary works. No open-source license is granted by making this repository or its release downloads available.
+Auraliscope and Auraliscope Bridge's original source code and project documentation are licensed under the
+GNU General Public License, version 3 only (SPDX: GPL-3.0-only). See LICENSE for the unmodified license text.
+You may run, study, modify and redistribute covered source and binaries under those terms, including commercially.
+This release grants no additional non-commercial-only or no-redistribution restriction.
 
-You may download and run the official, unmodified release binaries for personal or professional audio work.
-This permission does not grant permission to redistribute the application, distribute modified builds, or copy,
-modify or redistribute the original source code without prior written permission from JINBOZ.
+Official prebuilt packages may be sold through the author's distribution channels. Payment is for the official
+build and distribution service; it does not remove recipients' GPL rights. Recipients may build their own copies
+and redistribute covered binaries, free of charge or for a fee, while meeting the GPL's requirements. A third-party
+build must not be represented as an official JINBOZ release. No trademark license or endorsement is granted here.
 
-Third-party components remain subject to their own licenses; these terms do not restrict rights granted by those
-licenses. See [Third-party notices](docs/THIRD_PARTY_NOTICES.md), including the MIT-licensed VST3 SDK and the
-Apache-2.0-licensed AudioUnitSDK. Product and service names belong to their respective owners.
+Third-party SDK code retains its MIT or Apache-2.0 license and notices. See docs/THIRD_PARTY_NOTICES.md.
+The supplied Pearl image is included with JINBOZ's confirmation of ownership or public redistribution permission.
+Milk Frog is identified by JINBOZ as public-domain material; no new copyright restriction is asserted over it.
+See docs/ASSET_RIGHTS.md. Code licensing does not transfer third-party artwork ownership.
 
-The software is provided as is, without warranties of accuracy, fitness for a particular purpose or uninterrupted
-operation, to the extent permitted by applicable law. Meter readings and reports do not constitute delivery certification.
+When distributing covered binaries, provide the exact corresponding source, build scripts, license and notices
+as explained in docs/SOURCE_DISTRIBUTION.md. This RC is a local preparation; no GitHub publication or sale is implied.
+
+This program is distributed WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See sections 15 and 16 of LICENSE. Readings and reports are not delivery certification.

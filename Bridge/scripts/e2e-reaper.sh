@@ -1,5 +1,5 @@
 #!/bin/zsh
-# REAPER runtime checks with Auraliscope watching: for each format, the live script (play, plugin window open
+# REAPER runtime checks with Auraliscope Labs watching: for each format, the live script (play, plugin window open
 # and closed, FX bypass, stop, play, quit), then an offline render of the saved project, whose output is compared
 # with the source signal. Uses daw-reaper.sh (private REAPER profile, silent virtual output device).
 set -uo pipefail
@@ -9,9 +9,9 @@ app="$ABR_DIST/Auraliscope.app/Contents/MacOS/Auraliscope"
 logs=.build/bridge/validation
 failed=0
 # Another receiver (a Labs left running, a probe) would hold the socket, and a running REAPER would take the projects.
-if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v1.sock" ]] \
+if [[ -S "$HOME/Library/Application Support/Auraliscope Bridge/bridge-v2.sock" ]] \
     && ! .build/bridge/tools/ResultProbe --seconds 0 > /dev/null 2>&1; then
-    echo "Another Bridge receiver is running (Auraliscope?): quit it first" >&2; exit 1
+    echo "Another Bridge receiver is running (Auraliscope Labs?): quit it first" >&2; exit 1
 fi
 pgrep -xq REAPER && { echo "REAPER is running: quit it first" >&2; exit 1; }
 app_pid=0

@@ -2,6 +2,7 @@ import AppKit
 import CoreAudio
 import AVFoundation
 import SwiftUI
+import Combine
 
 @MainActor
 private final class WelcomeCoordinator: ObservableObject {
@@ -22,7 +23,15 @@ private final class WelcomeCoordinator: ObservableObject {
     static func noteLaunch() { UserDefaults.standard.set(build, forKey: seenBuildKey) }
 }
 
+/// Settings carry over before anything reads them, then the app starts.
 @main
+enum Launcher {
+    static func main() {
+        SettingsMigration.run()
+        AuraliscopeApp.main()
+    }
+}
+
 struct AuraliscopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = MeterModel()
@@ -30,7 +39,16 @@ struct AuraliscopeApp: App {
     @AppStorage("showWelcomeOnLaunch") private var showWelcomeOnLaunch = true
     @StateObject private var welcome = WelcomeCoordinator()
 
-    init() { Diagnostics.runIfRequested() }
+    init() {
+        if CommandLine.arguments.contains(where: { ["--test-panel-drawing","--test-multifft-layout"].contains($0) }), Bundle.main.bundleIdentifier?.hasSuffix("QA") != true {
+            fputs("UI self-tests require an isolated QA bundle identifier.\n", stderr)
+            exit(2)
+        }
+        Diagnostics.runIfRequested()
+        if CommandLine.arguments.contains(where: { ["--test-panel-drawing","--test-multifft-layout"].contains($0) }) {
+            DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
+        }
+    }
 
     var body: some Scene {
         WindowGroup(AppName.full, id: "meter") {
@@ -42,7 +60,7 @@ struct AuraliscopeApp: App {
                     let inputNeedsPermission = !Diagnostics.demo && model.selectedDevice?.output != true
                         && model.selectedDevice?.isBridge != true && model.selectedID.bridge == nil
                         && AVCaptureDevice.authorizationStatus(for: .audio) != .authorized
-                    if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && !launchedByBridge
+                    if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && !Diagnostics.selfTestRequested && !launchedByBridge
                                                    && (showWelcomeOnLaunch || WelcomeCoordinator.firstLaunchOfBuild || inputNeedsPermission)) {
                         if !Diagnostics.snapshotRequested { WelcomeCoordinator.noteLaunch() }
                         welcome.presented = true
@@ -63,7 +81,7 @@ struct AuraliscopeApp: App {
                     ModeItem(model: model)
                     TrailingItems(model: model)
                 }
-                .modifier(FullScreenToolbarBackground())
+                .modifier(TransparentToolbarBackground())
         }
         .defaultSize(width: 1400, height: 1060)
         // A panel in a window of its own (Layout ▸ Open Panel in New Window, or the panel's window button).
@@ -78,7 +96,18 @@ struct AuraliscopeApp: App {
             SettingsView(model: model)
                 .modifier(ThemeIdentity())
         }
+        // The sky runs up under the window controls; the sidebar names the app and each page its pane.
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 780, height: 560)
+        .windowResizability(.contentMinSize)
+        // Where each speaker sits, for the Immersive soundstage (from its panel's settings).
+        Window(L("Speaker Layout"), id: SpeakerLayoutEditor.windowID) {
+            SpeakerLayoutEditor(model: model)
+                .modifier(ThemeIdentity())
+        }
+        // Like Settings: the sky under the window controls, the page's own title in place of the window's.
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 720, height: 760)
         .windowResizability(.contentMinSize)
         Window(L("About Auraliscope"), id: "about") {
             AboutView()
@@ -89,12 +118,17 @@ struct AuraliscopeApp: App {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {
                 Button(L("About Auraliscope")) { model.showAbout = true }
+                Button(L("Check for Updates…")) {
+                    model.showAbout = true
+                    GitHubUpdateChecker.shared.check()
+                }
             }
             CommandGroup(replacing: .appSettings) {
                 Button(L("Settings…")) { model.openSettings() }
                     .keyboardShortcut(",")
+                SettingsPresetsMenu(model: model)
             }
-            AppearanceCommands()
+            AppearanceCommands(model: model)
             MeterCommands(model: model)
             LayoutCommands()
         }
@@ -128,6 +162,11 @@ private struct MeterCommands: Commands {
                 .keyboardShortcut("e")
             Button(L("Export Loudness Data as CSV…")) { LoudnessReportExport.export(model: model, csv: true) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+            Button(L("Analyze Audio File…")) {
+                FileAnalysisController.shared.model = model
+                FileAnalysisController.shared.choose()
+            }
+            .keyboardShortcut("o")
             Divider()
             Picker(L("Monitoring Mode"), selection: $model.formatMode) {
                 ForEach(model.availableModes) { mode in Text(mode.title).tag(mode) }
@@ -152,6 +191,7 @@ final class MeterWindowFocus: ObservableObject {
 }
 
 private struct AppearanceCommands: Commands {
+    @ObservedObject var model: MeterModel
     @ObservedObject private var theme = ThemeSettings.shared
 
     var body: some Commands {
@@ -167,6 +207,8 @@ private struct AppearanceCommands: Commands {
             Divider()
             Button(L("Toggle Full Screen")) { MainWindow.toggleFullScreen() }
                 .keyboardShortcut("f", modifiers: [.control, .command])
+            // The toolbar's pin and Settings ▸ General hold the same setting.
+            Toggle(L("Always on Top"), isOn: $model.floating)
         }
     }
 }
@@ -189,7 +231,7 @@ private struct BrandItem: ToolbarContent {
     }
 }
 
-/// The mode selector (Stereo | Atmos, Mono when enabled, with AUTO) in the centre of the toolbar.
+/// The mode selector (Stereo | Immersive, Mono when enabled, with AUTO) in the centre of the toolbar.
 private struct ModeItem: ToolbarContent {
     let model: MeterModel
 
@@ -244,6 +286,7 @@ struct ToolbarDock<Content: View>: View {
         HStack(spacing: 4) { content }
             .padding(3)
             .background { DockTrack(radius: (Theme.dockButton + 6) / 2) }
+            .environment(\.toolbarControls, true)
             .fixedSize()
     }
 }
@@ -266,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AudioPermission.shared.checkAtLaunch()
         // The menu bar's AppKit items follow a language change at once (see `SystemMenus`).
         DispatchQueue.main.async {
+            MinimizeRouter.route()
             SystemMenus.follow()
             SettingsDraft.shared.follow()
         }
@@ -289,19 +333,14 @@ final class FullScreenState: ObservableObject {
     @Published var active = false
 }
 
-/// In a window the toolbar is transparent over the backdrop. In full screen AppKit moves it into a bar of its own
-/// with the system's grey; this gives that bar the backdrop's top colour, so the header reads the same in both.
-private struct FullScreenToolbarBackground: ViewModifier {
-    @ObservedObject private var state = FullScreenState.shared
-    @ObservedObject private var theme = ThemeSettings.shared
+/// Let the shared backdrop show through the toolbar in both windowed and full-screen presentation.
+private struct TransparentToolbarBackground: ViewModifier {
 
     // One view whatever the state: branching here would give the whole window content a new identity on every
     // switch, and its `onDisappear` would stop capture.
     func body(content: Content) -> some View {
-        // In a window the bar is hidden outright, so the sky runs up under the brand and the docks.
         let dressed = content
-            .toolbarBackground(Theme.dark ? Theme.backdropTop : Theme.skyTop, for: .windowToolbar)
-            .toolbarBackground(state.active ? .visible : .hidden, for: .windowToolbar)
+            .toolbarBackground(.hidden, for: .windowToolbar)
         // A visible bar would also print the window title beside the brand; the brand already names the app.
         if #available(macOS 15, *) {
             dressed.toolbar(removing: .title)
@@ -313,13 +352,68 @@ private struct FullScreenToolbarBackground: ViewModifier {
 
 enum MainWindow {
     static weak var window: NSWindow?
+    private static weak var fullScreenBackdrop: ToolbarBackdropHost?
+
+    /// AppKit hosts the full-screen toolbar in a separate window, beyond the main SwiftUI backdrop.
+    /// Find that window through our own toolbar views and paint behind its controls using the same backdrop.
+    static func updateFullScreenBackdrop() {
+        guard let window, window.styleMask.contains(.fullScreen),
+              let toolbarWindow = window.toolbar?.items.compactMap({ $0.view?.window }).first(where: { $0 !== window }),
+              let container = toolbarWindow.contentView else {
+            fullScreenBackdrop?.removeFromSuperview()
+            return
+        }
+        let backdrop: ToolbarBackdropHost
+        if let existing = fullScreenBackdrop, existing.superview === container {
+            backdrop = existing
+        } else {
+            fullScreenBackdrop?.removeFromSuperview()
+            backdrop = ToolbarBackdropHost(rootView: ToolbarBackdrop(size: window.frame.size, height: container.bounds.height))
+            backdrop.autoresizingMask = [.width, .height]
+            container.addSubview(backdrop, positioned: .below, relativeTo: nil)
+            fullScreenBackdrop = backdrop
+        }
+        backdrop.frame = container.bounds
+        backdrop.rootView = ToolbarBackdrop(size: window.frame.size, height: container.bounds.height)
+        if Diagnostics.enabled {
+            print("[chrome backdrop] full-screen host \(container.bounds.width) × \(container.bounds.height)")
+        }
+    }
     /// The saved frame has been applied this launch; later window probes must not apply it again.
     static var frameRestored = false
     /// The strip has no title bar of its own: the window controls hide, and the strip's controls take their place.
+    /// They turn transparent and inert rather than `isHidden`: the toolbar makes room for the controls it can see, so
+    /// a strip resized with them hidden laid the brand out under them, and it stayed there on the way back.
     static func setChromeHidden(_ hidden: Bool) {
         guard let window else { return }
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window.standardWindowButton(button)?.isHidden = hidden
+            guard let control = window.standardWindowButton(button) else { continue }
+            control.isHidden = false
+            control.alphaValue = hidden ? 0 : 1
+            control.isEnabled = !hidden
+        }
+        // SwiftUI hides and shows the toolbar with the strip, but after the strip was resized it left the toolbar
+        // hidden on the way back; the strip sets it itself, now and once SwiftUI has applied its own update.
+        window.toolbar?.isVisible = !hidden
+        DispatchQueue.main.async { [weak window] in
+            guard let window, PanelPlacement.shared.chromeHidden == hidden else { return }
+            window.toolbar?.isVisible = !hidden
+        }
+    }
+
+    /// AppKit minimizes a window only while its minimize button is enabled and not fully transparent, which the
+    /// strip's hidden controls are not: the button comes back, all but invisible, for the request, then hides again.
+    static func miniaturize(_ window: NSWindow) {
+        let button = window.standardWindowButton(.miniaturizeButton)
+        let hidden = button.map { !$0.isEnabled || $0.alphaValue == 0 } ?? false
+        if hidden {
+            button?.alphaValue = 0.01
+            button?.isEnabled = true
+        }
+        window.miniaturize(nil)
+        if hidden {
+            button?.alphaValue = 0
+            button?.isEnabled = false
         }
     }
 
@@ -374,7 +468,7 @@ private final class GreenButton: NSObject {
 /// and restores it on the way out.
 private final class WindowProbe: NSView {
     private static let frameName = "AuraliscopeMainWindow"
-    var floating = true { didSet { applyLevel() } }
+    var floating = false { didSet { applyLevel() } }
     private var captured = false
     private var observers: [NSObjectProtocol] = []
     private var behaviorObservation: NSKeyValueObservation?
@@ -391,6 +485,7 @@ private final class WindowProbe: NSView {
     private var fullScreen: Bool { window?.styleMask.contains(.fullScreen) == true }
 
     private func applyLevel() {
+        UtilityWindowProbe.floating = floating
         guard let window else { return }
         window.level = floating && !fullScreen ? .floating : .normal
     }
@@ -413,6 +508,7 @@ private final class WindowProbe: NSView {
         MainWindow.allowFullScreen(window)
         MainWindow.adoptGreenButton(window)
         applyLevel()
+        MainWindow.updateFullScreenBackdrop()
         if !captured {
             captured = true
             // SwiftUI re-applies `.fullScreenNone` after this setup; opt back in each time it does.
@@ -443,16 +539,23 @@ private final class WindowProbe: NSView {
                                                                     queue: .main) { _ in
                 MainActor.assumeIsolated { PanelPlacement.shared.closeAllWindows() }
             })
-            for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            for name in [NSWindow.willEnterFullScreenNotification, NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
                 observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] note in
                     guard let self, let window = self.window else { return }
-                    let entering = note.name == NSWindow.willEnterFullScreenNotification
+                    let entering = note.name != NSWindow.didExitFullScreenNotification
                     // Entering: a floating window would sit above the menu bar reveal; leaving: restore the preference.
                     window.level = entering ? .normal : (self.floating ? .floating : .normal)
                     MainActor.assumeIsolated { FullScreenState.shared.active = entering }
+                    DispatchQueue.main.async { MainWindow.updateFullScreenBackdrop() }
                     DiagnosticLog.event(entering ? "Full screen: on" : "Full screen: off")
                 })
             }
+            observers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window,
+                                                                    queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    if window.styleMask.contains(.fullScreen) { MainWindow.updateFullScreenBackdrop() }
+                }
+            })
             // Remember position and size across launches. The saved frame is restored once per launch (clamped
             // to a visible screen). A palette or appearance change rebuilds this view, and SwiftUI puts its own
             // autosave name back on the window meanwhile, so a rebuilt probe only takes the name back and leaves
@@ -472,8 +575,10 @@ private final class WindowProbe: NSView {
                 for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification] {
                     observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { note in
                         guard let window = note.object as? NSWindow, !window.styleMask.contains(.fullScreen) else { return }
-                        // The strip keeps a frame of its own; the full window's is the one it returns to.
+                        // The strip keeps a frame of its own; the full window's is the one it returns to. The frames
+                        // the window glides through into and out of the strip are neither.
                         MainActor.assumeIsolated {
+                            guard PanelPlacement.shared.morph == nil else { return }
                             if PanelPlacement.shared.strip {
                                 PanelPlacement.shared.saveStripFrame(window)
                             } else {
@@ -488,8 +593,25 @@ private final class WindowProbe: NSView {
             Diagnostics.testFullScreenIfRequested(window)
             Diagnostics.testThemeSwitchIfRequested(window)
             Diagnostics.probeWindowIfRequested(window)
+            Diagnostics.testStripReturnIfRequested(window)
         }
     }
+}
+
+private struct ToolbarBackdrop: View {
+    let size: CGSize
+    let height: CGFloat
+
+    var body: some View {
+        WindowBackdrop()
+            .frame(width: size.width, height: size.height)
+            .frame(height: height, alignment: .top)
+            .clipped()
+    }
+}
+
+private final class ToolbarBackdropHost: NSHostingView<ToolbarBackdrop> {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
@@ -502,7 +624,7 @@ private struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ view: WindowProbe, context: Context) { view.floating = floating }
 }
 
-/// Keeps a secondary window (Settings, About) above the floating meter and available over its full-screen Space,
+/// Keeps a secondary window (Settings, About) above the meter while it floats and available over its full-screen Space,
 /// keeps its title in the current language (SwiftUI names a `Window` scene once, when it opens), and leaves it out
 /// of window restoration.
 struct UtilityWindowProbe: NSViewRepresentable {
@@ -510,6 +632,16 @@ struct UtilityWindowProbe: NSViewRepresentable {
     var capture = false
     func makeNSView(context: Context) -> NSView { Probe(title: title, capture: capture) }
     func updateNSView(_ view: NSView, context: Context) { (view as? Probe)?.title = title }
+
+    /// The secondary windows open now, so they follow Always on top as it changes.
+    @MainActor static let windows = NSHashTable<NSWindow>.weakObjects()
+    /// Just above the meter while it floats; an ordinary window, like any other app's, while it does not.
+    @MainActor static var floating = false {
+        didSet { if floating != oldValue { windows.allObjects.forEach(applyLevel) } }
+    }
+    @MainActor static func applyLevel(to window: NSWindow) {
+        window.level = floating ? NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1) : .normal
+    }
 
     private final class Probe: NSView {
         let capture: Bool
@@ -526,7 +658,8 @@ struct UtilityWindowProbe: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard let window else { return }
             window.title = title
-            window.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+            UtilityWindowProbe.windows.add(window)
+            UtilityWindowProbe.applyLevel(to: window)
             window.collectionBehavior.insert(.fullScreenAuxiliary)
             window.titlebarAppearsTransparent = true
             window.appearance = nil
@@ -537,44 +670,58 @@ struct UtilityWindowProbe: NSViewRepresentable {
     }
 }
 
-/// The window's backdrop: a sky the panels float in, and the only place the palette is used as light.
-/// On dark: night, near-black with the palette's light pooled behind the top row and a faint glow rising from the
-/// horizon at the bottom. On light: the palette's colour deep at the top, thinning through haze to white light low
-/// on the horizon. A fine static grain lies over both. Static gradients and one tiled image, drawn once per size.
+/// The window's backdrop: a sky the panels float in, nearly without colour: the palette's hue survives only as a trace
+/// in its light (`Theme.skyMute`), so colour belongs to the signal and the lit controls.
+/// On dark: a deep night, near-black over most of the window, a soft light pooled only behind the top-left of the top
+/// row and a low glow rising from the horizon, the edges falling away into a vignette so the glass panels stand out
+/// of the dark. On light: a grey-blue haze deepest across the upper third, thinning to white light low on the
+/// horizon. A fine static grain lies over both. Static gradients and one tiled image, drawn once
+/// per size.
 struct WindowBackdrop: View {
     var body: some View {
         ZStack {
-            if Theme.dark {
+            if Theme.isConsole {
+                ConsoleBackdrop()
+            } else if Theme.palette == .iconPearl {
+                PearlBackdrop()
+            } else if Theme.palette == .milkFrog {
+                MilkFrogBackdrop()
+            } else if Theme.dark {
                 LinearGradient(stops: [.init(color: Theme.windowTop, location: 0),
-                                       .init(color: Theme.windowBottom, location: 0.55),
+                                       .init(color: Theme.windowBottom, location: 0.38),
                                        .init(color: Theme.windowBottom, location: 1)],
                                startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.95), Theme.bannerAccent.opacity(0.40), .clear],
-                               center: UnitPoint(x: 0.3, y: -0.15), startRadius: 0, endRadius: 1100)
+                RadialGradient(stops: [.init(color: Theme.skyLight.opacity(0.62), location: 0),
+                                       .init(color: Theme.skyLight.opacity(0.20), location: 0.45),
+                                       .init(color: .clear, location: 1)],
+                               center: UnitPoint(x: 0.24, y: -0.18), startRadius: 0, endRadius: 760)
                 // The horizon: the palette's light rising from below, as a city's does under a night sky.
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.55), Theme.bannerAccent.opacity(0.18), .clear],
-                               center: UnitPoint(x: 0.62, y: 1.2), startRadius: 0, endRadius: 1000)
+                RadialGradient(colors: [Theme.skyLight.opacity(0.30), Theme.skyLight.opacity(0.08), .clear],
+                               center: UnitPoint(x: 0.64, y: 1.22), startRadius: 0, endRadius: 720)
                 // A warm counter-light low on the left, so the night is not one hue.
-                RadialGradient(colors: [Theme.sand.opacity(0.16), .clear],
-                               center: UnitPoint(x: 0.05, y: 1.05), startRadius: 0, endRadius: 520)
+                RadialGradient(colors: [Theme.sand.opacity(0.035), .clear],
+                               center: UnitPoint(x: 0.05, y: 1.05), startRadius: 0, endRadius: 420)
+                // The night deepens toward the edges.
+                RadialGradient(colors: [.clear, Color.black.opacity(0.42)],
+                               center: UnitPoint(x: 0.45, y: 0.4), startRadius: 260, endRadius: 1250)
                 Image(nsImage: Grain.tile)
                     .resizable(resizingMode: .tile)
                     .opacity(Grain.opacity)
                     .blendMode(.screen)
             } else {
                 LinearGradient(stops: [.init(color: Theme.skyTop, location: 0),
-                                       .init(color: Theme.skyTop, location: 0.08),
-                                       .init(color: Theme.backdropTop, location: 0.3),
-                                       .init(color: Theme.backdropMiddle, location: 0.55),
-                                       .init(color: Theme.windowTop, location: 0.8),
+                                       .init(color: Theme.skyTop, location: 0.16),
+                                       .init(color: Theme.backdropTop, location: 0.42),
+                                       .init(color: Theme.backdropMiddle, location: 0.68),
+                                       .init(color: Theme.windowTop, location: 0.9),
                                        .init(color: Theme.horizon, location: 1)],
                                startPoint: .top, endPoint: .bottom)
-                RadialGradient(colors: [Theme.bannerAccent.opacity(0.5), .clear],
+                RadialGradient(colors: [Theme.skyLight.opacity(0.4), .clear],
                                center: UnitPoint(x: 0.0, y: 0.45), startRadius: 0, endRadius: 760)
-                RadialGradient(colors: [Color.white.opacity(0.9), Color.white.opacity(0.35), .clear],
-                               center: UnitPoint(x: 0.55, y: 1.15), startRadius: 0, endRadius: 980)
+                RadialGradient(colors: [Color.white.opacity(0.7), Color.white.opacity(0.22), .clear],
+                               center: UnitPoint(x: 0.55, y: 1.2), startRadius: 0, endRadius: 820)
                 // Warm haze on the horizon's left, as in a hazy sky over a city: the cool sky meets a little sand.
-                RadialGradient(colors: [Theme.sand.opacity(0.22), .clear],
+                RadialGradient(colors: [Theme.sand.opacity(0.08), .clear],
                                center: UnitPoint(x: 0.05, y: 1.0), startRadius: 0, endRadius: 560)
                 Image(nsImage: Grain.tile)
                     .resizable(resizingMode: .tile)
@@ -589,10 +736,13 @@ struct WindowBackdrop: View {
 
 struct StatusDot: View {
     let running: Bool
+    /// Breathes while running (`PulseRing`).
+    var pulse = false
     var body: some View {
         Circle()
             .fill(running ? Theme.sage : Theme.tertiary)
             .frame(width: 7, height: 7)
+            .background { if running && pulse { PulseRing(color: Theme.sageRGB) } }
     }
 }
 
@@ -618,14 +768,21 @@ private struct TransportButtons: View {
 private struct WindowButtons: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var theme = ThemeSettings.shared
+    @ObservedObject private var fileAnalysis = FileAnalysisController.shared
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         let appearance = theme.dark ? L("Switch to Light Appearance") : L("Switch to Dark Appearance")
+        DiscButton(symbol: "waveform.badge.magnifyingglass", help: L("Analyze Audio File…"), on: fileAnalysis.shown) {
+            fileAnalysis.model = model
+            fileAnalysis.toggle()
+        }
+        WindowPanelsMenu()
         LayoutMenuButton()
         DiscButton(symbol: model.floating ? "pin.fill" : "pin", help: L("Always on top"), on: model.floating) {
             model.floating.toggle()
         }
+        .accessibilityAddTraits(model.floating ? .isSelected : [])
         .accessibilityValue(model.floating ? L("Enabled") : L("Disabled"))
         DiscButton(symbol: theme.dark ? "sun.max" : "moon", help: appearance, action: theme.toggle)
         DiscButton(symbol: "gearshape", help: L("Settings")) { model.openSettings() }
@@ -636,6 +793,9 @@ private struct WindowButtons: View {
 /// set firmly and units quieter. Capture state is on the loudness summary's chip and the transport button.
 private struct ToolbarBrand: View {
     @ObservedObject var model: MeterModel
+    /// Toolbar items sit outside the window content that `ThemeIdentity` rebuilds: without this the title kept the
+    /// old appearance's ink until the stream details next changed, seconds later or not at all.
+    @ObservedObject private var theme = ThemeSettings.shared
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
@@ -660,6 +820,7 @@ private struct ToolbarBrand: View {
         .padding(.horizontal, 6)
         .fixedSize()
         .accessibilityElement(children: .combine)
+        .id(theme.signature)
     }
 }
 
@@ -689,6 +850,7 @@ private struct DashboardHero: View {
                 if panels.contains(.loudness) {
                     LoudnessCard(model: model, readouts: readouts, compact: compact, loudness: widths.loudness,
                                  height: geometry.size.height)
+                        .zoomSource(.loudness)
                         .transition(.opacity)
                 }
                 if panels.contains(.loudness) && panels.contains(.history) {
@@ -702,7 +864,9 @@ private struct DashboardHero: View {
                 }
                 if panels.contains(.history) {
                     HeroHistory(model: model, readouts: readouts, target: Float(model.loudnessTarget))
+                        .modifier(PanelRenderingScope(panel: .history))
                         .frame(width: widths.history)
+                        .zoomSource(.history)
                         .transition(.opacity)
                 }
                 if panels.contains(.history) && panels.contains(.vu) {
@@ -714,6 +878,7 @@ private struct DashboardHero: View {
                 if panels.contains(.vu) {
                     VUMeterPanel(model: model, readouts: readouts)
                         .frame(width: widths.vu)
+                        .zoomSource(.vu)
                         .transition(.opacity)
                 }
             }
@@ -815,8 +980,8 @@ private struct LoudnessCard: View {
                           standard: model.loudnessStandard, target: target)
                     .frame(width: max(0, loudness))
             }
+            // Straight on the card, as in Dock mode: no recessed plate, the readings are the panel's content.
             .frame(maxHeight: .infinity)
-            .background { PlotPlate().padding(.horizontal, -8).padding(.bottom, -6) }
         }
         .frame(width: HeroLayout.leadWidth(compact: compact) + gap + max(0, loudness))
         .padding(.leading, HeroLayout.inset)
@@ -1040,7 +1205,7 @@ private struct LoudnessStandardMenus: View {
         value.rounded() == value ? MeterScale.signedInteger(Float(value)) : MeterScale.signedTenths(Float(value))
     }
 
-    /// "−24 LUFS · ATSC A/85 · Free TV OP-59 · Prime Video  −2.0 dBTP"
+    /// "−24 LUFS · ATSC A/85  (−2.0 dBTP)"
     static func row(target: Double, ceiling: Double, title: String) -> String {
         "\(lufs(target)) LUFS · \(title)  (\(MeterScale.tenths(Float(ceiling))) dBTP)"
     }
@@ -1070,12 +1235,12 @@ struct SummaryMenu<Content: View>: View {
                 .padding(.horizontal, 11)
                 .frame(height: 22)
                 .background {
-                    shape.fill(hovering ? Theme.controlHover : Theme.controlFill)
+                    // Quiet at rest; under the pointer it rises off the panel, lit from the upper left.
+                    shape.fill(hovering ? AnyShapeStyle(Theme.raisedFace) : AnyShapeStyle(Theme.controlFill))
                         .overlay {
-                            shape.strokeBorder(LinearGradient(colors: [Color.white.opacity(Theme.dark ? 0.12 : 0.9),
-                                                                       Color.white.opacity(Theme.dark ? 0.0 : 0.2)],
-                                                              startPoint: .top, endPoint: .bottom), lineWidth: 0.5)
+                            shape.gradientBorder(Theme.controlRim, lineWidth: 0.5)
                         }
+                        .shadow(color: hovering ? Theme.neuShade.opacity(0.7) : .clear, radius: 3, x: 1, y: 2)
                 }
                 .contentShape(shape)
         }
@@ -1083,7 +1248,7 @@ struct SummaryMenu<Content: View>: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .onHover { hovering = $0 }
+        .onHover { inside in withAnimation(Motion.hover) { hovering = inside } }
         .help(help)
     }
 
@@ -1110,37 +1275,68 @@ struct SummaryMenu<Content: View>: View {
 private struct MeterView: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var placement = PanelPlacement.shared
+    @ObservedObject private var fileAnalysis = FileAnalysisController.shared
     @ObservedObject private var l10n = Localizer.shared
     @Environment(\.openWindow) private var openWindow
     // Divider positions: row fractions of the analyzer panels, and the Soundstage width in points.
     // 1.1 merged Spectrum and Spectrogram into one card, so the share has a key of its own.
     @AppStorage("layout.analyzerShare") private var spectrumFraction: Double = Double(PanelLayout.defaultSpectrum)
+    @AppStorage("layout.multiFFTShare") private var multiFFTShare = MultiFFTStackLayout.defaultShare
     @AppStorage("layout.stageWidth") private var stageWidth: Double = Double(ColumnLayout.defaultStage)
     /// The Soundstage room's share of the right-hand column's height; Channel Levels takes the rest.
     @AppStorage("layout.roomShare") private var roomShare: Double = Double(ColumnLayout.defaultRoomShare)
     /// Loudness summary height in points; 0 follows the window's default.
     @AppStorage("layout.heroHeight") private var heroHeight: Double = 0
+    /// Each grid panel's place, where an enlarged panel grows from and shrinks back to.
+    @State private var zoomSources: [MeterPanel: CGRect] = [:]
 
     var body: some View {
+        // Into and out of the strip (`StripMorph`): the view leaving holds its picture and size while it fades and the
+        // window glides to its new frame; the view arriving is laid out at its own size and fades in once the window
+        // is there. Neither is laid out again at the sizes in between.
+        let morph = placement.morph
         ZStack {
-            if placement.strip {
-                StripView(model: model)
-                    .transition(.opacity)
-            } else {
-                window
-                    .transition(.opacity)
+            WindowBackdrop()
+            GeometryReader { root in
+                ZStack {
+                    if placement.strip || (morph.map { !$0.entering || $0.prepared } ?? false) {
+                        StripView(model: model)
+                            .frame(width: morph != nil ? pinned(placement.stripContentSize, root.size).width : root.size.width,
+                                   height: morph != nil ? pinned(placement.stripContentSize, root.size).height : root.size.height)
+                            .environment(\.canvasesHeld, morph.map { !$0.entering || !$0.incoming } ?? false)
+                            .opacity(morph.map { $0.entering ? ($0.incoming ? 1 : 0) : ($0.outgoing ? 1 : 0) } ?? 1)
+                            .frame(width: root.size.width, height: root.size.height, alignment: .bottomLeading)
+                    }
+                    if !placement.strip {
+                        window
+                            .frame(width: morph != nil ? pinned(placement.windowContentSize, root.size).width : root.size.width,
+                                   height: morph != nil ? pinned(placement.windowContentSize, root.size).height : root.size.height)
+                            .environment(\.canvasesHeld, morph.map { $0.entering || !$0.incoming } ?? false)
+                            .opacity(morph.map { $0.entering ? ($0.outgoing ? 1 : 0) : ($0.incoming ? 1 : 0) } ?? 1)
+                            .frame(width: root.size.width, height: root.size.height, alignment: .topLeading)
+                    }
+                }
+                .frame(width: root.size.width, height: root.size.height)
+                .clipped()
+                .onAppear { placement.noteContentSize(root.size) }
+                .onChange(of: root.size) { placement.noteContentSize($0) }
+                .onChange(of: morph == nil) { _ in placement.noteContentSize(root.size) }
             }
+            // Measure the entire window while Dock chrome is hidden. Extending only StripView leaves its parent
+            // measured below the native title bar, so the parent's clip either leaves a blank bar or cuts off titles.
+            .ignoresSafeArea(.container, edges: placement.chromeHidden ? .top : [])
         }
-        .animation(.panelZoom, value: placement.strip)
         .overlay(alignment: .bottom) {
-            if !placement.strip {
+            if !placement.strip && morph == nil {
                 PreviewBanner(model: model)
                     .padding(.bottom, 30)
             }
         }
-        .frame(minWidth: placement.strip ? StripLayout.minWidth : 1000, minHeight: placement.strip ? StripLayout.minHeight : 628)
-        .toolbar(placement.strip ? .hidden : .visible, for: .windowToolbar)
-        .background { WindowBackdrop() }
+        // While the window glides into or out of the strip it may be any size in between.
+        .frame(minWidth: placement.strip || morph != nil ? StripLayout.minWidth : 1000,
+               minHeight: placement.strip || morph != nil ? StripLayout.minHeight : 628)
+        // The title bar goes as the window starts down into the strip, and returns as it starts back up.
+        .toolbar(placement.chromeHidden ? .hidden : .visible, for: .windowToolbar)
         .background(WindowConfigurator(floating: model.floating))
         .background(WindowOpeners(model: model))
         .background {
@@ -1155,23 +1351,59 @@ private struct MeterView: View {
         .tint(Theme.action)
     }
 
+    /// A size kept through the strip's morph: the one last laid out, or the window's own before there was one.
+    private func pinned(_ size: CGSize, _ fallback: CGSize) -> CGSize {
+        size.width > 0 && size.height > 0 ? size : fallback
+    }
+
     private var window: some View {
         GeometryReader { window in
             let tall = window.size.height >= 940
             let gutter: CGFloat = tall ? 14 : 10
             VStack(spacing: PanelLayout.divider) {
-                ZStack {
-                    // Never two canvases of one kind at once: the grid leaves at once and the enlarged panel grows in
-                    // (and back), so a shared scene is never drawn twice in a frame.
-                    if let panel = placement.enlarged {
-                        PanelView(panel: panel, model: model)
-                            .environment(\.panelContext, .enlarged)
+                ZStack(alignment: .topLeading) {
+                    // File analysis fills the window as an enlarged panel does.
+                    if fileAnalysis.shown {
+                        FileAnalysisView()
                             .transition(.asymmetric(insertion: .scale(scale: 0.965).combined(with: .opacity), removal: .identity))
                     } else {
-                        grid(size: CGSize(width: window.size.width - gutter * 2, height: window.size.height), tall: tall)
-                            .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                        // An enlarged panel grows out of its place in the grid while the rest of the grid recedes, and
+                        // shrinks back into it (`PanelZoom`). Never two canvases of one kind at once: under the zoomed
+                        // card the grid shows an empty one, and it leaves the window once the panel fills it.
+                        let zoom = placement.zoom
+                        if zoom?.gridShown ?? true {
+                            grid(size: CGSize(width: window.size.width - gutter * 2, height: window.size.height), tall: tall)
+                                // The panels' places in the grid's own space, which fills the area as the zoomed card's
+                                // does: the grid receding (its scale) does not move them.
+                                .coordinateSpace(name: ZoomSources.space)
+                                .onPreferenceChange(ZoomSources.self) { frames in
+                                    let merged = zoomSources.merging(frames) { $1 }
+                                    if merged != zoomSources { zoomSources = merged }
+                                }
+                                // Receding behind the panel it holds its picture; coming back it draws as it fades in.
+                                .environment(\.canvasesHeld, zoom?.expanded == true)
+                                // It steps back quickly as the panel starts to grow, and comes forward as it lands,
+                                // so the zoom itself moves over a still window.
+                                .opacity(zoom?.expanded == true ? 0 : 1)
+                                .animation(.panelGridFade(out: zoom?.expanded == true), value: zoom?.expanded == true)
+                                .transition(.asymmetric(insertion: .opacity, removal: .identity))
+                        }
+                        if let zoom {
+                            GeometryReader { area in
+                                let full = CGRect(origin: .zero, size: area.size)
+                                let grown = zoom.expanded || Animation.reduceMotion
+                                // Over its place it is the grid's panel, so it leaves and lands without a jump.
+                                PanelView(panel: zoom.panel, model: model)
+                                    .environment(\.panelContext, zoom.expanded ? .enlarged : .grid)
+                                    .environment(\.zoomMotion, zoom.moving)
+                                    .modifier(ZoomFrame(rect: grown ? full : (zoomSources[zoom.panel] ?? full)))
+                                    .opacity(zoom.expanded || !Animation.reduceMotion ? 1 : 0)
+                            }
+                            .zIndex(1)
+                        }
                     }
                 }
+
                 StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames,
                           silentOutput: model.silentOutput, breaks: model.measurementBreaks,
                           missingSeconds: model.missingSeconds)
@@ -1186,7 +1418,7 @@ private struct MeterView: View {
     private func grid(size: CGSize, tall: Bool) -> some View {
         let total = max(1, size.width)
         let summary = Set([MeterPanel.loudness, .history, .vu].filter(placement.inGrid))
-        let analyzersShown = placement.inGrid(.spectrum) || placement.inGrid(.waveform)
+        let analyzersShown = placement.inGrid(.spectrum) || placement.inGrid(.waveform) || (placement.inGrid(.multiFFT) && model.format == .stereo)
         let stageShown = placement.inGrid(.soundstage) || placement.inGrid(.levels)
         let below = analyzersShown || stageShown
         let stage = analyzersShown ? (stageShown ? ColumnLayout.stageWidth(CGFloat(stageWidth), total: total) : 0) : total
@@ -1235,11 +1467,35 @@ private struct MeterView: View {
 
     private var analyzerPanels: some View {
         GeometryReader { proxy in
+            let multi = placement.inGrid(.multiFFT) && model.format == .stereo
+            let legacy = placement.inGrid(.spectrum) || placement.inGrid(.waveform)
+            let split = MultiFFTStackLayout(height: Double(proxy.size.height), share: multiFFTShare, gap: Double(PanelLayout.divider))
+            VStack(spacing: 0) {
+                if multi {
+                    PanelView(panel: .multiFFT, model: model).zoomSource(.multiFFT)
+                        .frame(height: legacy ? CGFloat(split.top) : proxy.size.height)
+                }
+                if multi && legacy {
+                    PanelDivider(axis: .vertical, leading: CGFloat(split.top),
+                        onResize: { multiFFTShare = split.dragging(to: Double($0)) },
+                        onReset: { multiFFTShare = MultiFFTStackLayout.defaultShare }, identifier: "multifft.split")
+                        .frame(height: PanelLayout.divider)
+                }
+                if legacy {
+                    legacyAnalyzerPanels.frame(height: multi ? CGFloat(split.bottom) : proxy.size.height)
+                }
+            }
+        }
+    }
+
+    private var legacyAnalyzerPanels: some View {
+        GeometryReader { proxy in
             let layout = PanelLayout(height: proxy.size.height, spectrum: CGFloat(spectrumFraction))
             let spectrum = placement.inGrid(.spectrum), waveform = placement.inGrid(.waveform)
             VStack(spacing: 0) {
                 if spectrum {
                     PanelView(panel: .spectrum, model: model)
+                        .zoomSource(.spectrum)
                         .frame(height: waveform ? layout.spectrum : proxy.size.height)
                 }
                 if spectrum && waveform {
@@ -1250,6 +1506,7 @@ private struct MeterView: View {
                 }
                 if waveform {
                     PanelView(panel: .waveform, model: model)
+                        .zoomSource(.waveform)
                         .frame(height: spectrum ? layout.waveform : proxy.size.height)
                 }
             }
@@ -1266,6 +1523,7 @@ private struct MeterView: View {
             VStack(spacing: 0) {
                 if soundstage {
                     PanelView(panel: .soundstage, model: model)
+                        .zoomSource(.soundstage)
                         .frame(height: levels ? room : total)
                 }
                 if soundstage && levels {
@@ -1276,6 +1534,7 @@ private struct MeterView: View {
                 }
                 if levels {
                     PanelView(panel: .levels, model: model)
+                        .zoomSource(.levels)
                 }
             }
         }
@@ -1306,6 +1565,8 @@ private struct MeterView: View {
 private struct WindowOpeners: View {
     @ObservedObject var model: MeterModel
     @ObservedObject private var placement = PanelPlacement.shared
+    @ObservedObject private var fileAnalysis = FileAnalysisController.shared
+    @ObservedObject private var speakerLayouts = SpeakerLayoutStore.shared
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -1322,24 +1583,46 @@ private struct WindowOpeners: View {
                 Diagnostics.testSpaceShortcutIfRequested(model: model)
                 Diagnostics.testDomeOrbitIfRequested(model: model)
                 Diagnostics.testModeSwitchIfRequested(model: model)
+                Diagnostics.testSettingsPresetsIfRequested(model: model)
+                Diagnostics.testFramePacingIfRequested(model: model)
+                Diagnostics.testRCStateIfRequested(model: model)
+                Diagnostics.testPanelDrawingIfRequested(model: model)
+                Diagnostics.testMultiFFTLayoutIfRequested(model: model)
+                fileAnalysis.model = model
+                Diagnostics.analyseFileIfRequested()
                 guard Diagnostics.showAbout else { return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { openWindow(id: "about") }
             }
-            .onChange(of: model.showSettings) { requested in
-                guard requested else { return }
+            .onReceive(model.$showSettings.filter { $0 }.receive(on: RunLoop.main)) { _ in
                 model.showSettings = false
                 openWindow(id: "settings")
             }
-            .onChange(of: placement.windowRequest) { panel in
-                guard let panel else { return }
+            .onReceive(placement.$windowRequest.compactMap { $0 }.receive(on: RunLoop.main)) { panel in
                 placement.windowRequest = nil
                 openWindow(id: PanelWindow.sceneID, value: panel)
             }
-            .onChange(of: model.showAbout) { requested in
-                guard requested else { return }
+            .onReceive(model.$showAbout.filter { $0 }.receive(on: RunLoop.main)) { _ in
                 model.showAbout = false
                 openWindow(id: "about")
             }
+            .onReceive(speakerLayouts.$windowRequest.filter { $0 }.receive(on: RunLoop.main)) { _ in
+                speakerLayouts.windowRequest = false
+                openWindow(id: SpeakerLayoutEditor.windowID)
+            }
+    }
+}
+
+/// The status bar's rates: the analysis' fixed 60 Hz readings and the meters' live redraw rate (Settings ▸ General ▸
+/// Display frame rate, or what Automatic picked for the display).
+private struct RateReadout: View {
+    @ObservedObject private var rate = DisplayRateStatus.shared
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        Group {
+            if rate.fps > 0 { Text(L("%d Hz analysis · %d fps display", 60, rate.fps)) } else { Text(L("%d Hz analysis", 60)) }
+        }
+        .help(L("Readings update 60 times a second whatever the display does. The meters redraw at the display frame rate chosen in Settings ▸ General ▸ Performance; Automatic follows the display."))
     }
 }
 
@@ -1375,7 +1658,10 @@ private struct StatusBar: View {
                 Label(L("Dropped %d", Int(droppedFrames)), systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.ochre)
             }
-            Text("ITU-R BS.1770-5 · EBU R128")
+            HStack(spacing: 0) {
+                Text(verbatim: "ITU-R BS.1770-5 · EBU R128 · ")
+                RateReadout()
+            }
         }
         .font(.system(size: 10))
         .monospacedDigit()

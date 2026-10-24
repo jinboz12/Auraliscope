@@ -154,7 +154,7 @@ struct MasteringCheck {
         let title: String
         let items: [Item]
         var id: String { title }
-        var worst: Status { items.map(\.status).filter { $0 != .unavailable }.max() ?? .unavailable }
+        var worst: Status { items.map(\.status).filter { $0 != .unavailable }.max() ?? .ok }
     }
 
     /// One band of the tonal-balance table: its share of the energy, in dB relative to the whole.

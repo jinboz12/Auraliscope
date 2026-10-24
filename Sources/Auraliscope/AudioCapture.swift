@@ -93,8 +93,6 @@ enum AudioDevices {
         return inputs.sorted(by: byName) + outputs.sorted(by: byName)
     }
 
-    static func availableInputs() -> [InputDevice] { availableSources().filter { !$0.output } }
-
     private static func isAlive(_ id: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive,
                                                  mScope: kAudioObjectPropertyScopeGlobal,
@@ -124,6 +122,46 @@ enum AudioDevices {
         let list = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
         if firstStreamOnly { return list.first?.mNumberChannels ?? 0 }
         return list.reduce(0) { $0 + $1.mNumberChannels }
+    }
+
+    /// The speakers a device source's channels feed, as its speaker configuration in Audio MIDI Setup (its preferred
+    /// channel layout) says: an output's own; an input's own, or, for a virtual device whose input carries none, its
+    /// output's, since a loopback device hands each output channel to the same input (Pro Tools Audio Bridge, BlackHole
+    /// and the like are configured on their output side). Nil without a speaker configuration (`SpeakerMap.configured`)
+    /// and for DAW plugins, which describe their own bus.
+    static func speakerMap(_ source: InputDevice) -> SpeakerMap? {
+        guard !source.isBridge, source.device != 0 else { return nil }
+        func map(_ scope: AudioObjectPropertyScope) -> SpeakerMap? {
+            guard let labels = channelLabels(source.device, scope: scope),
+                  var map = SpeakerMap(labels: Array(labels.prefix(Int(source.channels)))) else { return nil }
+            map.roles += [Int?](repeating: nil, count: max(0, Int(source.channels) - map.roles.count))
+            return map.configured ? map : nil
+        }
+        if source.output { return map(kAudioObjectPropertyScopeOutput) }
+        if let own = map(kAudioObjectPropertyScopeInput) { return own }
+        return transportType(source.device) == kAudioDeviceTransportTypeVirtual ? map(kAudioObjectPropertyScopeOutput) : nil
+    }
+
+    /// The labels of a device's preferred channel layout on one side.
+    static func channelLabels(_ id: AudioDeviceID, scope: AudioObjectPropertyScope) -> [AudioChannelLabel]? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyPreferredChannelLayout, mScope: scope,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(id, &address, 0, nil, &size) == noErr,
+              size >= UInt32(MemoryLayout<AudioChannelLayout>.size) else { return nil }
+        let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+        defer { raw.deallocate() }
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, raw) == noErr else { return nil }
+        let labels = ChannelLabels.labels(raw.assumingMemoryBound(to: AudioChannelLayout.self), size: Int(size))
+        return labels.isEmpty ? nil : labels
+    }
+
+    static func transportType(_ id: AudioDeviceID) -> UInt32 {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var transport: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(id, &address, 0, nil, &size, &transport) == noErr ? transport : 0
     }
 
     static func stringProperty(_ id: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {

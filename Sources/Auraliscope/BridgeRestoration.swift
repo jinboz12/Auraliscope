@@ -17,7 +17,7 @@ struct BridgeCandidate: Equatable {
     let plugin: String
 }
 
-/// The DAW plugin insert the person chose, saved so the same insert can be found again after Auraliscope, the
+/// The DAW plugin insert the person chose, saved so the same insert can be found again after Auraliscope Labs, the
 /// plugin or the DAW restarts, together with the context it was chosen in.
 struct BridgeSelection: Codable, Equatable {
     var session: String
@@ -89,7 +89,7 @@ struct BridgeSelection: Codable, Equatable {
 
 /// Which connected insert is the saved one. The rule: never pick one of several possible inserts by chance.
 ///
-/// 1. The same live instance (its session) is the saved insert, whatever else is connected: Auraliscope
+/// 1. The same live instance (its session) is the saved insert, whatever else is connected: Auraliscope Labs
 ///    restarted while the DAW kept running.
 /// 2. Otherwise the inserts claiming the saved identity are the ones that hold it (the project reopened, the plugin
 ///    reloaded) and the copies made of it (a duplicated track, pasted settings, a second copy of the project in

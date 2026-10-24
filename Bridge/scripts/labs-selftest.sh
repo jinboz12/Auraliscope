@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Runs this build's Auraliscope with diagnostics and the given self-test arguments (see BridgeSelfTest.swift),
+# Runs this build's Auraliscope Labs with diagnostics and the given self-test arguments (see BridgeSelfTest.swift),
 # for checks in DAWs driven by hand. Nothing is selected from an earlier run unless --restore is given.
 #
 #   labs-selftest.sh --list-bridge-sources

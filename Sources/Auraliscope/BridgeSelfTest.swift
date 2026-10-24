@@ -70,6 +70,10 @@ enum BridgeSelfTest {
             }
         }
         guard arguments.contains("--bridge-selftest") else { return }
+        // The canvases ask for what they draw (every channel's spectrum, the speaker geometry) only while the window is
+        // visible; ask as they would, 30 times a second, so the checks hold on a locked or covered screen too.
+        let frames = Timer(timeInterval: 1.0 / 30, repeats: true) { _ in MainActor.assumeIsolated { _ = model.canvasFrame() } }
+        RunLoop.main.add(frames, forMode: .common)
         Run(model: model).start()
     }
 
@@ -208,6 +212,20 @@ enum BridgeSelfTest {
             }
             if let expectedFormat, model.format.rawValue != (expectedFormat == "spatial" ? 1 : expectedFormat == "mono" ? 2 : 0) {
                 fail("monitoring \(model.format), expected \(expectedFormat)")
+            }
+            // Immersive from a plugin of build 98 or later: it computes with the geometry the dome draws (SPATIAL_CONFIG),
+            // so its observations carry that geometry's hash and the dome draws them, with no notice.
+            if model.format == .spatial, roles.count > 2, let source = model.selectedBridgeSource {
+                let drawn = model.displayGeometry(for: model.shownLayout)
+                let o = model.lastObservations
+                say(String(format: "spatial observations: status %.0f, source %d, hash %016llx; dome's geometry %016llx; plugin takes geometry: %@",
+                           o.status, Int(o.source.rawValue), o.hash, drawn.hash, source.takesSpatialGeometry ? "yes" : "no"))
+                if source.takesSpatialGeometry {
+                    if o.status != 1 || o.source != .measured || o.hash != drawn.hash {
+                        fail("the plugin's observations are not of the geometry the dome draws")
+                    }
+                    if let notice = model.geometryNotice { fail("geometry notice shown: \(notice)") }
+                }
             }
             // With one channel the analysis sees it on L only; R must stay silent (nothing invented).
             if channels == 1 && peaks[1] > 0 { fail("mono source produced signal on R") }

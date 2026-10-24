@@ -57,6 +57,10 @@ package final class StreamAnalyzer {
     private var lastWaveSerial = 0
     private let waveformStride: Int
     package private(set) var sequence: UInt64 = 0
+    /// The observation frame the snapshot holds (`SnapshotSlots.spatialObservations`): a new number whenever its header
+    /// changes (a new transform's, or none), so a display that keeps observations is sent each frame once (`encode`).
+    package private(set) var observationFrame: UInt64 = 1
+    private var observationHeader = [Float](repeating: 0, count: SpatialObservations.headerFloats)
 
     /// `roles` gives each channel's speaker role, in the insert's channel order: [L] for mono, [L, R] for stereo,
     /// up to 16 distinct roles for an immersive bus (5.1, 7.1.4, 9.1.6…). Loudness weighs each channel by its role
@@ -71,6 +75,8 @@ package final class StreamAnalyzer {
         guard let pipeline = MeterPipeline(sampleRate: sampleRate, activeRoles: active, detector: detector,
                                            streamID: generation % 1_000_000) else { return nil }
         self.pipeline = pipeline
+        // Until a display configures the observations (SPATIAL_CONFIG), the bins go out as Build 87–97 sent them.
+        pipeline.spatialLegacyPoints = true
         self.roles = roles
         self.sampleRate = sampleRate
         self.channels = roles.count
@@ -163,6 +169,32 @@ package final class StreamAnalyzer {
         set { pipeline.spatialCoherence = newValue }
     }
 
+    /// Whether the subscribed display configured the spatial geometry (SPATIAL_CONFIG): from the next spatial transform
+    /// the results carry the observations (tag 58) computed with it, instead of the Build 87–97 bins (tag 54) of the
+    /// standard layout, which an unconfigured analysis makes instead of observations.
+    package private(set) var spatialConfigured = false
+    package var spatialGeometry: SpatialGeometry { pipeline.spatialGeometry }
+
+    /// Applies a display's SPATIAL_CONFIG payload to this bus: its geometry from the next spatial transform on (the
+    /// results already analysed keep the hash of the geometry they were made with, so the display can tell them
+    /// apart), and the observations instead of the bins. Nothing changes when the payload is refused.
+    package func configureSpatial(_ bytes: UnsafeRawBufferPointer) -> (outcome: SpatialConfigWire.Outcome, revision: UInt32, hash: UInt64) {
+        let decoded = SpatialConfigWire.decode(bytes, roles: roles)
+        guard let geometry = decoded.geometry else { return (decoded.outcome, 0, 0) }
+        pipeline.spatialGeometry = geometry
+        pipeline.spatialLegacyPoints = false
+        spatialConfigured = true
+        return (.applied, geometry.revision, geometry.hash)
+    }
+
+    /// The display that configured it went away: the standard layout and the Build 87–97 bins again, for whichever
+    /// display subscribes next.
+    package func resetSpatial() {
+        pipeline.spatialGeometry = SpatialGeometry.standard(roles: roles)
+        pipeline.spatialLegacyPoints = true
+        spatialConfigured = false
+    }
+
     /// Pausing keeps everything measured so far and accumulates nothing until resumed; resuming carries on without
     /// a break, as Auraliscope's Pause Capture does.
     package func setMeasuring(_ on: Bool) { measuring = on }
@@ -183,6 +215,11 @@ package final class StreamAnalyzer {
             pipeline.publish(into: $0.baseAddress!, now: Double(ticks) / MeterPipeline.tickRate)
         }
         published = true
+        let header = SnapshotSlots.spatialObservations
+        if !observationHeader.elementsEqual(values[header..<(header + SpatialObservations.headerFloats)]) {
+            observationHeader.replaceSubrange(0..., with: values[header..<(header + SpatialObservations.headerFloats)])
+            observationFrame += 1
+        }
         let spectrogramSerial = values[SnapshotSlots.spectrogramSerial]
         if spectrogramSerial != lastSpectrogramSerial {
             lastSpectrogramSerial = spectrogramSerial
@@ -233,14 +270,19 @@ package final class StreamAnalyzer {
         /// Serials of the newest columns carried (unchanged from the `after` arguments when none were).
         package var spectrogramThrough: UInt64 = 0
         package var waveformThrough: UInt64 = 0
+        /// The observation frame (`observationFrame`) the receiver holds after this result: the one it carried, the
+        /// `afterObservations` argument when it was left out, 0 when the result carried none (the bins, or no field).
+        package var observationsThrough: UInt64 = 0
     }
 
     /// Writes one RESULT payload: the latest state, and the columns of each series after `afterSpectrogram` /
     /// `afterWaveform` (serials already sent) that are still held, oldest first, up to `maxSpectrogram` /
-    /// `maxWaveform` columns. Returns 0 bytes if nothing was published yet or `capacity` is too small.
+    /// `maxWaveform` columns. The observations (tag 58) are left out when `afterObservations` is the frame the snapshot
+    /// holds: the receiver keeps the observations it was sent last, and 0 (none held, or a receiver that does not keep
+    /// them) has them in every result. Returns 0 bytes if nothing was published yet or `capacity` is too small.
     package func encode(into buffer: UnsafeMutableRawPointer, capacity: Int, subscription: UInt32, layout: UInt32,
-                        afterSpectrogram: UInt64, afterWaveform: UInt64, maxSpectrogram: Int = 24,
-                        maxWaveform: Int = WaveformEnvelope.publishedColumns * 4) -> Encoded {
+                        afterSpectrogram: UInt64, afterWaveform: UInt64, afterObservations: UInt64 = 0,
+                        maxSpectrogram: Int = 24, maxWaveform: Int = WaveformEnvelope.publishedColumns * 4) -> Encoded {
         var result = Encoded(spectrogramThrough: afterSpectrogram, waveformThrough: afterWaveform)
         guard published else { return result }
         sequence += 1
@@ -307,9 +349,20 @@ package final class StreamAnalyzer {
                 w.bytes(ResultTag.spatialField.rawValue, count: SpatialFieldWire.size(field, channels: channels)) { out in
                     SpatialFieldWire.encode(field, roles: roles, into: out)
                 }
-                let points = base + SnapshotSlots.spatialPoints
-                w.bytes(ResultTag.spatialPoints.rawValue, count: SpatialPointsWire.size(points)) { out in
-                    SpatialPointsWire.encode(points, into: out)
+                // The bins while they are what the newest transform made (an unconfigured plugin, or a configured one
+                // until its first transform with the display's geometry); otherwise the observations, once per frame.
+                let observations = base + SnapshotSlots.spatialObservations, points = base + SnapshotSlots.spatialPoints
+                if !spatialConfigured || (observations[SpatialObservations.Header.status] != 1 && points[SpatialPoints.status] == 1) {
+                    w.bytes(ResultTag.spatialPoints.rawValue, count: SpatialPointsWire.size(points)) { out in
+                        SpatialPointsWire.encode(points, into: out)
+                    }
+                } else if afterObservations != observationFrame {
+                    w.bytes(ResultTag.spatialObservations.rawValue, count: SpatialObservationsWire.size(observations)) { out in
+                        SpatialObservationsWire.encode(observations, into: out)
+                    }
+                    result.observationsThrough = observationFrame
+                } else {
+                    result.observationsThrough = afterObservations
                 }
             }
         }

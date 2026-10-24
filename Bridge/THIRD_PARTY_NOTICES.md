@@ -1,4 +1,4 @@
-# Auraliscope Bridge: third-party notices
+# Auraliscope Bridge prototype: third-party notices
 
 The Auraliscope Bridge plugins (VST3 and AU) are built with the two SDKs below. Nothing from either SDK is linked
 into the Auraliscope desktop application.
@@ -7,7 +7,7 @@ into the Auraliscope desktop application.
 
 Used: `base`, `pluginterfaces` and `public.sdk` (VST3 plugin interfaces, the single-component effect helper classes,
 the plugin factory and the macOS bundle entry points). VST is a registered trademark of Steinberg Media
-Technologies GmbH. Auraliscope Bridge uses no Steinberg logo.
+Technologies GmbH. The prototype uses no Steinberg logo.
 
 ```
 //-----------------------------------------------------------------------------

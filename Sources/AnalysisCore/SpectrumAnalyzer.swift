@@ -263,9 +263,13 @@ package struct MeterSnapshot: Equatable {
     package var healthStatus: Float = 0
     /// The Immersive soundstage's spatial field (`SpatialField` layout); status 0 while there is none.
     package var spatialField = [Float](repeating: 0, count: SpatialField.floats)
-    /// The same transform's bins at their centres of gravity (`SpatialPoints` layout); status 0 while there are none
-    /// (also from a Bridge plugin before build 87).
+    /// The same transform's bins at their centres of gravity (`SpatialPoints` layout, Build 87–97's form); status 0 while
+    /// there are none. Only a Bridge plugin serving a display before build 98 fills them; the displays read
+    /// `spatialObservations`, into which such a plugin's bins are converted.
     package var spatialPoints = [Float](repeating: 0, count: SpatialPoints.floats)
+    /// Radiant's observations of the same transform (`SpatialObservations` layout): the header, the band counts and the
+    /// observations it holds (the array may end there); status 0 while there are none.
+    package var spatialObservations = [Float](repeating: 0, count: SpatialObservations.first)
 }
 
 // Owned exclusively by the serial DSP queue. No audio callback enters this class.
@@ -282,6 +286,8 @@ package final class SpectrumAnalyzer {
     /// with each doubling of the rate, so the spectrum and the waterfall analyse the same ~170 ms (and resolve the
     /// same Hz) at every rate.
     package let historyLength: Int
+    package let sharedSTFT: Bool
+    private var sharedMaps: [BandMap] = []
     private let setup: OpaquePointer
     private var window: [Float]
     /// `window` halved: the conjugate-symmetric split's ¼ rides on the window (a power of two, so exact).
@@ -324,9 +330,9 @@ package final class SpectrumAnalyzer {
     /// dB of the low bins that interpolated bands read (one vectorised log per tick instead of three per band).
     private var lowDecibels: [Float] = []
     /// Scratch for one pass of band powers, converted to dB together.
-    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.fineBandCount)
+    private var rowPower = [Float](repeating: 0, count: MeterSnapshot.spectrogramBandCount)
     /// The loudest bin of each wide band in the newest pass, refined in dB afterwards.
-    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.fineBandCount)
+    private var rowPeakBin = [Int](repeating: 0, count: MeterSnapshot.spectrogramBandCount)
     private var amplitudeScale: Float = 0
     /// Band of each bin (`StereoBands.binBands`) and the per-band |L|², |R|² and Re(L·R̄) of the newest transform.
     private var binBands: [Int8] = []
@@ -340,9 +346,42 @@ package final class SpectrumAnalyzer {
     /// `buildsSpatialField` is on; `spatialFieldBuilt` says whether the newest transform built it.
     package let spatialField: SpatialFieldAnalyzer
     package var buildsSpatialField = false
+    /// The spatial observations' shorter windows (`SpatialGeometry.Window.multiResolution`): each a fraction of the
+    /// spectrum's transform (`SpatialFieldAnalyzer.zoneDivisors`), so the same duration at every rate, ending at the
+    /// newest sample; made the first time they are asked for. Plain buffers, owned by the analysis thread.
+    private final class Zone {
+        let length: Int
+        let setup: OpaquePointer
+        let window: UnsafeMutablePointer<Float>
+        let real: UnsafeMutablePointer<Float>, imaginary: UnsafeMutablePointer<Float>
+        let outReal: UnsafeMutablePointer<Float>, outImaginary: UnsafeMutablePointer<Float>
+        init?(length m: Int) {
+            guard let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(m), .FORWARD) else { return nil }
+            self.length = m
+            self.setup = setup
+            func make() -> UnsafeMutablePointer<Float> {
+                let p = UnsafeMutablePointer<Float>.allocate(capacity: m)
+                p.initialize(repeating: 0, count: m)
+                return p
+            }
+            window = make(); real = make(); imaginary = make(); outReal = make(); outImaginary = make()
+            vDSP_hann_window(window, vDSP_Length(m), Int32(vDSP_HANN_DENORM))
+            // Half amplitude, as the spectrum's own, for the conjugate-symmetric split.
+            var half: Float = 0.5
+            vDSP_vsmul(window, 1, &half, window, 1, vDSP_Length(m))
+        }
+        deinit {
+            vDSP_DFT_DestroySetup(setup)
+            for p in [window, real, imaginary, outReal, outImaginary] { p.deallocate() }
+        }
+    }
+    private var zones: [Zone] = []
     package private(set) var spatialFieldBuilt = false
     private var cursor = 0
     private var historyCount = 0
+    /// Frames consumed since the analyser was made: the newest transform's window ends here (the spatial
+    /// observations' time).
+    package private(set) var framesConsumed: UInt64 = 0
     private var peakLeft: Float = 0
     private var peakRight: Float = 0
     private var sumLeft: Double = 0
@@ -351,15 +390,17 @@ package final class SpectrumAnalyzer {
     private var levelFrames = 0
 
     /// `recording` marks the routed roles whose history is kept for Spatial analysis (L and R always are).
-    package init?(sampleRate: Double, recording roles: [Bool] = []) {
+    package init?(sampleRate: Double, recording roles: [Bool] = [], sharedFFTSize: Int? = nil) {
+        let n = sharedFFTSize ?? Self.historyLength(sampleRate: sampleRate)
+        guard sharedFFTSize == nil || [2048, 4096, 8192].contains(n) else { return nil }
         guard sampleRate.isFinite, sampleRate > 100,
-              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: Self.historyLength(sampleRate: sampleRate)),
-              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(Self.historyLength(sampleRate: sampleRate)), .FORWARD)
+              let spectrogramAnalyzer = SpectrogramAnalyzer(sampleRate: sampleRate, span: n),
+              let setup = vDSP_DFT_zop_CreateSetup(nil, vDSP_Length(n), .FORWARD)
         else { return nil }
         self.setup = setup
         self.spectrogramAnalyzer = spectrogramAnalyzer
         self.sampleRate = sampleRate
-        let n = Self.historyLength(sampleRate: sampleRate)
+        sharedSTFT = sharedFFTSize != nil
         historyLength = n
         history = [Float](repeating: 0, count: Role.count * n)
         silentFrames = [Int](repeating: n, count: Role.count)
@@ -391,7 +432,8 @@ package final class SpectrumAnalyzer {
         }
         bands = Self.bandMaps(count: MeterSnapshot.bandCount, sampleRate: sampleRate, fftSize: n)
         fineBands = Self.bandMaps(count: MeterSnapshot.fineBandCount, sampleRate: sampleRate, fftSize: n)
-        let lowBins = (bands + fineBands).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
+        if sharedSTFT { sharedMaps = Self.bandMaps(count: MeterSnapshot.spectrogramBandCount, sampleRate: sampleRate, fftSize: n) }
+        let lowBins = (bands + fineBands + sharedMaps).filter(\.interpolated).map { $0.last + 2 }.max() ?? 0
         lowDecibels = [Float](repeating: -120, count: min(n / 2, lowBins))
     }
 
@@ -425,6 +467,28 @@ package final class SpectrumAnalyzer {
     }
 
     deinit { vDSP_DFT_DestroySetup(setup) }
+
+    private func makeZones() {
+        guard zones.isEmpty else { return }
+        zones = SpatialFieldAnalyzer.zoneDivisors.compactMap { Zone(length: historyLength / $0) }
+    }
+
+    /// One pair's transform over zone `z`'s window, the newest samples of each ring, into the spatial analysis.
+    private func transformZone(_ z: Int, _ a: Int, _ b: Int?) {
+        let zone = zones[z]
+        let n = historyLength, m = zone.length
+        let start = (cursor - m + n) % n, first = min(m, n - start)
+        history.withUnsafeBufferPointer { rings in
+            func windowed(_ ring: UnsafePointer<Float>, into out: UnsafeMutablePointer<Float>) {
+                vDSP_vmul(ring + start, 1, zone.window, 1, out, 1, vDSP_Length(first))
+                if first < m { vDSP_vmul(ring, 1, zone.window + first, 1, out + first, 1, vDSP_Length(m - first)) }
+            }
+            windowed(rings.baseAddress! + a * n, into: zone.real)
+            if let b { windowed(rings.baseAddress! + b * n, into: zone.imaginary) } else { vDSP_vclr(zone.imaginary, 1, vDSP_Length(m)) }
+        }
+        vDSP_DFT_Execute(zone.setup, zone.real, zone.imaginary, zone.outReal, zone.outImaginary)
+        spatialField.captureZone(z + 1, a, b, real: zone.outReal, imaginary: zone.outImaginary)
+    }
 
     /// Interleaved L/R frames (tests and tools): only L and R are recorded.
     package func consume(_ frames: UnsafeBufferPointer<StereoFrame>) {
@@ -503,6 +567,7 @@ package final class SpectrumAnalyzer {
             silentFrames[role] = peak > 0 ? 0 : min(length, silentFrames[role] + frameCount)
         }
         levelFrames += frameCount
+        framesConsumed &+= UInt64(frameCount)
         historyCount = min(length, historyCount + frameCount)
     }
 
@@ -630,6 +695,10 @@ package final class SpectrumAnalyzer {
     /// A waterfall column (`SpectrogramAnalyzer`) of the roles the newest transform was asked for, over the whole
     /// history. Rings silent throughout add nothing and are skipped, as in `transform`.
     package func spectrogram(into rows: inout [Float]) {
+        if sharedSTFT, spectrogramMode == .classic {
+            levels(sharedMaps, into: &rows)
+            return
+        }
         let length = historyLength
         let roles = requestedRoles.count > 2
             ? Array(requestedRoles.prefix(2)) + requestedRoles.dropFirst(2).filter { silentFrames[$0] < length }
@@ -658,9 +727,6 @@ package final class SpectrumAnalyzer {
             }
         }
     }
-
-    /// The waterfall's analysis (resolutions in use, for diagnostics).
-    package var spectrogramResolutions: [(length: Int, frames: Int, window: SpectralWindow)] { spectrogramAnalyzer.resolutions }
 
     package func snapshot() -> MeterSnapshot {
         var result = MeterSnapshot()
@@ -877,12 +943,15 @@ package final class SpectrumAnalyzer {
             if roles.count > 1 && roles[0] == Role.left && roles[1] == Role.right {
                 bandSums = Array(repeating: (0, 0, 0), count: StereoBands.count)
             }
-            if field { spatialField.silenceAll(seconds: fieldSeconds) }
+            if field { spatialField.silenceAll(seconds: fieldSeconds, windowEnd: framesConsumed) }
             return
         }
         if field {
             for role in requested where !roles.contains(role) { spatialField.silence(role) }
         }
+        // The shorter windows of the multi-resolution spatial analysis, for the same pairs.
+        let multiResolution = field && spatialField.geometry.window == .multiResolution
+        if multiResolution { makeZones() }
         var index = 0
         while index < roles.count {
             let pair = index + 1 < roles.count
@@ -894,6 +963,14 @@ package final class SpectrumAnalyzer {
                                              real: real.baseAddress!, imaginary: imaginary.baseAddress!)
                     }
                 }
+                // L and R always share the first transform. A partner whose ring holds only zeros has a zero spectrum;
+                // what the packed transform separates for it is the other's float rounding (about 150 dB down), which
+                // would pull that one's quietest bins toward the silent speaker.
+                if multiResolution {
+                    for z in zones.indices { transformZone(z, roles[index], pair ? roles[index + 1] : nil) }
+                }
+                if silentFrames[roles[index]] >= historyLength { spatialField.silence(roles[index]) }
+                if pair && silentFrames[roles[index + 1]] >= historyLength { spatialField.silence(roles[index + 1]) }
             }
             if index == 0 && pair && roles[0] == Role.left && roles[1] == Role.right { accumulateStereoBands() }
             if index == 0 { for i in roleBandPower.indices { roleBandPower[i] = 0 } }
@@ -911,7 +988,7 @@ package final class SpectrumAnalyzer {
         }
         var half: Float = 0.5
         power.withUnsafeMutableBufferPointer { vDSP_vsmul($0.baseAddress!, 1, &half, $0.baseAddress!, 1, bins) }
-        if field { spatialField.analyse(seconds: fieldSeconds, scale: bandPowerScale) }
+        if field { spatialField.analyse(seconds: fieldSeconds, scale: bandPowerScale, windowEnd: framesConsumed) }
     }
 
     /// Mean square per band of the pair just transformed (`leftPower` for `a`, `rightPower` for `b`).

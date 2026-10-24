@@ -34,6 +34,9 @@ typedef struct {
     uint32_t subscribed_spectrogram; // the ABR_SUBSCRIBE_SPECTROGRAM sent with it
     uint32_t subscribed_spectrum;    // the ABR_SUBSCRIBE_SPECTRUM sent with it
     uint32_t subscribed_coherence;   // the ABR_SUBSCRIBE_COHERENCE sent with it
+    uint32_t spatial_sent_revision;  // the SPATIAL_CONFIG revision sent for `spatial_sent_subscription` (0: none)
+    uint64_t spatial_sent_change;    // the server's `spatial_changes` when it was sent
+    uint32_t spatial_sent_subscription;
     uint32_t send_sequence;
     _Atomic uint64_t last_message_ns, last_result_ns;  // read by abr_server_sources on another thread
     PendingCommand commands[MAX_PENDING_COMMANDS];  // to send (under AbrServer.lock)
@@ -57,6 +60,10 @@ struct AbrServer {
     uint32_t spectrogram;         // ABR_SUBSCRIBE_SPECTROGRAM for every subscription (under `lock`)
     uint32_t spectrum;            // ABR_SUBSCRIBE_SPECTRUM, likewise
     uint32_t coherence;           // ABR_SUBSCRIBE_COHERENCE, likewise (0: the plugin's default)
+    uint8_t spatial[ABR_SPATIAL_CONFIG_MAX];  // SPATIAL_CONFIG for every subscription, likewise (0 bytes: none)
+    uint32_t spatial_bytes;
+    uint32_t spatial_revision;
+    uint64_t spatial_changes;     // counts every change of the configuration (its bytes or revision), from 1
     uint8_t refused[16];          // abr_server_disconnect: this session is turned away until refused_until
     uint64_t refused_until;
     uint32_t next_subscription;   // server thread only
@@ -126,6 +133,18 @@ static bool send_message(Client *client, uint16_t type, const void *payload, uin
     AbrHeader header = {ABR_MAGIC, type, 0, length, client->send_sequence++};
     memcpy(message, &header, sizeof header);
     if (length) memcpy(message + sizeof header, payload, length);
+    ssize_t sent = send(client->fd, message, sizeof header + length, MSG_DONTWAIT);
+    return sent == (ssize_t)(sizeof header + length);
+}
+
+// SPATIAL_CONFIG is longer than the other control messages (about 320 bytes for 16 speakers, at most
+// ABR_SPATIAL_CONFIG_MAX); only a plugin that announced ABR_CAPABILITY_SPATIAL_CONFIG is sent one.
+static bool send_spatial(Client *client, const uint8_t *payload, uint32_t length) {
+    uint8_t message[sizeof(AbrHeader) + ABR_SPATIAL_CONFIG_MAX];
+    if (length == 0 || length > ABR_SPATIAL_CONFIG_MAX) return false;
+    AbrHeader header = {ABR_MAGIC, ABR_MSG_SPATIAL_CONFIG, 0, length, client->send_sequence++};
+    memcpy(message, &header, sizeof header);
+    memcpy(message + sizeof header, payload, length);
     ssize_t sent = send(client->fd, message, sizeof header + length, MSG_DONTWAIT);
     return sent == (ssize_t)(sizeof header + length);
 }
@@ -249,12 +268,37 @@ static void read_ack(AbrSourceInfo *info, const uint8_t *payload, uint32_t lengt
     info->last_ack_measurement = measurement;
 }
 
+static void read_spatial_ack(AbrSourceInfo *info, const uint8_t *payload, uint32_t length) {
+    AbrReader reader = abr_reader(payload, length);
+    AbrField f;
+    uint32_t revision = 0, outcome = 0, generation = 0;
+    uint64_t hash = 0, frames = 0;
+    while (abr_next_field(&reader, &f)) {
+        switch (f.tag) {
+        case ABR_SPATIAL_ACK_REVISION: abr_field_u32(&f, &revision); break;
+        case ABR_SPATIAL_ACK_HASH: abr_field_u64(&f, &hash); break;
+        case ABR_SPATIAL_ACK_OUTCOME: abr_field_u32(&f, &outcome); break;
+        case ABR_SPATIAL_ACK_GENERATION: abr_field_u32(&f, &generation); break;
+        case ABR_SPATIAL_ACK_FRAMES: abr_field_u64(&f, &frames); break;
+        default: break;
+        }
+    }
+    info->spatial_acks_received++;
+    info->spatial_ack_revision = revision;
+    info->spatial_ack_hash = hash;
+    info->spatial_ack_outcome = outcome;
+    info->spatial_ack_generation = generation;
+    info->spatial_ack_frames = frames;
+}
+
 static bool send_welcome(Client *client) {
     uint8_t payload[64];
     abr_put32(payload, ABR_PROTOCOL_VERSION);
     abr_put32(payload + 4, 0);
     AbrWriter w = abr_writer(payload + 8, sizeof payload - 8);
     abr_put_u32(&w, ABR_WELCOME_SCHEMA, ABR_ANALYSIS_SCHEMA);
+    // Its sinks keep the observations between results (ResultAssembler): a plugin may send each frame once.
+    abr_put_u32(&w, ABR_WELCOME_CAPABILITIES, ABR_DISPLAY_KEEPS_OBSERVATIONS);
     return send_message(client, ABR_MSG_WELCOME, payload, (uint32_t)(8 + w.used));
 }
 
@@ -323,6 +367,12 @@ static bool handle_message(AbrServer *server, Client *client, const AbrHeader *h
         if (!client->greeted) return false;
         pthread_mutex_lock(&server->lock);
         read_ack(&client->info, payload, header->length);
+        pthread_mutex_unlock(&server->lock);
+        return true;
+    case ABR_MSG_SPATIAL_ACK:
+        if (!client->greeted) return false;
+        pthread_mutex_lock(&server->lock);
+        read_spatial_ack(&client->info, payload, header->length);
         pthread_mutex_unlock(&server->lock);
         return true;
     case ABR_MSG_FOCUS:
@@ -462,6 +512,30 @@ static void reconcile_subscriptions(AbrServer *server) {
             pthread_mutex_unlock(&server->lock);
             client->subscribed = wanted;
             client->subscribed_selection = selection;
+        }
+        // The display's spatial geometry, once per subscription and after every change, to a plugin that takes it.
+        pthread_mutex_lock(&server->lock);
+        const uint32_t subscription = client->subscription;
+        const bool capable = (client->info.capabilities & ABR_CAPABILITY_SPATIAL_CONFIG) != 0;
+        // Any change counts, not only a new revision: the same revision with other bytes is sent again.
+        const bool due = client->greeted && client->subscribed && subscription != 0 && capable && server->spatial_bytes > 0
+            && (client->spatial_sent_subscription != subscription || client->spatial_sent_change != server->spatial_changes);
+        uint8_t spatial[ABR_SPATIAL_CONFIG_MAX];
+        const uint32_t spatial_bytes = due ? server->spatial_bytes : 0, spatial_revision = server->spatial_revision;
+        const uint64_t spatial_change = server->spatial_changes;
+        if (due) memcpy(spatial, server->spatial, spatial_bytes);
+        pthread_mutex_unlock(&server->lock);
+        if (due) {
+            if (!send_spatial(client, spatial, spatial_bytes)) {
+                close_client(server, i);
+                continue;
+            }
+            client->spatial_sent_subscription = subscription;
+            client->spatial_sent_revision = spatial_revision;
+            client->spatial_sent_change = spatial_change;
+            pthread_mutex_lock(&server->lock);
+            client->info.spatial_revision_sent = spatial_revision;
+            pthread_mutex_unlock(&server->lock);
         }
         // Commands waiting for this instance.
         PendingCommand commands[MAX_PENDING_COMMANDS];
@@ -660,6 +734,19 @@ void abr_server_set_coherence(AbrServer *server, uint32_t thousandths) {
     pthread_mutex_lock(&server->lock);
     const bool changed = server->coherence != thousandths;
     server->coherence = thousandths;
+    pthread_mutex_unlock(&server->lock);
+    if (changed) wake(server);
+}
+
+void abr_server_set_spatial_config(AbrServer *server, const uint8_t *payload, uint32_t length, uint32_t revision) {
+    if (length > ABR_SPATIAL_CONFIG_MAX || !payload) length = 0;
+    pthread_mutex_lock(&server->lock);
+    const bool changed = server->spatial_bytes != length || server->spatial_revision != revision
+        || (length && memcmp(server->spatial, payload, length) != 0);
+    if (length) memcpy(server->spatial, payload, length);
+    server->spatial_bytes = length;
+    server->spatial_revision = revision;
+    if (changed) server->spatial_changes++;
     pthread_mutex_unlock(&server->lock);
     if (changed) wake(server);
 }

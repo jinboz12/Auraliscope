@@ -66,6 +66,21 @@ func abrAnalyzerSetSpatialCoherence(_ pointer: OpaquePointer, _ thousandths: UIn
     analyzer(pointer).spatialCoherence = thousandths == 0 ? SpatialField.defaultThreshold : Float(thousandths) / 1000
 }
 
+@_cdecl("abr_analyzer_configure_spatial")
+func abrAnalyzerConfigureSpatial(_ pointer: OpaquePointer, _ bytes: UnsafeRawPointer?, _ length: UInt32,
+                                 _ revision: UnsafeMutablePointer<UInt32>?, _ hash: UnsafeMutablePointer<UInt64>?) -> UInt32 {
+    guard let bytes else { return SpatialConfigWire.Outcome.invalid.rawValue }
+    let result = analyzer(pointer).configureSpatial(UnsafeRawBufferPointer(start: bytes, count: Int(length)))
+    revision?.pointee = result.revision
+    hash?.pointee = result.hash
+    return result.outcome.rawValue
+}
+
+@_cdecl("abr_analyzer_reset_spatial")
+func abrAnalyzerResetSpatial(_ pointer: OpaquePointer) {
+    analyzer(pointer).resetSpatial()
+}
+
 @_cdecl("abr_analyzer_ticks")
 func abrAnalyzerTicks(_ pointer: OpaquePointer) -> UInt64 {
     analyzer(pointer).ticks
@@ -74,12 +89,15 @@ func abrAnalyzerTicks(_ pointer: OpaquePointer) -> UInt64 {
 @_cdecl("abr_analyzer_encode")
 func abrAnalyzerEncode(_ pointer: OpaquePointer, _ buffer: UnsafeMutableRawPointer, _ capacity: UInt32,
                        _ subscription: UInt32, _ layout: UInt32, _ afterSpectrogram: UInt64, _ afterWaveform: UInt64,
-                       _ spectrogramThrough: UnsafeMutablePointer<UInt64>?,
-                       _ waveformThrough: UnsafeMutablePointer<UInt64>?) -> UInt32 {
+                       _ afterObservations: UInt64, _ spectrogramThrough: UnsafeMutablePointer<UInt64>?,
+                       _ waveformThrough: UnsafeMutablePointer<UInt64>?,
+                       _ observationsThrough: UnsafeMutablePointer<UInt64>?) -> UInt32 {
     let encoded = analyzer(pointer).encode(into: buffer, capacity: Int(capacity), subscription: subscription, layout: layout,
-                                           afterSpectrogram: afterSpectrogram, afterWaveform: afterWaveform)
+                                           afterSpectrogram: afterSpectrogram, afterWaveform: afterWaveform,
+                                           afterObservations: afterObservations)
     spectrogramThrough?.pointee = encoded.spectrogramThrough
     waveformThrough?.pointee = encoded.waveformThrough
+    observationsThrough?.pointee = encoded.observationsThrough
     return UInt32(encoded.bytes)
 }
 

@@ -7,7 +7,17 @@ import ImageIO
 import MetalKit
 import SwiftUI
 
-enum CanvasKind: String { case spectrum, spectrogram, waveform, soundstage, levels }
+enum CanvasKind: String {
+    case spectrum, spectrogram, waveform, soundstage, levels
+    var panel: MeterPanel {
+        switch self {
+        case .spectrum, .spectrogram: return .spectrum
+        case .waveform: return .waveform
+        case .soundstage: return .soundstage
+        case .levels: return .levels
+        }
+    }
+}
 
 /// Everything a scene needs for one frame, read on the main thread.
 struct CanvasFrame {
@@ -38,6 +48,10 @@ struct CanvasFrame {
     /// How the Stereo stereometer draws its bands.
     var stageStyle = StageStyle.dots
     var options = DisplayOptions()
+    /// Where the speakers are drawn and how Radiant maps observations (`SpatialGeometry`): the layout the model shows
+    /// for this source (the user's, or the standard one for a plugin that computes with it). The nebula draws only
+    /// observations computed with exactly this geometry (its hash).
+    var geometry = SpatialGeometry.standard(roles: SpeakerLayout.standard.roles)
 }
 
 /// Critically damped format transition (Stereo ↔ Spatial, or Stereo ↔ Mono), matched to the SwiftUI `formatShift` spring (response
@@ -47,9 +61,16 @@ struct PresenceSpring {
     /// 1 = full layout, 0 = stereo. Negative until the first frame, which snaps to the target.
     private(set) var value: Float = -1
     private var velocity: Float = 0
+    /// The target of the last step.
+    private var target: Float = -1
 
     mutating func step(target: Float, dt: Float) {
-        guard value >= 0 else { value = target; return }
+        guard value >= 0 else { value = target; self.target = target; return }
+        // A new target starts moving on the frame that first draws it, as a SwiftUI animation starts with its
+        // transaction: the time since the previous frame (a long one, while the change was being laid out) belongs to
+        // the old target. Otherwise the canvas would start a step ahead of the labels animating beside it.
+        let dt = target == self.target ? dt : 0
+        self.target = target
         let displacement = value - target
         let factor = exp(-Self.omega * dt)
         let impulse = velocity + Self.omega * displacement
@@ -67,6 +88,7 @@ struct PresenceSpring {
     mutating func restart() {
         value = 0
         velocity = 0
+        target = -1
     }
 }
 
@@ -128,12 +150,13 @@ struct MeterCanvas: NSViewRepresentable {
         do {
             let gpu = try MeterGPU.shared.get()
             view.device = gpu.device
-            context.coordinator.renderer = try CanvasRenderer(kind: kind, gpu: gpu, shared: true)
+            context.coordinator.renderer = try SceneStore.renderer(kind, gpu: gpu)
             CanvasDriver.shared.follow(model)
         } catch {
             let message = StatusMessage { L("Metal failed to start: %@", error.localizedDescription) }
             Task { @MainActor in model.reportRendererError(message) }
         }
+        context.coordinator.panelContext = context.environment.panelContext
         view.delegate = context.coordinator
         view.coordinator = context.coordinator
         return view
@@ -141,10 +164,13 @@ struct MeterCanvas: NSViewRepresentable {
 
     func updateNSView(_ view: MTKView, context: Context) {
         context.coordinator.forceRedraw = true
+        context.coordinator.held = context.environment.canvasesHeld
+        context.coordinator.panelContext = context.environment.panelContext
         (view as? CanvasView)?.wake()
     }
 
     static func dismantleNSView(_ view: MTKView, coordinator: Coordinator) {
+        if let canvas = view as? CanvasView { CanvasDriver.shared.remove(canvas) }
         (view as? CanvasView)?.coordinator = nil
         view.delegate = nil
     }
@@ -154,6 +180,10 @@ struct MeterCanvas: NSViewRepresentable {
         let kind: CanvasKind
         var renderer: CanvasRenderer?
         var forceRedraw = true
+        /// Holds its last picture without drawing (`EnvironmentValues.canvasesHeld`).
+        var held = false
+        var panelContext = PanelContext.grid
+        private(set) var renderedFrames = 0
         /// The frame `CanvasDriver` read from the model for this display refresh, shared by every canvas.
         var nextFrame: CanvasFrame?
         /// The display refresh's command buffer, shared by every canvas and committed once by `CanvasDriver`.
@@ -176,13 +206,21 @@ struct MeterCanvas: NSViewRepresentable {
         func draw(in view: MTKView) {
             // `CanvasDriver` calls this through `MTKView.draw()` on the main thread.
             MainActor.assumeIsolated {
+                guard !held, (view as? CanvasView)?.wantsFrames == true else {
+                    nextFrame = nil; sharedCommand = nil
+                    return
+                }
                 let frame = nextFrame ?? model.canvasFrame()
                 let command = sharedCommand
                 nextFrame = nil
                 sharedCommand = nil
                 guard let renderer, view.bounds.width > 0, view.bounds.height > 0 else { return }
                 let committed = renderer.draw(in: view, frame: frame, force: forceRedraw, command: command)
-                forceRedraw = false
+                // A busy GPU or an unavailable drawable must not consume a requested redraw.
+                if committed {
+                    forceRedraw = false; renderedFrames += 1
+                    CanvasDriver.shared.noteCommit(kind)
+                }
                 // Paused capture whose damped bars and holds have come to rest: leave the driver's rounds until
                 // SwiftUI, a resize or the window wakes the canvas again.
                 if renderer.settled, !frame.running { (view as? CanvasView)?.rest() }
@@ -201,6 +239,17 @@ struct MeterCanvas: NSViewRepresentable {
                 }
             }
         }
+    }
+}
+
+private struct CanvasesHeldKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    /// The canvases below hold their last picture and draw nothing: the grid receding behind an enlarging panel
+    /// (`PanelZoom`), which is gone a moment later, frees the display refreshes for the panel's own zoom.
+    var canvasesHeld: Bool {
+        get { self[CanvasesHeldKey.self] }
+        set { self[CanvasesHeldKey.self] = newValue }
     }
 }
 
@@ -234,10 +283,10 @@ final class CanvasView: MTKView {
         if changed { wake() }
     }
 
-    /// On screen, sized, and not at rest.
+    /// On screen, sized, not at rest and not held.
     var wantsFrames: Bool {
-        !resting && coordinator != nil && bounds.width > 0 && bounds.height > 0
-            && window?.occlusionState.contains(.visible) == true
+        guard !resting, let coordinator, !coordinator.held, panelPhysicallyVisible else { return false }
+        return PanelPlacement.shared.permitsDrawing(coordinator.kind.panel, context: coordinator.panelContext)
     }
 
     /// Over the Immersive soundstage the scroll wheel (or two fingers) zooms on the listener.
@@ -265,37 +314,93 @@ final class CanvasView: MTKView {
     }
 }
 
+/// Something besides the canvases that moves at the display rate on the driver's link (the VU needle).
+@MainActor
+protocol DisplayFrameClient: AnyObject {
+    var wantsFrames: Bool { get }
+    var window: NSWindow? { get }
+    func displayFrame()
+}
+
 /// Draws every canvas of the meter window from one display link. The model's frame is read once per display
 /// refresh and shared by the canvases that want one; a display link per canvas instead multiplied the display
 /// timing work and the model reads by the number of panels. With every canvas at rest or hidden, the link stops.
+/// The VU needle steps on the same link (`DisplayFrameClient`), so it moves with the canvases in the same refresh.
+/// The rate the meters' display link runs at, for the status bar: published apart from the driver, and only when it
+/// changes, so starting the link inside a view update never publishes from it.
+@MainActor
+final class DisplayRateStatus: ObservableObject {
+    static let shared = DisplayRateStatus()
+    @Published private(set) var fps = 0
+
+    func note(_ rate: Int) {
+        guard rate != fps else { return }
+        DispatchQueue.main.async { MainActor.assumeIsolated { self.fps = rate } }
+    }
+}
+
 @MainActor
 final class CanvasDriver: NSObject {
     static let shared = CanvasDriver()
     private let canvases = NSHashTable<CanvasView>.weakObjects()
+    private let clients = NSHashTable<AnyObject>.weakObjects()
     private var ticker: AnyObject?
     private var modelChanges: AnyCancellable?
+    private var placementChanges: AnyCancellable?
+    private var placementWake: DispatchWorkItem?
     /// Display refreshes drawn so far (diagnostics check that paused canvases rest and resumed ones draw).
     private(set) var ticks = 0
+    private var commitCounts: [String: Int] = [:]
+    private var clientSteps = 0
+    func noteCommit(_ kind: CanvasKind) {
+        if Diagnostics.enabled { commitCounts[kind.rawValue, default: 0] += 1 }
+    }
     /// With diagnostics on: the longest wait between two display refreshes since `resetGap()` (a dropped frame shows
     /// as a wait of two refreshes or more), and the work of the slowest refresh.
     private(set) var longestGap: CFTimeInterval = 0
     private(set) var slowestTick: CFTimeInterval = 0
     private var lastTick: CFTimeInterval = 0
     func resetGap() { longestGap = 0; slowestTick = 0; lastTick = 0 }
+    /// With diagnostics on, every wait between refreshes (seconds) and each refresh's own work while `recording`.
+    var recording = false
+    private(set) var intervals: [CFTimeInterval] = []
+    private(set) var works: [CFTimeInterval] = []
+    func startRecording() {
+        intervals.removeAll(); works.removeAll(); lastTick = 0; recording = true
+        SpectrogramScene.scrollTrace.removeAll(); SpectrogramScene.tracing = true
+    }
     var running: Bool { ticker != nil }
 
     /// The meters' display rate: 60, 30, or 0 for automatic (30 in Low Power Mode, 60 otherwise). The scenes step
     /// by measured time, so every decay, scroll and spring runs at the same speed at either rate.
     nonisolated static let frameRateKey = "display.frameRate"
     private var powerObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
+    /// The rate the running link was started at.
+    private var linkRate: Float = 0
 
     var frameRate: Int {
         switch UserDefaults.standard.integer(forKey: Self.frameRateKey) {
         case 30: return 30
         case 60: return 60
-        default: return ProcessInfo.processInfo.isLowPowerModeEnabled ? 30 : 60
+        case 120: return displayRate
+        default: return ProcessInfo.processInfo.isLowPowerModeEnabled ? 30 : displayRate
         }
     }
+
+    /// The fastest the display showing the meters refreshes, 60 to 120 (a ProMotion display's 120).
+    private var displayRate: Int {
+        let window = canvases.allObjects.first(where: \.wantsFrames)?.window ?? activeClients.first?.window
+        let screen = window?.screen ?? NSScreen.main
+        return max(60, min(120, screen?.maximumFramesPerSecond ?? 60))
+    }
+
+    /// When the frame being drawn reaches the screen: the display link's target time during a refresh, so every scene
+    /// steps its motion by the same, even interval (the moment each draw happens to run varies by a millisecond or two,
+    /// which shows as judder); the current time outside one. Set and read on the main thread only.
+    nonisolated(unsafe) private static var frameTime: CFTimeInterval = 0
+    nonisolated(unsafe) private static var inTick = false
+    nonisolated static var now: CFTimeInterval { inTick ? frameTime : CACurrentMediaTime() }
 
     /// Picks up a new frame rate: the display link starts again at it.
     func restart() {
@@ -306,7 +411,31 @@ final class CanvasDriver: NSObject {
     static let frameRateChanged = Notification.Name("AuraliscopeFrameRateChanged")
 
     func add(_ view: CanvasView) { canvases.add(view) }
-    func remove(_ view: CanvasView) { canvases.remove(view) }
+    func remove(_ view: CanvasView) { canvases.remove(view); reconcile() }
+
+    /// A client steps at every refresh while it wants frames; `wake()` starts the link for it.
+    func add(client: DisplayFrameClient) {
+        clients.add(client)
+        wake()
+    }
+    func remove(client: DisplayFrameClient) { clients.remove(client); reconcile() }
+    /// Stop the shared display link when its final visible native client leaves.
+    private func reconcile() {
+        if !canvases.allObjects.contains(where: \.wantsFrames) && activeClients.isEmpty { stop() }
+    }
+    struct DrawingCounts {
+        let activeCanvases: Int
+        let activeClients: Int
+        let commits: [String: Int]
+        let clientSteps: Int
+    }
+    func drawingCounts() -> DrawingCounts {
+        DrawingCounts(activeCanvases: canvases.allObjects.filter(\.wantsFrames).count,
+                      activeClients: activeClients.count, commits: commitCounts, clientSteps: clientSteps)
+    }
+    private var activeClients: [DisplayFrameClient] {
+        clients.allObjects.compactMap { $0 as? DisplayFrameClient }.filter(\.wantsFrames)
+    }
 
     /// Every change the model publishes wakes the canvases. Resuming capture, a reset or an over cleared while
     /// paused must reach canvases that went to rest, and the panels around them re-render only when their own
@@ -316,6 +445,21 @@ final class CanvasDriver: NSObject {
         modelChanges = model.objectWillChange.sink { [weak self] _ in
             MainActor.assumeIsolated { self?.wakeAll() }
         }
+        placementChanges = PanelPlacement.shared.objectWillChange.sink { [weak self] _ in
+            // Published placement changes arrive before the new value. Reconcile next turn, and once more
+            // after the panel's opacity transition: a newly attached view may initially have zero visible area.
+            DispatchQueue.main.async { [weak self] in
+                self?.reconcile(); self?.wakeAll(); self?.wake()
+            }
+            MainActor.assumeIsolated {
+                self?.placementWake?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated { self?.wakeAll(); self?.wake() }
+                }
+                self?.placementWake = work
+                DispatchQueue.main.asyncAfter(deadline: .now()+0.6, execute: work)
+            }
+        }
     }
 
     private func wakeAll() {
@@ -324,7 +468,8 @@ final class CanvasDriver: NSObject {
 
     /// Starts the display link if a canvas wants frames.
     func wake() {
-        guard ticker == nil, let window = canvases.allObjects.first(where: \.wantsFrames)?.window else { return }
+        guard ticker == nil,
+              let window = canvases.allObjects.first(where: \.wantsFrames)?.window ?? activeClients.first?.window else { return }
         if powerObserver == nil {
             powerObserver = NotificationCenter.default.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil,
                                                                    queue: .main) { _ in
@@ -332,16 +477,28 @@ final class CanvasDriver: NSObject {
             }
         }
         let rate = Float(frameRate)
+        Diagnostics.log("[canvas] display link at \(Int(rate)) fps on \(window.screen?.localizedName ?? "no screen")")
+        if screenObserver == nil {
+            // A window moved to a display of another rate (a ProMotion laptop's and an external one): start again at it.
+            screenObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: nil,
+                                                                    queue: .main) { _ in
+                MainActor.assumeIsolated {
+                    let driver = CanvasDriver.shared
+                    if driver.ticker != nil, Float(driver.frameRate) != driver.linkRate { driver.restart() }
+                }
+            }
+        }
+        linkRate = rate
+        DisplayRateStatus.shared.note(Int(rate))
         if #available(macOS 14, *) {
-            // Follows the window to whichever display it is on; 60 Hz even on a 120 Hz display, where meters gain
-            // nothing visible from twice the frames.
-            let link = window.displayLink(target: self, selector: #selector(tick))
+            // Follows the window to whichever display it is on, at that display's own rate (Automatic) or the one chosen.
+            let link = window.displayLink(target: self, selector: #selector(tick(_:)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, rate), maximum: rate, preferred: rate)
             link.add(to: .main, forMode: .common)
             ticker = link
         } else {
             let timer = Timer(timeInterval: 1 / Double(rate), repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
+                MainActor.assumeIsolated { self?.tick(nil) }
             }
             RunLoop.main.add(timer, forMode: .common)
             ticker = timer
@@ -352,17 +509,42 @@ final class CanvasDriver: NSObject {
         if #available(macOS 14, *), let link = ticker as? CADisplayLink { link.invalidate() }
         (ticker as? Timer)?.invalidate()
         ticker = nil
+        DisplayRateStatus.shared.note(0)
     }
 
-    @objc private func tick() {
+    @objc private func tick(_ sender: AnyObject?) {
         let started = Diagnostics.enabled ? CACurrentMediaTime() : 0
+        if #available(macOS 14, *), let link = sender as? CADisplayLink {
+            Self.frameTime = link.targetTimestamp
+        } else {
+            Self.frameTime = CACurrentMediaTime()
+        }
+        Self.inTick = true
+        defer { Self.inTick = false }
         if Diagnostics.enabled {
-            if lastTick > 0 { longestGap = max(longestGap, started - lastTick) }
+            if lastTick > 0 {
+                longestGap = max(longestGap, started - lastTick)
+                if recording { intervals.append(started - lastTick) }
+            }
             lastTick = started
         }
-        defer { if Diagnostics.enabled { slowestTick = max(slowestTick, CACurrentMediaTime() - started) } }
+        defer {
+            if Diagnostics.enabled {
+                let work = CACurrentMediaTime() - started
+                slowestTick = max(slowestTick, work)
+                if recording { works.append(work) }
+            }
+        }
         let views = canvases.allObjects.filter(\.wantsFrames)
-        guard let model = views.first?.coordinator?.model else { return stop() }
+        let stepping = activeClients
+        for client in stepping {
+            client.displayFrame()
+            if Diagnostics.enabled { clientSteps += 1 }
+        }
+        guard let model = views.first?.coordinator?.model else {
+            if stepping.isEmpty { stop() }
+            return
+        }
         let frame = model.canvasFrame()
         ticks += 1
         // One command buffer per refresh for every canvas: one submission to the GPU instead of one per panel.
@@ -406,6 +588,9 @@ final class MeterGPU {
     let device: MTLDevice
     let queue: MTLCommandQueue
     let shapes: MTLRenderPipelineState
+    /// The same shapes as light: colour and coverage add (`ShapeBuilder.light`), so overlapping glows sum and burn
+    /// toward white as the Immersive nebula's light does.
+    let shapeLight: MTLRenderPipelineState
     let waterfall: MTLRenderPipelineState
     let waveform: MTLRenderPipelineState
     let surface: MTLRenderPipelineState
@@ -424,6 +609,15 @@ final class MeterGPU {
     let bloomDown: MTLRenderPipelineState
     let bloomBlur: MTLRenderPipelineState
     let radiantMeter: MTLComputePipelineState
+    /// The Radiant body: its particles added into two volumes, each resolved and blurred, then ray-marched into the
+    /// half-resolution texture as the level body is (`radiantBodyFragment`) and laid in by `bodyComposite`.
+    /// The Radiant body's point lights on the dark well: Radiant's composite, its light added to the body's rather than
+    /// laid over it (on the light well they are laid over it, as a wash).
+    let radiantPoints: MTLRenderPipelineState
+    let radiantSplat: MTLComputePipelineState
+    let radiantResolve: MTLComputePipelineState
+    let radiantBlur: MTLComputePipelineState
+    let radiantBody: MTLRenderPipelineState
 
     private init(device existing: MTLDevice?, queue existingQueue: MTLCommandQueue?) throws {
         guard let device = existing ?? MTLCreateSystemDefaultDevice(),
@@ -445,6 +639,11 @@ final class MeterGPU {
         attachment.sourceAlphaBlendFactor = .one
         attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         shapes = try device.makeRenderPipelineState(descriptor: descriptor)
+        attachment.destinationRGBBlendFactor = .one
+        attachment.destinationAlphaBlendFactor = .one
+        shapeLight = try device.makeRenderPipelineState(descriptor: descriptor)
+        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         descriptor.fragmentFunction = library.makeFunction(name: "waterfallFragment")
         waterfall = try device.makeRenderPipelineState(descriptor: descriptor)
         descriptor.fragmentFunction = library.makeFunction(name: "waveformFragment")
@@ -460,6 +659,8 @@ final class MeterGPU {
         descriptor.fragmentFunction = library.makeFunction(name: "bodyFragment")
         attachment.pixelFormat = .rgba16Float
         bodyOffscreen = try device.makeRenderPipelineState(descriptor: descriptor)
+        descriptor.fragmentFunction = library.makeFunction(name: "radiantBodyFragment")
+        radiantBody = try device.makeRenderPipelineState(descriptor: descriptor)
         // Radiant's particles add light into the same half-float target, then are tone-mapped into the canvas.
         descriptor.vertexFunction = library.makeFunction(name: "radiantParticleVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "radiantParticleFragment")
@@ -476,6 +677,13 @@ final class MeterGPU {
         descriptor.vertexFunction = library.makeFunction(name: "bodyVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "radiantCompositeFragment")
         radiantComposite = try device.makeRenderPipelineState(descriptor: descriptor)
+        // Light and coverage both add, so the canvas stays premultiplied (colour never exceeds coverage) where the
+        // points lie over a part of the body that is not opaque, as in a style switch's captured picture.
+        attachment.destinationRGBBlendFactor = .one
+        attachment.destinationAlphaBlendFactor = .one
+        radiantPoints = try device.makeRenderPipelineState(descriptor: descriptor)
+        attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
+        attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
         let bloom = MTLRenderPipelineDescriptor()
         bloom.vertexFunction = library.makeFunction(name: "fullscreenVertex")
         bloom.fragmentFunction = library.makeFunction(name: "bloomDownFragment")
@@ -483,8 +691,14 @@ final class MeterGPU {
         bloomDown = try device.makeRenderPipelineState(descriptor: bloom)
         bloom.fragmentFunction = library.makeFunction(name: "bloomBlurFragment")
         bloomBlur = try device.makeRenderPipelineState(descriptor: bloom)
-        guard let meter = library.makeFunction(name: "radiantMeterKernel") else { throw MetalError.unavailable }
+        guard let meter = library.makeFunction(name: "radiantMeterKernel"), let splat = library.makeFunction(name: "radiantSplatKernel"),
+              let resolve = library.makeFunction(name: "radiantResolveKernel"), let blur = library.makeFunction(name: "radiantBlurKernel") else {
+            throw MetalError.unavailable
+        }
         radiantMeter = try device.makeComputePipelineState(function: meter)
+        radiantSplat = try device.makeComputePipelineState(function: splat)
+        radiantResolve = try device.makeComputePipelineState(function: resolve)
+        radiantBlur = try device.makeComputePipelineState(function: blur)
     }
 
     func pipeline(_ kind: UnderlayKind) -> MTLRenderPipelineState {
@@ -564,7 +778,7 @@ final class MeterGPU {
         float minX; float minY; float maxX; float maxY; float viewportX; float viewportY;
         float originX; float originY; float scale; float sinEl; float cosEl; float sinYaw; float cosYaw;
         float opacity; float dark; uint layers; float bound; float spectral; float grain; float style;
-        float gain; float spare;
+        float gain; float spare; float lower;
     };
     struct BodyRaster { float4 position [[position]]; float2 local; };
 
@@ -580,13 +794,15 @@ final class MeterGPU {
     }
 
     constant float bodyColumns = \(SpatialBody.azimuthSteps).0;
-    constant float bodyRows = \(SpatialBody.elevationSteps).0;
+    constant float bodyRows = \(SpatialBody.rows).0;
+    constant float bodyUpper = \(SpatialBody.elevationSteps).0;
+    constant float bodyLower = \(SpatialBody.lowerSteps).0;
 
     // A unit direction (model coordinates: x right, y up, z ahead) as texture coordinates; texel centres sit on the
     // grid's directions.
     float2 bodyUV(float3 d) {
         return float2(atan2(d.x, d.z) * (0.5 / M_PI_F) + 0.5 / bodyColumns,
-                      (asin(saturate(d.y)) * (2.0 / M_PI_F) * bodyRows + 0.5) / (bodyRows + 1.0));
+                      (asin(clamp(d.y, -1.0, 1.0)) * (2.0 / M_PI_F) * bodyUpper + bodyLower + 0.5) / bodyRows);
     }
 
     fragment float4 bodyFragment(BodyRaster in [[stage_in]], texture2d_array<float> field [[texture(0)]],
@@ -600,7 +816,10 @@ final class MeterGPU {
         if (rr >= s.bound * s.bound || s.opacity <= 0.0) { return float4(0.0); }
         float chordHalf = sqrt(s.bound * s.bound - rr);
         float tNear = chordHalf, tFar = -chordHalf;
-        if (s.sinEl > 0.001) { tFar = max(tFar, -Y * s.cosEl / s.sinEl); } else if (Y < 0.0) { return float4(0.0); }
+        // Above the floor only, unless a speaker of the layout sits below the ear plane.
+        if (s.lower < 0.5) {
+            if (s.sinEl > 0.001) { tFar = max(tFar, -Y * s.cosEl / s.sinEl); } else if (Y < 0.0) { return float4(0.0); }
+        }
         if (tNear <= tFar) { return float4(0.0); }
         // World-space sampling, so the picture holds still as the signal changes; work bounded to the occupied region.
         float chord = tNear - tFar;
@@ -693,7 +912,7 @@ final class MeterGPU {
     // Radiant (`NebulaStyle.radiant`): the particles of `RadiantParticles`, one instance each, added as light in two
     // passes, like a display that draws each frame's particles small and sharp and then blurs and dims what it has
     // drawn before. The haze pass (`pass` 0) goes into a half-float target at half resolution (the one the level body
-    // uses): a particle is a round Gaussian of σ `size` radii when born (times its own size factor) whose variance grows
+    // uses): a particle is a round Gaussian of σ `size` radii when born whose variance grows
     // by `blur`² radii² a second as it ages, as repeated blurring grows it, its peak dimmed as it grows so its light only
     // spreads, and fading by e^(−age/`fade`); after `lifetime` it is gone. The spark pass (`pass` 1) goes into a
     // full-resolution target: the same particle as a sparkle of σ `sparkSize` radii, `sparkGain` times as bright at its
@@ -729,10 +948,10 @@ final class MeterGPU {
         float depth = q.y * c.sinEl - q.z * c.cosEl;  // larger is nearer the camera
         float sigma, gain;
         if (spark) {
-            sigma = max(c.minimum, c.sparkSize * p.extra.y * c.scale * c.pixels);
+            sigma = max(c.minimum, c.sparkSize * c.scale * c.pixels);
             gain = c.sparkGain * exp(-age / max(0.005, c.sparkFade));
         } else {
-            float born = max(c.minimum, c.size * p.extra.y * c.scale * c.pixels);
+            float born = max(c.minimum, c.size * c.scale * c.pixels);
             float grown = c.blur * c.scale * c.pixels;
             sigma = sqrt(born * born + grown * grown * age);
             gain = exp(-age / max(0.005, c.fade)) * (born * born) / (sigma * sigma);
@@ -824,44 +1043,257 @@ final class MeterGPU {
     // Radiant's light laid into the canvas, straight alpha: the haze, the sparks (`sparkle` of them) and the glow, near
     // and wide (`spare` of it). `gain` is the exposure at the loudest band's level, eased where the light is dense over
     // a broad patch (the meter's held reading past `limit`, by `ease`: 0 not at all, 1 down to the limit), so a dense
-    // programme keeps its colours while a bright bead still burns. On the dark well, after a little more chroma than the
-    // plain sum (`chroma`), the light is exposed and its hue held, so bright light keeps its colour; only where it is
-    // dense (from `hotFrom` to `hotTo` of exposure) does the core burn toward white, its fringes keeping their hues
-    // (build 83's look). On the light well the same light is a wash deepening toward ink.
-    struct RadiantLook { float sparkle; float glowNear; float glowFar; float chroma; float hotFrom; float hotTo; float limit; float ease; };
+    // programme keeps its colours while a bright bead still burns.
+    // With the level body's palette (`palette` 1, the default) the light is coloured and exposed as `bodyFragment`
+    // colours its glow: a point's hue moves `blend` of the way toward the hues heard around it (the wide glow's), as the
+    // body mixes the hues of every band that reaches a place; it gets the body's extra chroma (`chroma`) and its static
+    // grain (`grain` deep, fixed to the canvas and scaled with the dome); then on the dark well each channel saturates on
+    // its own, so dense light burns toward cream-white while its fringes keep their hues, and on the light well it is a
+    // wash deepening toward ink (`core`). Without it (the bare observations), the light keeps its own hue, exposed on
+    // its 4-norm, only the densest (from `hotFrom` to `hotTo` of exposure) burning toward white.
+    struct RadiantLook {
+        float sparkle; float glowNear; float glowFar; float chroma; float hotFrom; float hotTo; float limit; float ease;
+        float blend; float grain; float coreR; float coreG; float coreB; float palette;
+    };
+
+    // A smooth stand-in for the strongest channel: its 4-norm, so no crease or seam shows where one colour takes over
+    // from another.
+    float norm4(float3 c) {
+        float3 c2 = c * c;
+        return sqrt(sqrt(dot(c2, c2)));
+    }
+
     fragment float4 radiantCompositeFragment(BodyRaster in [[stage_in]], texture2d<float> light [[texture(0)]],
                                              texture2d<float> glow [[texture(1)]], texture2d<float> wide [[texture(2)]],
-                                             texture2d<float> sparks [[texture(3)]], constant BodyUniforms &s [[buffer(0)]],
+                                             texture2d<float> sparks [[texture(3)]], texture3d<float> grain [[texture(4)]],
+                                             constant BodyUniforms &s [[buffer(0)]],
                                              constant RadiantLook &look [[buffer(1)]], constant float *meter [[buffer(2)]],
                                              constant float &transitionAlpha [[buffer(3)]]) {
         constexpr sampler smooth(filter::linear, address::clamp_to_edge);
+        constexpr sampler tiled(filter::linear, address::repeat);
         float2 uv = in.local / float2(s.viewportX, s.viewportY);
-        float4 h = light.sample(smooth, uv)
-            + (glow.sample(smooth, uv) * look.glowNear + wide.sample(smooth, uv) * look.glowFar) * s.spare;
+        float4 around = wide.sample(smooth, uv);
+        float4 h = light.sample(smooth, uv) + (glow.sample(smooth, uv) * look.glowNear + around * look.glowFar) * s.spare;
         if (look.sparkle > 0.0) { h += sparks.sample(smooth, uv) * look.sparkle; }
         float3 c = h.rgb;
-        float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
-        c = max(0.0, luma + (c - luma) * look.chroma);
         float dense = meter[1] * s.gain;
         float gain = s.gain * (dense > look.limit ? pow(look.limit / dense, look.ease) : 1.0);
+        if (look.palette < 0.5) {
+            float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+            c = max(0.0, luma + (c - luma) * look.chroma);
+            if (s.dark > 0.5) {
+                float norm = norm4(c);
+                float x = norm * gain;
+                if (x < 0.0008) { return float4(0.0); }
+                float hot = smoothstep(look.hotFrom, look.hotTo, x);
+                float3 lit = mix(c / norm, float3(1.0), hot * hot) * (1.0 - exp(-x));
+                float a = max(max(lit.r, lit.g), lit.b);
+                if (a < 0.0008) { return float4(0.0); }
+                return float4(lit / a, a * transitionAlpha);
+            }
+            float norm = max(norm4(c), 1e-5);
+            float a = 1.0 - exp(-norm * gain * 0.8);
+            if (a < 0.0008) { return float4(0.0); }
+            return float4(min(1.0, c / norm * 0.78), min(0.94, a) * transitionAlpha);
+        }
+        // The level body's palette.
+        float amount = norm4(c);
+        if (amount * gain < 0.0008) { return float4(0.0); }
+        float3 hue = c / amount;
+        float spread = norm4(around.rgb);
+        if (look.blend > 0.0 && spread > 1e-6) { hue = mix(hue, around.rgb / spread, look.blend); }
+        hue /= max(0.05, max(max(hue.r, hue.g), hue.b));
+        float luma = dot(hue, float3(0.2126, 0.7152, 0.0722));
+        hue = saturate(luma + (hue - luma) * look.chroma);
+        if (look.grain > 0.0 && s.grain > 0.5) {
+            float2 g = (in.local - float2(s.originX, s.originY)) / max(1.0, s.scale);
+            amount *= 1.0 + look.grain * (grain.sample(tiled, float3(g * 5.0, 0.37)).r - 0.5) * 2.0;
+        }
+        float3 core = float3(look.coreR, look.coreG, look.coreB);
         if (s.dark > 0.5) {
-            // Exposed, and its hue taken, by a smooth stand-in for the strongest channel (its 4-norm), so no crease or
-            // seam shows where one colour takes over from another.
-            float3 c2 = c * c;
-            float norm = sqrt(sqrt(dot(c2, c2)));
-            float x = norm * gain;
-            if (x < 0.0008) { return float4(0.0); }
-            float hot = smoothstep(look.hotFrom, look.hotTo, x);
-            float3 lit = mix(c / norm, float3(1.0), hot * hot) * (1.0 - exp(-x));
-            float a = max(max(lit.r, lit.g), lit.b);
+            float3 lit = 1.0 - exp(-hue / max(1e-5, norm4(hue)) * amount * gain);
+            float a = min(1.0, norm4(lit));
             if (a < 0.0008) { return float4(0.0); }
             return float4(lit / a, a * transitionAlpha);
         }
-        float3 c2 = c * c;
-        float norm = max(sqrt(sqrt(dot(c2, c2))), 1e-5);
-        float a = 1.0 - exp(-norm * gain * 0.8);
+        float a = 1.0 - exp(-amount * gain * 0.8);
         if (a < 0.0008) { return float4(0.0); }
-        return float4(min(1.0, c / norm * 0.78), min(0.94, a) * transitionAlpha);
+        // Particles pack their light tighter than the body's gas, so their wash deepens toward ink later and less.
+        float3 wash = mix(hue * 0.8, core, 0.2 * smoothstep(0.6, 1.0, a));
+        return float4(wash, min(0.88, a) * transitionAlpha);
+    }
+
+    // Radiant body (`NebulaStyle.radiant`, build 101): Radiant's particles (`RadiantParticles`, where each band's
+    // frequencies are heard) gathered into a volume and drawn as the level body draws its gas. Each frame every live
+    // particle is added into two grids over the cube reaching `RadiantBody.reach` from around the listener
+    // (`radiantSplatKernel`, trilinear, in 32-bit fixed point so the sum is exact whatever order the threads add in):
+    // light and light × hue, faded by e^(−age/`fade`) as Radiant fades it. A particle's light is shared between a
+    // fine grid, blurred by its birth size, and a coarse one, blurred by the size it reaches at the end of its life, in
+    // proportion to how far its variance has grown from the one to the other (σ² = born² + `blur`·age, as Radiant's
+    // smear grows), so new light is compact and older light swells into haze. Each grid is resolved and blurred with a
+    // separable Gaussian (`radiantResolveKernel` along x out of the fixed-point sums, `radiantBlurKernel` along y, then
+    // z). `radiantBodyFragment` then marches each ray front to back through both, as `bodyFragment` marches the body.
+    struct VolumeSplat {
+        float clock; float lifetime; float fade; float bornVariance; float blurRate; float coarseVariance;
+        float ochreR; float ochreG; float ochreB; float reach; float fixedScale; float least;
+        uint first; uint count; uint fineSize; uint coarseSize;
+    };
+
+    void splatInto(device atomic_uint *grid, uint n, float reach, float3 p, float4 value, float fixedScale) {
+        float h = 2.0 * reach / float(n);
+        float3 g = (p + reach) / h - 0.5;
+        float3 base = floor(g);
+        float3 f = g - base;
+        int3 i0 = int3(base);
+        for (int c = 0; c < 8; c++) {
+            int3 o = int3(c & 1, (c >> 1) & 1, (c >> 2) & 1);
+            int3 i = i0 + o;
+            if (any(i < 0) || any(i >= int(n))) { continue; }
+            float3 w3 = mix(1.0 - f, f, float3(o));
+            float w = w3.x * w3.y * w3.z;
+            if (w <= 0.0) { continue; }
+            uint index = ((uint(i.z) * n + uint(i.y)) * n + uint(i.x)) * 4;
+            float4 add = value * (w * fixedScale);
+            atomic_fetch_add_explicit(&grid[index], uint(add.x + 0.5), memory_order_relaxed);
+            atomic_fetch_add_explicit(&grid[index + 1], uint(add.y + 0.5), memory_order_relaxed);
+            atomic_fetch_add_explicit(&grid[index + 2], uint(add.z + 0.5), memory_order_relaxed);
+            atomic_fetch_add_explicit(&grid[index + 3], uint(add.w + 0.5), memory_order_relaxed);
+        }
+    }
+
+    kernel void radiantSplatKernel(device const RadiantParticle *particles [[buffer(0)]], constant VolumeSplat &s [[buffer(1)]],
+                                   device atomic_uint *fine [[buffer(2)]], device atomic_uint *coarse [[buffer(3)]],
+                                   uint id [[thread_position_in_grid]]) {
+        if (id >= s.count) { return; }
+        RadiantParticle p = particles[s.first + id];
+        float age = s.clock - p.position.w;
+        if (age < -0.001 || age > s.lifetime || p.color.w <= 0.0) { return; }
+        age = max(0.0, age);
+        float light = p.color.w * exp(-age / max(0.005, s.fade));
+        if (light < s.least) { return; }
+        float3 hue = mix(p.color.rgb, float3(s.ochreR, s.ochreG, s.ochreB), 0.8 * smoothstep(0.25, 0.85, p.extra.x));
+        float4 value = float4(hue * light, light);
+        float older = saturate(s.blurRate * age / max(1e-9, s.coarseVariance - s.bornVariance));
+        if (older < 0.999) { splatInto(fine, s.fineSize, s.reach, p.position.xyz, value * (1.0 - older), s.fixedScale); }
+        if (older > 0.001) { splatInto(coarse, s.coarseSize, s.reach, p.position.xyz, value * older, s.fixedScale); }
+    }
+
+    struct VolumeBlur { uint size; uint firstRow; int radius; float sigma; float unit; uint axis; };
+
+    float volumeWeight(int k, float sigma) { return exp(-0.5 * float(k * k) / max(1e-6, sigma * sigma)); }
+    float volumeNorm(constant VolumeBlur &b) {
+        float sum = 0.0;
+        for (int k = -b.radius; k <= b.radius; k++) { sum += volumeWeight(k, b.sigma); }
+        return 1.0 / sum;
+    }
+
+    // The fixed-point sums, blurred along x. Light leaving the cube is lost (the cube reaches past the speakers).
+    kernel void radiantResolveKernel(device const uint *grid [[buffer(0)]], constant VolumeBlur &b [[buffer(1)]],
+                                     texture3d<half, access::write> out [[texture(0)]], uint3 gid [[thread_position_in_grid]]) {
+        uint n = b.size;
+        uint3 v = uint3(gid.x, gid.y + b.firstRow, gid.z);
+        if (v.x >= n || v.y >= n || v.z >= n) { return; }
+        float4 sum = float4(0.0);
+        for (int k = -b.radius; k <= b.radius; k++) {
+            int x = int(v.x) + k;
+            if (x < 0 || x >= int(n)) { continue; }
+            uint index = ((v.z * n + v.y) * n + uint(x)) * 4;
+            sum += float4(float(grid[index]), float(grid[index + 1]), float(grid[index + 2]), float(grid[index + 3]))
+                * volumeWeight(k, b.sigma);
+        }
+        out.write(half4(sum * (volumeNorm(b) * b.unit)), v);
+    }
+
+    // One grid blurred along y (`axis` 1) or z (2).
+    kernel void radiantBlurKernel(texture3d<half, access::read> in [[texture(0)]], texture3d<half, access::write> out [[texture(1)]],
+                                  constant VolumeBlur &b [[buffer(0)]], uint3 gid [[thread_position_in_grid]]) {
+        uint n = b.size;
+        uint3 v = uint3(gid.x, gid.y + b.firstRow, gid.z);
+        if (v.x >= n || v.y >= n || v.z >= n) { return; }
+        int3 step = b.axis == 1 ? int3(0, 1, 0) : int3(0, 0, 1);
+        float4 sum = float4(0.0);
+        for (int k = -b.radius; k <= b.radius; k++) {
+            int3 q = int3(v) + step * k;
+            // Rows under the first are not worked on this frame: they hold nothing.
+            if (any(q < 0) || any(q >= int(n)) || q.y < int(b.firstRow)) { continue; }
+            sum += float4(in.read(uint3(q))) * volumeWeight(k, b.sigma);
+        }
+        out.write(half4(sum * volumeNorm(b)), v);
+    }
+
+    // The look of the Radiant body: `density` turns the grids' light per voxel into the gas' density; where it passes
+    // from `edgeFrom` to `edgeTo` the body fills in, so it has a soft edge rather than a glow fading forever; inside,
+    // `base` of glow plus its density, so loud places burn toward white; `absorb` dims what lies behind. It fades out
+    // from `shellFrom` to the bound (the speakers' shell); on the light well its depth lays a wash `wash` deep. `glow` is
+    // its light's gain on the dark well (lower under point lights, so they carry the brightest light).
+    struct RadiantBodyLook {
+        float reach; float density; float edgeFrom; float edgeTo; float base; float absorb; float chroma; float shellFrom;
+        float wash; float glow;
+    };
+
+    fragment float4 radiantBodyFragment(BodyRaster in [[stage_in]], texture3d<float> fine [[texture(0)]],
+                                        texture3d<float> coarse [[texture(1)]], texture3d<float> grain [[texture(2)]],
+                                        constant BodyUniforms &s [[buffer(0)]], constant float4 *colors [[buffer(1)]],
+                                        constant RadiantBodyLook &look [[buffer(2)]]) {
+        constexpr sampler volume(filter::linear, address::clamp_to_zero);
+        constexpr sampler tiled(filter::linear, address::repeat);
+        float X = (in.local.x - s.originX) / s.scale;
+        float Y = (s.originY - in.local.y) / s.scale;
+        float rr = X * X + Y * Y;
+        if (rr >= s.bound * s.bound || s.opacity <= 0.0) { return float4(0.0); }
+        float chordHalf = sqrt(s.bound * s.bound - rr);
+        float tNear = chordHalf, tFar = -chordHalf;
+        if (s.lower < 0.5) {
+            if (s.sinEl > 0.001) { tFar = max(tFar, -Y * s.cosEl / s.sinEl); } else if (Y < 0.0) { return float4(0.0); }
+        }
+        if (tNear <= tFar) { return float4(0.0); }
+        float chord = tNear - tFar;
+        int steps = clamp(int(ceil(chord / 0.028)), 4, 80);
+        float dt = chord / float(steps);
+        float jitter = fract(52.9829189 * fract(dot(in.position.xy, float2(0.06711056, 0.00583715))));
+        float3 core = colors[\(SpatialBody.maxLayers)].rgb;
+        float3 light = float3(0.0);
+        float depth = 0.0, through = 1.0;
+        for (int i = 0; i < steps && through > 0.02; i++) {
+            float t = tNear - (float(i) + jitter) * dt;
+            float3 q = float3(X, Y * s.cosEl + t * s.sinEl, Y * s.sinEl - t * s.cosEl);
+            float3 p = float3(q.x * s.cosYaw - q.z * s.sinYaw, q.y, q.x * s.sinYaw + q.z * s.cosYaw);
+            float3 uvw = (p + look.reach) / (2.0 * look.reach);
+            // The body stays inside the speakers' shell, as the level body does: light blurred past it fades out there.
+            float shell = 1.0 - smoothstep(look.shellFrom, s.bound, length(p));
+            float4 v = (fine.sample(volume, uvw) + coarse.sample(volume, uvw)) * shell;
+            float L = v.a * look.density;
+            if (L < 0.0005) { continue; }
+            float3 hue = v.rgb / max(v.a, 1e-12);
+            hue /= max(0.05, max(max(hue.r, hue.g), hue.b));
+            float luma = dot(hue, float3(0.2126, 0.7152, 0.0722));
+            hue = saturate(luma + (hue - luma) * look.chroma);
+            float fill = smoothstep(look.edgeFrom, look.edgeTo, L);
+            float k = fill * look.base + L;
+            float density = fill * 0.45 + L * 0.35;
+            if (s.grain > 0.5) {
+                float g = grain.sample(tiled, p * 1.9 + 0.5).r;
+                float m = 0.72 + 0.56 * g;
+                k *= m;
+                density *= m;
+            }
+            float w = dt * through;
+            light += hue * k * w;
+            depth += density * w;
+            through *= exp(-fill * dt * look.absorb);
+        }
+        float gain = s.opacity * 3.6 * look.glow;
+        if (s.dark > 0.5) {
+            float3 c = 1.0 - exp(-light * gain);
+            float a = max(max(c.r, c.g), c.b);
+            if (a < 0.0008) { return float4(0.0); }
+            return float4(c / a, a);
+        }
+        float a = 1.0 - exp(-depth * gain * look.wash);
+        if (a < 0.0008) { return float4(0.0); }
+        float3 hue = light / max(1e-5, max(max(light.r, light.g), light.b));
+        float3 c = mix(hue * 0.78, core, 0.28 * smoothstep(0.4, 1.0, a));
+        return float4(c, min(0.94, a));
     }
 
     // The half-resolution body (`NebulaScene.encodeOffscreen`, premultiplied) laid into the canvas, straight alpha.
@@ -1208,6 +1640,8 @@ struct ShapeBuilder {
     var shapes: [ShapeVertex] = []
     /// Shapes from this index on are drawn after the scene's overlay (`CanvasScene.encodeOverlay`); nil: no overlay.
     var overlayStart: Int?
+    /// Shapes in this range add their light instead of being laid over (`MeterGPU.shapeLight`).
+    var light: Range<Int>?
 
     init(reserving capacity: Int = 8192) {
         underlay.reserveCapacity(6 * Role.count)
@@ -1218,12 +1652,21 @@ struct ShapeBuilder {
         underlay.removeAll(keepingCapacity: true)
         shapes.removeAll(keepingCapacity: true)
         overlayStart = nil
+        light = nil
     }
 
     /// Scales the opacity of every shape added since `start` (a `shapes.count` taken before drawing them).
     mutating func fade(from start: Int, by amount: Float) {
         guard amount < 1 else { return }
         for index in start..<shapes.count { shapes[index].color.w *= amount }
+    }
+
+    /// Scales every shape added since `start` about `center`, line widths and all (a shape's own coordinates scale
+    /// with its corners), for an element growing or settling as it comes and goes.
+    mutating func scale(from start: Int, by factor: CGFloat, around center: CGPoint) {
+        guard abs(factor - 1) > 0.0005 else { return }
+        let f = Float(factor), c = SIMD2(Float(center.x), Float(center.y))
+        for index in start..<shapes.count { shapes[index].position = c + (shapes[index].position - c) * f }
     }
 
     private static func vertex(_ x: CGFloat, _ y: CGFloat, local: SIMD2<Float>, color: SIMD4<Float>,
@@ -1266,12 +1709,6 @@ struct ShapeBuilder {
 
     mutating func roundedRect(_ rect: CGRect, radius: CGFloat, _ color: SIMD4<Float>) {
         let shape = SIMD4<Float>(1, Float(rect.width / 2), Float(rect.height / 2), Float(min(radius, rect.width / 2, rect.height / 2)))
-        quad(rect, top: color, bottom: color, shape: shape, pad: 1)
-    }
-
-    /// One-point hairline just inside a rounded rect: the "ghost" of a slot with nothing in it.
-    mutating func roundedOutline(_ rect: CGRect, radius: CGFloat, _ color: SIMD4<Float>) {
-        let shape = SIMD4<Float>(6, Float(rect.width / 2), Float(rect.height / 2), Float(min(radius, rect.width / 2, rect.height / 2)))
         quad(rect, top: color, bottom: color, shape: shape, pad: 1)
     }
 
@@ -1348,24 +1785,6 @@ struct ShapeBuilder {
         shapes.append(Self.vertex(c.x, c.y, local: .zero, color: cc, shape: .zero))
     }
 
-    /// Fill from the left of `bar` out to `db`, split at the level stops so colour follows the scale.
-    mutating func levelFill(_ bar: CGRect, to db: Float, alpha: Float, saturation: Float = 1, x: (Float) -> CGFloat) {
-        let top = min(db, 0)
-        guard top > -70 else { return }
-        var lower: Float = -70
-        for stop in Theme.levelStops where lower < top {
-            let upper = min(stop.db, top)
-            let x0 = x(lower), x1 = x(upper)
-            if x1 - x0 > 0.01 {
-                var leftColor = Theme.desaturate(Theme.level(lower), saturation)
-                var rightColor = Theme.desaturate(Theme.level(upper), saturation)
-                leftColor.w = alpha
-                rightColor.w = alpha
-                quad(CGRect(x: x0, y: bar.minY, width: x1 - x0, height: bar.height), left: leftColor, right: rightColor)
-            }
-            lower = upper
-        }
-    }
 }
 
 /// Laid out like both Metal underlay states: `WaterfallState` (all eight fields) and `ScopeState` (the first four:
@@ -1466,6 +1885,26 @@ protocol CanvasScene: AnyObject {
 enum SceneStore {
     private static var scenes: [CanvasKind: CanvasScene] = [:]
     private static var dampings: [CanvasKind: DampedDisplayState] = [:]
+    private static var permits: [CanvasKind: DispatchSemaphore] = [:]
+    private static var renderers: [CanvasKind: CanvasRenderer] = [:]
+
+    /// A panel handover changes its view, not its scene or vertex storage. Keep only the current palette's renderer
+    /// per kind; an outgoing theme view retains its old renderer until its fade finishes.
+    static func renderer(_ kind: CanvasKind, gpu: MeterGPU) throws -> CanvasRenderer {
+        if let renderer = renderers[kind], renderer.gpu === gpu { return renderer }
+        let renderer = try CanvasRenderer(kind: kind, gpu: gpu, shared: true)
+        renderers[kind] = renderer
+        return renderer
+    }
+
+    /// Renderers handing a scene between grid, enlarged and Dock views share its mutable textures too. One permit
+    /// per scene protects texture uploads until the last GPU read completes, including across view replacement.
+    static func permit(_ kind: CanvasKind) -> DispatchSemaphore {
+        if let permit = permits[kind] { return permit }
+        let permit = DispatchSemaphore(value: 1)
+        permits[kind] = permit
+        return permit
+    }
 
     /// The display smoothing carries over with its scene, so a rebuilt canvas (a palette or appearance change, even
     /// while paused) continues from the levels on screen instead of jumping to the raw ones.
@@ -1500,13 +1939,13 @@ enum SceneStore {
 final class CanvasRenderer {
     private(set) var lastVertexCount = 0
     /// Nothing has changed for two seconds, so the last frame is final.
-    var settled: Bool { settleFrames >= 120 }
-    private let gpu: MeterGPU
+    var settled: Bool { idle.settled }
+    fileprivate let gpu: MeterGPU
     private let scene: CanvasScene
     private let vertexCapacity: Int
     private let buffer: MTLBuffer
     // A scene's texture upload must wait until the previous GPU read of it completes.
-    private let inFlight = DispatchSemaphore(value: 1)
+    private let inFlight: DispatchSemaphore
     private var builder: ShapeBuilder
     private let damping: DampedDisplayState
     private var lastDrawTime: CFTimeInterval = 0
@@ -1522,7 +1961,7 @@ final class CanvasRenderer {
     private var previousStageStyle = StageStyle.dots
     private var previousOptions = DisplayOptions()
     private var previousLevelsBands = StereoBands.Resolution.five
-    private var settleFrames = 0
+    private var idle = DisplayIdle()
 
     /// `shared`: take the window's long-lived scene for `kind` (see `SceneStore`); the offscreen preview makes its own.
     init(kind: CanvasKind, gpu: MeterGPU, shared: Bool = false) throws {
@@ -1540,6 +1979,7 @@ final class CanvasRenderer {
         builder = ShapeBuilder(reserving: vertexCapacity)
         scene = shared ? try SceneStore.scene(kind, device: gpu.device) : try SceneStore.make(kind, device: gpu.device)
         damping = shared ? SceneStore.damping(kind) : DampedDisplayState()
+        inFlight = shared ? SceneStore.permit(kind) : DispatchSemaphore(value: 1)
         // inFlight permits one GPU submission at a time, so one shared vertex buffer is enough.
         guard let buffer = gpu.device.makeBuffer(length: vertexCapacity * MemoryLayout<ShapeVertex>.stride,
                                                  options: .storageModeShared) else { throw MetalError.allocation }
@@ -1557,8 +1997,9 @@ final class CanvasRenderer {
             || frame.levelsBands != previousLevelsBands || frame.stageStyle != previousStageStyle
             || frame.options != previousOptions
         // Keep drawing briefly after the signal stops so damped bars and holds settle instead of freezing.
-        settleFrames = changed ? 0 : settleFrames + 1
-        guard settleFrames < 120 else { return false }
+        let now = CanvasDriver.now
+        idle.update(changed: changed, at: now)
+        guard !idle.settled else { return false }
         // Never block the main thread on the GPU: if the previous frame is still being drawn, skip this one.
         guard inFlight.wait(timeout: .now()) == .success else { return false }
         guard let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
@@ -1566,8 +2007,7 @@ final class CanvasRenderer {
             inFlight.signal()
             return false
         }
-        let now = CACurrentMediaTime()
-        let dt = lastDrawTime == 0 ? Float(1.0 / 60) : Float(min(0.1, now - lastDrawTime))
+        let dt = lastDrawTime == 0 ? Float(1.0 / 60) : Float(max(0, min(0.1, now - lastDrawTime)))
         lastDrawTime = now
         let prepared = prepare(frame: frame, size: size, dt: dt)
         // From here the buffer is the GPU's until the command buffer completes.
@@ -1601,6 +2041,7 @@ final class CanvasRenderer {
         var underlay = 0
         var shapes = 0
         var overlayStart: Int?
+        var light: Range<Int>?
     }
 
     /// The scene's CPU work for one frame: its shapes and underlay into the vertex buffer (and whatever it keeps for
@@ -1625,7 +2066,8 @@ final class CanvasRenderer {
                 (buffer.contents() + underlayCount * stride).copyMemory(from: base, byteCount: shapeCount * stride)
             }
         }
-        return Prepared(underlay: underlayCount, shapes: shapeCount, overlayStart: builder.overlayStart.map { min($0, shapeCount) })
+        return Prepared(underlay: underlayCount, shapes: shapeCount, overlayStart: builder.overlayStart.map { min($0, shapeCount) },
+                        light: builder.light.map { $0.clamped(to: 0..<shapeCount) })
     }
 
     /// Draws a prepared frame in `encoder`'s pass: the underlay, the shapes (around the scene's overlay), the 3D
@@ -1644,17 +2086,20 @@ final class CanvasRenderer {
             if !ramp.isEmpty { encoder.setFragmentBytes(ramp, length: ramp.count * MemoryLayout<SIMD4<Float>>.stride, index: 1) }
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: underlayCount)
         }
-        let split = prepared.overlayStart ?? shapeCount
-        if split > 0 {
-            encoder.setRenderPipelineState(gpu.shapes)
-            encoder.drawPrimitives(type: .triangle, vertexStart: underlayCount, vertexCount: split)
+        // Shapes in `range`, the light among them added.
+        func drawShapes(_ range: Range<Int>) {
+            let light = prepared.light?.clamped(to: range) ?? range.upperBound..<range.upperBound
+            for (part, pipeline) in [(range.lowerBound..<light.lowerBound, gpu.shapes), (light, gpu.shapeLight),
+                                     (light.upperBound..<range.upperBound, gpu.shapes)] where !part.isEmpty {
+                encoder.setRenderPipelineState(pipeline)
+                encoder.drawPrimitives(type: .triangle, vertexStart: underlayCount + part.lowerBound, vertexCount: part.count)
+            }
         }
+        let split = prepared.overlayStart ?? shapeCount
+        drawShapes(0..<split)
         if prepared.overlayStart != nil {
             scene.encodeOverlay(encoder, gpu: gpu)
-            if shapeCount > split {
-                encoder.setRenderPipelineState(gpu.shapes)
-                encoder.drawPrimitives(type: .triangle, vertexStart: underlayCount + split, vertexCount: shapeCount - split)
-            }
+            drawShapes(split..<shapeCount)
         }
         if var surface = scene.surface, surface.vertexCount > 0, let texture = scene.underlayTexture {
             let ramp = scene.underlayRamp
@@ -1682,6 +2127,8 @@ final class CanvasRenderer {
         var frame = CanvasFrame(running: true)
         frame.layout = Diagnostics.previewLayout
         frame.options = DisplayOptions.stored
+        // The geometry `PreviewAudio` analyses with, as `MeterModel` gives the window the one its analysis uses.
+        frame.geometry = SpeakerLayoutStore.storedGeometry(for: frame.layout, nebula: frame.options.nebula)
         frame.spatial = !Diagnostics.previewStereo
         let audio = try Diagnostics.previewAudio.map { try PreviewAudio.snapshots($0, layout: frame.layout) }
         if let audio { frame.sampleRate = audio.sampleRate }
@@ -1787,6 +2234,7 @@ final class CanvasRenderer {
         var frame = CanvasFrame(running: true)
         frame.layout = Diagnostics.previewLayout
         frame.options = DisplayOptions.stored
+        frame.geometry = SpeakerLayoutStore.storedGeometry(for: frame.layout, nebula: frame.options.nebula)
         // Spatial part of the demo cycle, so the preview shows every lane and channel of the layout; or the columns
         // of an audio file, through the real analysis.
         let audio = try Diagnostics.previewAudio.map { try PreviewAudio.snapshots($0, layout: frame.layout) }
@@ -1947,26 +2395,32 @@ final class SpectrumScene: CanvasScene {
     }
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
-        let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
+        // In the horizontal strip the spectrum has a card of its own: the same drawing on its usual axes, turned a
+        // quarter so frequency runs across (`SpectrumCardLayout`).
+        let card = frame.spectrumStrip == SpectrogramLayout.split ? SpectrumCardLayout(size: size) : nil
+        let layout = card?.canonical
+            ?? SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
+        func t(_ p: CGPoint) -> CGPoint { card?.point(p) ?? p }
+        func t(_ r: CGRect) -> CGRect { card?.rect(r) ?? r }
         let strip = layout.spectrum
         let ink = Theme.inkRGB
-        b.roundedRect(strip, radius: 3, ink.simd(0.025))
+        b.roundedRect(t(strip), radius: 3, ink.simd(0.025))
         for db in SpectrogramLayout.grid {
             let x = (layout.x(decibels: db) * 2).rounded() / 2
-            b.rect(CGRect(x: max(strip.minX, min(strip.maxX - 0.5, x)), y: strip.minY, width: 0.5, height: strip.height),
+            b.rect(t(CGRect(x: max(strip.minX, min(strip.maxX - 0.5, x)), y: strip.minY, width: 0.5, height: strip.height)),
                    ink.simd(Float(db == 0 ? ChartInk.reference : ChartInk.major)))
             // A fainter line halfway to the next labelled level, so a level reads to 12 dB at a glance.
             let minor = (layout.x(decibels: db - 12) * 2).rounded() / 2
             if db - 12 > MeterScale.spectrumFloor {
-                b.rect(CGRect(x: minor, y: strip.minY, width: 0.5, height: strip.height), ink.simd(Float(ChartInk.minor) * 0.7))
+                b.rect(t(CGRect(x: minor, y: strip.minY, width: 0.5, height: strip.height)), ink.simd(Float(ChartInk.minor) * 0.7))
             }
         }
         // A line under each frequency label, stronger at 100 Hz, 1 kHz and 10 kHz.
-        for tick in SpectrogramLayout.frequencyTicks(layout, sampleRate: frame.sampleRate) {
+        for tick in card?.frequencyTicks(sampleRate: frame.sampleRate) ?? SpectrogramLayout.frequencyTicks(layout, sampleRate: frame.sampleRate) {
             let y = (layout.y(frequency: tick.0, sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
             let decade = [100.0, 1_000, 10_000].contains(tick.0)
-            b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(Float(decade ? ChartInk.major * 1.3 : ChartInk.minor)))
+            b.rect(t(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5)), ink.simd(Float(decade ? ChartInk.major * 1.3 : ChartInk.minor)))
         }
 
         // The newest bands, followed at the chosen response; held while frozen, and a new stream starts from its own.
@@ -2002,14 +2456,14 @@ final class SpectrumScene: CanvasScene {
         let tint = Theme.sageRGB
         for (p, q) in zip(curve, curve.dropFirst()) {
             let pb = CGPoint(x: layout.floorX, y: p.y), qb = CGPoint(x: layout.floorX, y: q.y)
-            b.triangle(p, q, qb, tint.simd(0.14), tint.simd(0.14), tint.simd(0.02))
-            b.triangle(p, qb, pb, tint.simd(0.14), tint.simd(0.02), tint.simd(0.02))
+            b.triangle(t(p), t(q), t(qb), tint.simd(0.14), tint.simd(0.14), tint.simd(0.02))
+            b.triangle(t(p), t(qb), t(pb), tint.simd(0.14), tint.simd(0.02), tint.simd(0.02))
         }
         // The waterfall's octave lines at every C continue faintly across the spectrum.
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
-            b.rect(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5), ink.simd(octave == 4 ? 0.10 : 0.045))
+            b.rect(t(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5)), ink.simd(octave == 4 ? 0.10 : 0.045))
         }
         // Peak holds: one faint line over the curve, each point held 1.2 s and then falling. Held while frozen,
         // unless they are switched off meanwhile.
@@ -2031,7 +2485,7 @@ final class SpectrumScene: CanvasScene {
         if holds.contains(where: { $0 > MeterScale.spectrumFloor + 1 }) {
             let held = line(holds.indices.map { max(holds[$0], live[$0]) })
             for (p, q) in zip(held, held.dropFirst()) where !(onFloor(p) && onFloor(q)) {
-                b.line(p, q, width: 1, ink.simd(0.30))
+                b.line(t(p), t(q), width: 1, ink.simd(0.30))
             }
         }
         // The long-term average, in the second accent: a calm solid line, so it reads apart from the live curve
@@ -2039,11 +2493,11 @@ final class SpectrumScene: CanvasScene {
         if frame.options.averageSpectrum, let average {
             let points = line(SpectrumSmoothing.apply(kernel, to: average))
             for (p, q) in zip(points, points.dropFirst()) where !(onFloor(p) && onFloor(q)) {
-                b.line(p, q, width: 1.25, Theme.sandRGB.simd(0.85))
+                b.line(t(p), t(q), width: 1.25, Theme.sandRGB.simd(0.85))
             }
         }
         for (p, q) in zip(curve, curve.dropFirst()) where !(onFloor(p) && onFloor(q)) {
-            b.line(p, q, width: 1.5, Theme.sageRGB.simd())
+            b.line(t(p), t(q), width: 1.5, Theme.sageRGB.simd())
         }
     }
 
@@ -2120,6 +2574,31 @@ final class SpectrumScene: CanvasScene {
     }
 }
 
+/// A scroll fed in bursts and drawn at an even speed: `lag` is how many columns the drawn edge trails the newest one.
+/// Each arrival adds its columns; each refresh drains them at the column rate, sped up or slowed a little by how far the
+/// lag's recent average (not the lag itself, which saw-tooths with every arrival and would make the speed wobble) sits
+/// from `target`, so the scroll locks onto however the columns come (an audio device's buffers, a DAW's blocks).
+struct ScrollDrain {
+    private(set) var lag: Float = 0
+    private var average: Float = 0
+    /// Seconds over which the average follows, and how much faster (or slower) the drain runs per `unit` columns the
+    /// average is off target.
+    private static let settle: Float = 0.4
+    private static let gain: Float = 0.25
+
+    mutating func reset() { lag = 0; average = 0 }
+    mutating func arrived(_ columns: Float) { lag += columns }
+
+    /// One refresh `dt` seconds on: drains at `rate` columns a second toward `target`; past `limit` (a stall, or the
+    /// first columns after a gap) it lands on the target at once rather than racing.
+    mutating func step(dt: Float, rate: Float, target: Float, unit: Float, limit: Float) {
+        average += (lag - average) * (1 - Foundation.exp(-dt / Self.settle))
+        let speed = max(0, rate * (1 + (average - target) / max(1, unit) * Self.gain))
+        lag = max(0, lag - dt * speed)
+        if lag > limit { lag = target; average = target }
+    }
+}
+
 // MARK: - Spectrogram: scrolling history beside the live spectrum, on its frequency axis
 
 /// The waterfall: `SpectrogramHistory` drawn by `waterfallFragment`, with the octave and seconds grid over it. One
@@ -2131,8 +2610,20 @@ final class SpectrogramScene: CanvasScene {
     private var previousColumn: Float = 0
     private var previousStream: Float = 0
     private var previousRate: Double = 0
-    private var lastUpload: CFTimeInterval = 0
+    /// Columns the right edge trails the newest column (`ScrollDrain`), so columns that arrive unevenly (a DAW's large
+    /// blocks, an audio device's buffers) still scroll at an even speed; and when the scroll last stepped.
+    private var drain = ScrollDrain()
+    private var lastStep: CFTimeInterval = 0
+    /// How far the scroll has moved toward the next column, 1 − (lag − cushion), at most 1: the shader's `phase`.
     private(set) var phase: Float = 0
+    private var appended = 0
+    private var arrived: CFTimeInterval = 0
+    /// Diagnostics (`--test-frame-pacing`), main thread only.
+    nonisolated(unsafe) static var tracing = false
+    nonisolated(unsafe) static var scrollTrace: [(Double, Double)] = []
+    /// Slack in columns beyond the half column the drain trails on average, so columns that come late or two at once (a
+    /// DAW's 2048-sample blocks are 43 ms) never stall it: 0.8 keeps every refresh's step within about 1 % of the next.
+    private static let cushion: Float = 0.8
     /// Columns the waterfall spans at its current width (`SpectrogramLayout.seconds`).
     private(set) var span = SpectrogramLayout.maxSeconds * SpectrogramLayout.analysisRate
     private var options = DisplayOptions()
@@ -2169,7 +2660,8 @@ final class SpectrogramScene: CanvasScene {
 
     private func clear() {
         history.reset()
-        lastUpload = 0
+        drain.reset()
+        lastStep = 0
         phase = 0
         for slot in 0..<SpectrogramHistory.capacity { upload(slot) }
     }
@@ -2194,11 +2686,21 @@ final class SpectrogramScene: CanvasScene {
         // One column per analysis serial (30 Hz), however often snapshots arrive.
         if frame.running && snapshot.spectrogramSerial > 0 && (streamChanged || snapshot.spectrogramSerial != previousColumn) {
             upload(history.append(snapshot.spectrogram))
-            lastUpload = CACurrentMediaTime()
+            drain.arrived(1)
+            if Self.tracing { appended += 1; arrived = CanvasDriver.now }
         }
-        // Held while paused; otherwise the scroll advances within the current column interval.
-        if frame.running && lastUpload > 0 {
-            phase = Float(min(1, (CACurrentMediaTime() - lastUpload) * SpectrogramLayout.analysisRate))
+        // Held while paused; otherwise drained at the column rate, a little faster when behind, slower when short.
+        let now = CanvasDriver.now
+        if frame.running && lastStep > 0 {
+            drain.step(dt: Float(max(0, min(0.1, now - lastStep))), rate: Float(SpectrogramLayout.analysisRate),
+                       target: 0.5 + Self.cushion, unit: 1, limit: 6)
+            phase = min(1, 1 + Self.cushion - drain.lag)
+        }
+        lastStep = frame.running ? now : 0
+        if Self.tracing && frame.running && arrived > 0 {
+            // Diagnostics: where the scroll stands (columns), and where build 99's (the time since the newest column,
+            // held at a whole column) would.
+            Self.scrollTrace.append((Double(appended) - Double(drain.lag), Double(appended) - 1 + min(1, (now - arrived) * SpectrogramLayout.analysisRate)))
         }
         if snapshot.streamID > 0 { previousStream = snapshot.streamID }
         previousColumn = snapshot.spectrogramSerial
@@ -2286,8 +2788,9 @@ final class WaveformScene: CanvasScene {
     private var pyramid = MinMaxPyramid(capacity: traceCapacity, pairs: pairs)
     private var lastSerial = -1
     private var lastStream: Float = 0
-    /// Columns the right edge trails the newest column; drained at the column rate for a smooth scroll.
-    private var lag: Float = 0
+    /// Columns the right edge trails the newest column (`ScrollDrain`), for a smooth scroll.
+    private var drain = ScrollDrain()
+    private var lag: Float { drain.lag }
     /// Recent arrival size in columns: about 4 per 60 Hz DSP tick, 8 per 30 Hz demo update, more when a DAW
     /// runs the device with long buffers. Jumps up at once and relaxes slowly.
     private var burst: Float = 8
@@ -2322,7 +2825,7 @@ final class WaveformScene: CanvasScene {
         pyramid.reset()
         uploadDirtyTrace()
         lastSerial = -1
-        lag = 0
+        drain.reset()
     }
 
     /// Copies only the texels the pyramid changed since the last upload: one region per level covering
@@ -2381,7 +2884,7 @@ final class WaveformScene: CanvasScene {
             }
         }
         uploadDirtyTrace()
-        lag += Float(count)
+        drain.arrived(Float(count))
         if lastSerial >= 0 { burst = max(Float(count), burst + (Float(count) - burst) * 0.05) }
         lastSerial = serial
     }
@@ -2390,10 +2893,8 @@ final class WaveformScene: CanvasScene {
     /// level from the pixel footprint, so any panel size renders at native resolution without resampling.
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
         if frame.running {
-            // Drain at the column rate, a little faster when behind, so bursty arrivals scroll evenly at 60 Hz.
-            let rate = max(0, Float(WaveformEnvelope.columnRate) + (lag - cushion) * 20)
-            lag = max(0, lag - dt * rate)
-            if lag > 80 { lag = cushion }
+            // Drained at the column rate, locked onto the arrivals, so bursts scroll evenly at any refresh rate.
+            drain.step(dt: dt, rate: Float(WaveformEnvelope.columnRate), target: cushion, unit: burst, limit: 80)
         }
         visibleColumns = Float(Double(frame.options.waveSeconds) * WaveformEnvelope.columnRate)
         scale = frame.options.waveScale
@@ -2458,9 +2959,12 @@ final class SoundstageScene: CanvasScene {
     private var cloudSequence: Float = -1
     /// The time the clouds age against: the last live frame's.
     private var cloudClock: CFTimeInterval = 0
-    /// A dot's opacity halves about every 35 ms, so a sample glows briefly and trails off like phosphor.
-    private static let cloudDecay: CFTimeInterval = 0.05
-    private static let cloudLife: CFTimeInterval = 0.11
+    /// A dot's opacity halves about every 50 ms, so a sample glows briefly and trails off like phosphor.
+    private static let cloudDecay: CFTimeInterval = 0.07
+    private static let cloudLife: CFTimeInterval = 0.16
+    /// At most this many clouds are drawn, whatever the snapshot rate: each is a glow per sample and band group, and
+    /// six keep a band switch's two groupings (up to eight groups) well inside the vertex buffer.
+    private static let cloudGenerations = 6
     /// Outline and Filled styles: per published band group (`StereoBands.groups`), how far its samples reach at
     /// each of `envelopeBins` directions across the half disc, as a scope fraction. Rises at once, falls over
     /// about a quarter second, so the shape holds still enough to read.
@@ -2558,25 +3062,20 @@ final class SoundstageScene: CanvasScene {
         domeDrawn = false
         switch part {
         case .room:
-            // Stereo shows the stereometer instead of the room; the two cross-fade with the mode.
-            let stereo = stereoImageWeight
-            if stereo < 0.999 {
-                let start = b.shapes.count
-                if presence < 0.999 {
-                    drawRoom(&b, layout: layout, frame: frame)
-                    b.fade(from: start, by: (1 - stereo) * (1 - stereo) * (1 - presence))
-                }
-                if presence > 0.001 {
-                    dome.draw(&b, frame: frame, size: size, dt: signalDt, displayDt: dt, opacity: presence * presence)
-                    domeDrawn = true
-                }
+            // Stereo and Mono show the stereometer, Immersive the dome: one hands over to the other (`FormatMix.relay`),
+            // the stereometer swelling a little as it leaves, the dome settling in from a little farther away.
+            let relay = FormatMix.relay(CGFloat(presence))
+            if relay.dome > 0.001 {
+                dome.draw(&b, frame: frame, size: size, dt: signalDt, displayDt: dt, opacity: Float(relay.dome), zoom: relay.domeZoom)
+                domeDrawn = true
             }
             updateCloud(frame)
-            if stereo > 0.001 {
+            if relay.stereo > 0.001 {
                 let start = b.shapes.count
                 drawStereometer(&b, layout: layout, display: display, running: frame.shown, style: frame.stageStyle, dt: signalDt,
                                 layers: shownLayers(frame), focus: focusGroup(frame))
-                b.fade(from: start, by: stereo * stereo)
+                b.fade(from: start, by: Float(relay.stereo))
+                b.scale(from: start, by: relay.stereoScale, around: layout.scopeCenter)
             }
         case .levels:
             drawMeters(&b, layout: layout, frame: frame)
@@ -2589,322 +3088,6 @@ final class SoundstageScene: CanvasScene {
         role == Role.left ? 1 : (role == Role.right ? presence + (1 - presence) * (1 - mono) : presence)
     }
 
-    /// What the room's static layers were built for; they are rebuilt only when one of these changes.
-    private struct RoomKey: Equatable {
-        let size: CGSize
-        let layout: SpeakerLayout
-        let ink: Theme.RGB
-        let heather: Theme.RGB
-        let dark: Bool
-    }
-    private var roomKey: RoomKey?
-    /// The floor (disc, distance rings, azimuth ticks, cross and axis) and the upper layer (its rings and the
-    /// posts to the floor), as finished vertices: each frame copies them in instead of rebuilding them.
-    private var floorLayer: [ShapeVertex] = []
-    private var upperLayer: [ShapeVertex] = []
-
-    /// A room circle: an ellipse on screen, as a polyline.
-    private static func ellipse(_ b: inout ShapeBuilder, layout: SoundstageLayout, radius: CGFloat, y: CGFloat = 0,
-                                width: CGFloat, _ color: SIMD4<Float>, dashed: Bool = false) {
-        guard color.w > 0.002 else { return }
-        let steps = 72
-        var previous = layout.point(SoundstageLayout.Point3(x: 0, y: y, z: radius))
-        for step in 1...steps {
-            let radians = CGFloat(step) * 2 * .pi / CGFloat(steps)
-            let point = layout.point(SoundstageLayout.Point3(x: sin(radians) * radius, y: y, z: cos(radians) * radius))
-            if !dashed || step % 2 == 0 { b.line(previous, point, width: width, color) }
-            previous = point
-        }
-    }
-
-    private func buildRoomLayers(layout: SoundstageLayout, key: RoomKey) {
-        typealias P3 = SoundstageLayout.Point3
-        let ink = key.ink, dark = key.dark
-        var b = ShapeBuilder(reserving: 4096)
-        func plane(_ azimuth: Double, _ radius: CGFloat) -> P3 {
-            let radians = azimuth * .pi / 180
-            return P3(x: CGFloat(sin(radians)) * radius, y: 0, z: CGFloat(cos(radians)) * radius)
-        }
-        let o = layout.point(P3(x: 0, y: 0, z: 0))
-        // Floor: a toned disc, brighter toward the listener, then distance rings every quarter of the bed radius.
-        let rim = (0...72).map { layout.point(plane(Double($0) * 5, 1)) }
-        let inner = dark ? SIMD4<Float>(0, 0, 0, 0.30) : ink.simd(0.05)
-        let outer = dark ? SIMD4<Float>(0, 0, 0, 0.12) : ink.simd(0.02)
-        for (q, r) in zip(rim, rim.dropFirst()) { b.triangle(o, q, r, inner, outer, outer) }
-        for (index, radius) in [CGFloat(0.25), 0.5, 0.75].enumerated() {
-            Self.ellipse(&b, layout: layout, radius: radius, width: 0.75, ink.simd((dark ? 0.07 : 0.06) + 0.015 * Float(index)))
-        }
-        Self.ellipse(&b, layout: layout, radius: 1, width: 1.1, ink.simd(dark ? 0.26 : 0.24))
-        for step in 0..<24 {
-            let major = step % 6 == 0, mid = step % 2 == 0
-            let reach: CGFloat = major ? 1.09 : (mid ? 1.05 : 1.03)
-            b.line(layout.point(plane(Double(step) * 15, 1)), layout.point(plane(Double(step) * 15, reach)),
-                   width: major ? 1.1 : 0.75, ink.simd(major ? 0.34 : (mid ? 0.20 : 0.12)))
-        }
-        b.line(layout.point(plane(180, 1)), layout.point(plane(0, 1)), width: 0.75, ink.simd(0.10))
-        b.line(layout.point(plane(-90, 1)), layout.point(plane(90, 1)), width: 0.75, ink.simd(0.10))
-        b.line(o, layout.point(P3(x: 0, y: SoundstageLayout.axisTop, z: 0)), width: 0.75, ink.simd(0.14))
-        floorLayer = b.shapes
-
-        // Upper layer: its dashed ring, its footprint on the floor, and a post from each upper speaker down to it.
-        b.reset()
-        if !heights.isEmpty {
-            let heather = key.heather
-            Self.ellipse(&b, layout: layout, radius: SoundstageLayout.heightReach, y: SoundstageLayout.heightLift,
-                         width: 0.9, heather.simd(0.34), dashed: true)
-            Self.ellipse(&b, layout: layout, radius: SoundstageLayout.heightReach, width: 0.75, heather.simd(0.10), dashed: true)
-            for speaker in heights {
-                let top = layout.position(speaker)
-                let foot = layout.point(P3(x: top.x, y: 0, z: top.z))
-                b.line(foot, layout.point(top), width: 0.75, heather.simd(0.18))
-                b.disk(foot, radius: 1.5, heather.simd(0.3))
-            }
-        }
-        upperLayer = b.shapes
-    }
-
-    /// The room in Immersive, drawn flat: the floor is the ear-level plane seen at a slant, with distance rings,
-    /// azimuth ticks and a cross through the listener, and one energy field for the whole programme (RMS per
-    /// speaker along its direction, bed and upper layer alike) spread on it. The upper layer floats above on its
-    /// own dashed ring, with a post from each upper speaker down to the floor, so ceiling energy reads as height. Every speaker is a
-    /// round marker lit by its level and wrapped in a level ring (RMS arc, peak dot, ember halo once clipped). The
-    /// mix's image hangs where its energy centres, a stem down to its footprint on the floor, and a ring there as
-    /// wide as the image is diffuse; each frequency band is an orb in the band colours. Static layers are cached;
-    /// markers are drawn top to bottom so near sits over far, and all of it follows the presence springs, so
-    /// Stereo and Mono morph instead of cutting.
-    private func drawRoom(_ b: inout ShapeBuilder, layout: SoundstageLayout, frame: CanvasFrame) {
-        typealias P3 = SoundstageLayout.Point3
-        let p = presence
-        let ink = Theme.inkRGB
-        let sage = Theme.sageRGB
-        let origin = P3(x: 0, y: 0, z: 0)
-        func plane(_ azimuth: Double, _ radius: CGFloat, y: CGFloat = 0) -> P3 {
-            let radians = azimuth * .pi / 180
-            return P3(x: CGFloat(sin(radians)) * radius, y: y, z: CGFloat(cos(radians)) * radius)
-        }
-        let key = RoomKey(size: layout.stageWell.size, layout: frame.layout, ink: ink, heather: Theme.heatherRGB, dark: Theme.dark)
-        if key != roomKey {
-            roomKey = key
-            buildRoomLayers(layout: layout, key: key)
-        }
-        let o = layout.point(origin)
-        b.shapes.append(contentsOf: floorLayer)
-
-        // Stereo stage: the ±30° arc of the floor ring between L and R lights up toward Stereo and closes to a
-        // point as L and R merge into the front-centre mono source.
-        let stage = 1 - p
-        let spread = 30 * Double(1 - mono)
-        if stage > 0.005 {
-            var previous = layout.point(plane(-spread, 1))
-            for step in 1...16 {
-                let point = layout.point(plane(-spread + 2 * spread * Double(step) / 16, 1))
-                b.line(previous, point, width: 1.5, sage.simd(0.65 * stage))
-                previous = point
-            }
-        }
-        if p > 0.002 && !upperLayer.isEmpty {
-            let start = b.shapes.count
-            b.shapes.append(contentsOf: upperLayer)
-            b.fade(from: start, by: p)
-        }
-
-        // LFE: a pool of light on the floor under the listener, as wide as it is loud; it has no direction.
-        if frame.layout.hasLFE && p > 0.002 {
-            let active = frame.activeRoles[Role.lfe]
-            let lfe = active ? CGFloat(MeterScale.position(decibels: rmsDb[Role.lfe])) : 0
-            let clay = Theme.clayRGB
-            let radius = 0.08 + 0.34 * lfe
-            if lfe > 0.001 {
-                let pool = (0...36).map { layout.point(plane(Double($0) * 10, radius)) }
-                for (q, r) in zip(pool, pool.dropFirst()) {
-                    b.triangle(o, q, r, clay.simd(Float(0.10 + 0.30 * lfe) * p), clay.simd(0.03 * p), clay.simd(0.03 * p))
-                }
-            }
-            Self.ellipse(&b, layout: layout, radius: radius, width: 1, clay.simd((active ? 0.5 : 0.18) * p))
-        }
-
-        // One field for the whole programme, bed and upper layer alike. In each direction it reaches as far as
-        // the level of the energy arriving from around it (each speaker counting less the further it is, about
-        // ±35°), and rises toward the upper layer with the share of that energy the upper layer carries: a bed-only
-        // mix lies on the floor, tops on one side bend that side up, a ceiling-heavy mix floats as a canopy. Its
-        // colour follows the lift, the bed's at the floor to the upper layer's at the top; a faint shadow on the
-        // floor keeps its direction and width readable, and the gap to it shows the height.
-        let directional = bed + (p > 0.005 ? heights : [])
-        var sources: [(azimuth: CGFloat, energy: CGFloat, upper: Bool)] = []
-        for speaker in directional where frame.activeRoles[speaker.role] {
-            let v = visibility(speaker.role)
-            guard v > 0.002 else { continue }
-            sources.append((CGFloat((layout.azimuth(speaker) ?? 0) * .pi / 180),
-                            CGFloat(pow(10, rmsDb[speaker.role] / 10) * v), speaker.group == .height))
-        }
-        do {
-            let steps = 64
-            let heather = Theme.heatherRGB
-            var room: [P3] = [], shares: [CGFloat] = []
-            for step in 0..<steps {
-                let theta = CGFloat(step) * 2 * .pi / CGFloat(steps)
-                var total: CGFloat = 0, upper: CGFloat = 0
-                for source in sources {
-                    var delta = abs(theta - source.azimuth).truncatingRemainder(dividingBy: 2 * .pi)
-                    if delta > .pi { delta = 2 * .pi - delta }
-                    let energy = source.energy * exp(-(delta * delta) / 0.38)
-                    total += energy
-                    if source.upper { upper += energy }
-                }
-                let level = CGFloat(MeterScale.position(decibels: Float(10 * log10(max(1e-12, total)))))
-                room.append(P3(x: sin(theta), y: 0, z: cos(theta)) * (0.08 + 0.92 * level))
-                shares.append(total > 1e-12 ? upper / total : 0)
-            }
-            // The lift is eased round the outline (about ±30°), so the field bends up smoothly; rising, it draws in
-            // toward the upper ring, as the upper layer sits inside the bed ring.
-            let window = 5
-            shares = (0..<steps).map { index in
-                (-window...window).reduce(CGFloat(0)) { $0 + shares[(index + $1 + steps) % steps] } / CGFloat(2 * window + 1) * CGFloat(p)
-            }
-            for index in 0..<steps {
-                let share = shares[index]
-                let pull = 1 - share * (1 - SoundstageLayout.heightReach)
-                room[index] = P3(x: room[index].x * pull, y: share * SoundstageLayout.heightLift, z: room[index].z * pull)
-            }
-            // Half the energy from above already reads fully as the upper layer's colour.
-            func color(_ share: CGFloat) -> Theme.RGB {
-                let t = Float(min(1, share * 2))
-                return Theme.RGB(r: sage.r + (heather.r - sage.r) * t, g: sage.g + (heather.g - sage.g) * t,
-                                 b: sage.b + (heather.b - sage.b) * t)
-            }
-            // The footprint on the floor: a faint fill and edge, where the whole field lies in a bed-only mix.
-            let origin2 = layout.point(origin)
-            let footprint = room.map { layout.point(P3(x: $0.x, y: 0, z: $0.z)) }
-            let outline = room.map { layout.point($0) }
-            for index in 0..<steps {
-                let next = (index + 1) % steps
-                b.triangle(origin2, footprint[index], footprint[next], sage.simd(0.14), sage.simd(0.05), sage.simd(0.05))
-            }
-            // The wall from the footprint up to the rim, brightest at the rim: it shows how high each direction has
-            // risen and keeps a lifted field legible where its rim crosses itself on screen.
-            for index in 0..<steps {
-                let next = (index + 1) % steps
-                guard shares[index] + shares[next] > 0.01 else { continue }
-                let top0 = color(shares[index]).simd(0.20), top1 = color(shares[next]).simd(0.20)
-                let foot = sage.simd(0.02)
-                b.triangle(footprint[index], footprint[next], outline[next], foot, foot, top1)
-                b.triangle(footprint[index], outline[next], outline[index], foot, top1, top0)
-            }
-            for index in 0..<steps {
-                let next = (index + 1) % steps
-                let risen = shares[index] + shares[next] > 0.01
-                b.line(footprint[index], footprint[next], width: 1, sage.simd(risen ? 0.35 : 0))
-                b.line(outline[index], outline[next], width: 1.25, color((shares[index] + shares[next]) / 2).simd(0.85))
-            }
-            // Posts every 45°, so the lift reads as height.
-            for index in stride(from: 0, to: steps, by: steps / 8) where shares[index] > 0.02 {
-                b.line(footprint[index], outline[index], width: 0.75, color(shares[index]).simd(0.35))
-            }
-        }
-
-        // Sight lines from the listener, brighter with level.
-        for speaker in layout.speakers where speaker.group != .lfe {
-            let v = visibility(speaker.role)
-            guard v > 0.002 else { continue }
-            let level = frame.activeRoles[speaker.role] ? MeterScale.position(decibels: rmsDb[speaker.role]) : 0
-            b.line(o, layout.point(layout.position(speaker)), width: 0.75, ink.simd((0.05 + 0.20 * level) * v))
-        }
-
-        // The image: the energy centroid of every directional speaker. Its distance from the listener says how
-        // focused the mix is, its height how much the upper layer carries.
-        var image = origin
-        var total: CGFloat = 0
-        for speaker in layout.speakers where speaker.group != .lfe && frame.activeRoles[speaker.role] {
-            let energy = CGFloat(pow(10, rmsDb[speaker.role] / 10) * visibility(speaker.role))
-            image = image + layout.position(speaker) * energy
-            total += energy
-        }
-        let hasImage = total > 1e-6 && frame.shown
-        if hasImage { image = image * (1 / total) }
-        let imageY = layout.point(image).y
-
-        // Markers top to bottom (far to near), the image among them where it stands.
-        let markers = layout.speakers.filter { $0.group != .lfe && visibility($0.role) > 0.002 }
-            .map { ($0, layout.point(layout.position($0)).y) }
-            .sorted { $0.1 < $1.1 }
-        var imageDrawn = false
-        for (speaker, y) in markers {
-            if !imageDrawn && y > imageY {
-                drawImage(&b, layout: layout, frame: frame, image: hasImage ? image : nil)
-                imageDrawn = true
-            }
-            drawMarker(&b, layout: layout, speaker: speaker, active: frame.activeRoles[speaker.role])
-        }
-        if !imageDrawn { drawImage(&b, layout: layout, frame: frame, image: hasImage ? image : nil) }
-    }
-
-    /// The mix's image and the band orbs (cross-fading through a band switch), with the listener.
-    private func drawImage(_ b: inout ShapeBuilder, layout: SoundstageLayout, frame: CanvasFrame,
-                           image: SoundstageLayout.Point3?) {
-        typealias P3 = SoundstageLayout.Point3
-        let ink = Theme.inkRGB
-        let o = layout.point(P3(x: 0, y: 0, z: 0))
-        b.disk(o, radius: 3, Theme.displayRGB.simd(0.9))
-        b.disk(o, radius: 2.25, ink.simd(0.6))
-        guard let image else { return }
-        let footprint = P3(x: image.x, y: 0, z: image.z)
-        let at = layout.project(image)
-        let foot = layout.point(footprint)
-        // Diffuseness: 0 when the image sits on a speaker, 1 when it surrounds the listener evenly.
-        let focus = min(1, (image.x * image.x + image.z * image.z).squareRoot() + image.y * 0.6)
-        let spread = 0.06 + 0.5 * (1 - focus)
-        let ring = (0...48).map { step -> CGPoint in
-            let radians = CGFloat(step) * 7.5 * .pi / 180
-            return layout.point(P3(x: footprint.x + sin(radians) * spread, y: 0, z: footprint.z + cos(radians) * spread))
-        }
-        for (q, r) in zip(ring, ring.dropFirst()) {
-            b.triangle(foot, q, r, ink.simd(0.10), ink.simd(0.02), ink.simd(0.02))
-            b.line(q, r, width: 1, ink.simd(0.32))
-        }
-        b.line(o, foot, width: 1, ink.simd(0.30))
-        if image.y > 0.005 { b.line(foot, at.point, width: 1, ink.simd(0.45)) }
-        for layer in bands.layers where frame.options.bandMarkers {
-            let start = b.shapes.count
-            drawBandImage(&b, layout: layout, frame: frame, resolution: layer.resolution)
-            b.fade(from: start, by: layer.weight)
-        }
-        let size = at.scale
-        b.glow(at.point, radius: 10 * size, ink.simd(0.22))
-        b.disk(at.point, radius: 4.25 * size, Theme.displayRGB.simd(0.95))
-        b.disk(at.point, radius: 3.25 * size, ink.simd())
-    }
-
-    /// A speaker marker: a disc lit in its group colour by RMS and glowing with it, wrapped in a level ring
-    /// that sweeps clockwise from 12 o'clock with RMS, a dot on the ring at the peak, and an ember halo once the
-    /// channel has clipped. Nearer markers are a little larger; a receding speaker shrinks and fades.
-    private func drawMarker(_ b: inout ShapeBuilder, layout: SoundstageLayout, speaker: Speaker, active: Bool) {
-        let v = visibility(speaker.role)
-        let ink = Theme.inkRGB
-        let color = Theme.groupRGB(speaker.group)
-        let at = layout.position(speaker)
-        let point = layout.point(at)
-        let n = layout.markerRadius(at) * CGFloat(0.6 + 0.4 * v)
-        let ring = n + (layout.compactRoom ? 2 : 3.5)
-        guard active else {
-            b.disk(point, radius: n, Theme.displayRGB.simd(0.9 * v))
-            b.ring(point, radius: n, width: 1, ink.simd(0.22 * v))
-            return
-        }
-        let rms = MeterScale.position(decibels: rmsDb[speaker.role])
-        let peak = MeterScale.position(decibels: peakDb[speaker.role])
-        b.glow(point, radius: ring * 1.6 + layout.stageScale * 0.12 * CGFloat(rms), color.simd((0.10 + 0.40 * rms) * v))
-        b.disk(point, radius: ring + 1.5, Theme.displayRGB.simd(0.85 * v))
-        b.ring(point, radius: ring, width: 2, ink.simd(0.14 * v))
-        if rms > 0.004 { b.ring(point, radius: ring, width: 2, color.simd(v), sweep: rms) }
-        let angle = CGFloat(peak) * 2 * .pi
-        b.disk(CGPoint(x: point.x + sin(angle) * ring, y: point.y - cos(angle) * ring), radius: 1.6, ink.simd(0.85 * v))
-        b.disk(point, radius: n, color.simd((0.30 + 0.70 * rms) * v))
-        b.ring(point, radius: n, width: 1, ink.simd((0.20 + 0.30 * peak) * v))
-        if clipped[speaker.role] { b.ring(point, radius: ring + 3, width: 1.25, Theme.emberRGB.simd(v)) }
-    }
-
-    /// 1 in Stereo and Mono (the stereometer, folded onto M in Mono), 0 in Immersive.
-    private var stereoImageWeight: Float { 1 - presence }
 
     /// The stereometer's band layers, each with the groups it draws: all of them, or the single band chosen on the
     /// BANDS menu. A single band applies to its own split; an outgoing split keeps all its bands while it fades.
@@ -2935,7 +3118,7 @@ final class SoundstageScene: CanvasScene {
             return
         }
         guard frame.running else { return }
-        let now = CACurrentMediaTime()
+        let now = CanvasDriver.now
         cloudClock = now
         let snapshot = frame.snapshot
         if snapshot.sequence != cloudSequence {
@@ -2943,6 +3126,7 @@ final class SoundstageScene: CanvasScene {
             clouds.insert((snapshot.bandPoints, now), at: 0)
         }
         clouds.removeAll { now - $0.time > Self.cloudLife }
+        if clouds.count > Self.cloudGenerations { clouds.removeLast(clouds.count - Self.cloudGenerations) }
     }
 
     /// Stereometer, in Stereo: a polar sample plot in a half disc, like a hardware goniometer turned into polar
@@ -3047,27 +3231,35 @@ final class SoundstageScene: CanvasScene {
         b.disk(at, radius: 3.6, lit.simd(focusShown))
     }
 
-    /// Dots style: every sample of the recent clouds as a dot.
+    /// Dots style: every sample of the recent clouds as a point of light, in the Immersive nebula's manner. Each
+    /// sample is a soft glow in its band's hue; the newest 1/30 s also carries a small bright spark, and older
+    /// samples spread and fade as they age, so the trail diffuses into a haze. On dark the glows add up as light
+    /// (`ShapeBuilder.light`): where the programme gathers they burn toward white and the fringes keep their hues;
+    /// on light they lay a tinted wash with the sparks crisp on top. Bands are interleaved point by point, so no
+    /// band always covers another. During a band switch the dots re-colour by cross-fading the two groupings.
     private func drawCloud(_ b: inout ShapeBuilder, layout: SoundstageLayout,
                            layers: [(resolution: StereoBands.Resolution, weight: Float, groups: [Int])]) {
         let dark = Theme.dark
-        // The cloud: oldest first so the newest dots sit on top. The trail is small and dim; the newest 1/30 s is
-        // larger and full strength, each dot set on a small backing in the screen colour, so the live image reads
-        // as separate dots over its trail instead of a mat. Bands are interleaved point by point, so no band
-        // always covers another. During a band switch the dots re-colour by cross-fading the two groupings.
         let points = StereoBands.scopePoints
         let now = cloudClock
-        let backing = Theme.displayRGB
         let center = layout.scopeCenter, radius = layout.scopeRadius
+        // Glow and spark sizes follow the scope, so a small panel is not smothered and an enlarged one not sparse.
+        let size = max(0.75, min(1.4, radius / 220))
+        let lightStart = b.shapes.count
         for (resolution, weight, shown) in layers {
         let cloudStart = b.shapes.count
         let groups = resolution.groups
         let hues = (0..<resolution.count).map { Theme.bandRGB(resolution, $0) }
+        let sparks = hues.map { dark ? $0.mixed(with: Theme.RGB(r: 1, g: 1, b: 1), amount: 0.55) : $0 }
+        // Fewer groups overlap less: keep the summed light about as bright whatever the band setting.
+        let share = Float(1 / Double(max(1, shown.count)).squareRoot())
         for (generation, cloud) in clouds.enumerated().reversed() where cloud.points.count == StereoBands.scopeFloats {
             let newest = generation == 0
             let age = Float((now - cloud.time) / Self.cloudDecay)
-            let opacity = newest ? 1 : Float(0.5 * exp(-Double(age)))
-            guard opacity > 0.04 else { continue }
+            let opacity = newest ? 1 : Float(exp(-Double(age)))
+            guard opacity > 0.06 else { continue }
+            let glowRadius = size * (8 + 3 * CGFloat(min(age, 3)))
+            let glowAlpha = (dark ? 0.3 : 0.17) * share * opacity * (newest ? 1 : 0.8)
             for point in 0..<points {
                 for (group, members) in groups.enumerated() where shown.contains(group) {
                     // A group's samples are the sum of its bands' (the crossovers sum back to the programme).
@@ -3078,17 +3270,14 @@ final class SoundstageScene: CanvasScene {
                     }
                     guard let offset = SoundstageLayout.scopeSample(left: left, right: folded(left, right)) else { continue }
                     let position = CGPoint(x: center.x + offset.x * radius, y: center.y + offset.y * radius)
-                    if newest {
-                        b.disk(position, radius: 2.5, backing.simd(dark ? 0.6 : 0.5))
-                        b.disk(position, radius: 1.6, hues[group].simd(0.95))
-                    } else {
-                        b.disk(position, radius: 1.1, hues[group].simd(opacity))
-                    }
+                    b.glow(position, radius: glowRadius, hues[group].simd(glowAlpha))
+                    if newest { b.disk(position, radius: 1.15 * size, sparks[group].simd(dark ? 0.75 : 0.9)) }
                 }
             }
         }
         b.fade(from: cloudStart, by: weight)
         }
+        if dark { b.light = lightStart..<b.shapes.count }
     }
 
     /// Where a sample of the cloud lands on the half disc: its direction (−90 L … 0 M … 90 R) and scope fraction.
@@ -3170,9 +3359,11 @@ final class SoundstageScene: CanvasScene {
                 let area = reach.reduce(0) { $0 + $1 * $1 }
                 guard area > 0.0005 else { return nil }
                 let outline = (0...bins).map { edge -> CGPoint in
-                    // Bin edges; the reach at an edge is its two bins' mean, the ends meet the centre.
-                    let before = edge > 0 ? reach[edge - 1] : 0, after = edge < bins ? reach[edge] : 0
-                    let fraction = edge == 0 || edge == bins ? 0 : CGFloat((before + after) / 2)
+                    // Bin edges; the reach at an edge is its two bins' mean. The ends keep their bin's reach, so a band
+                    // that reaches out to the horizon closes along it instead of pinching back to the centre there,
+                    // which left dark wedges between the shapes and the horizon (Filled).
+                    let before = edge > 0 ? reach[edge - 1] : reach[0], after = edge < bins ? reach[edge] : reach[bins - 1]
+                    let fraction = CGFloat((before + after) / 2)
                     return layout.scopePoint(angle: -90 + 180 * Double(edge) / Double(bins), fraction: fraction)
                 }
                 return (group, outline, area)
@@ -3232,12 +3423,20 @@ final class SoundstageScene: CanvasScene {
         func at(_ index: Int, _ f: CGFloat) -> CGPoint {
             CGPoint(x: c.x + (outline[index].x - c.x) * f, y: c.y + (outline[index].y - c.y) * f)
         }
-        for (inner, outer) in zip(rings, rings.dropFirst()) {
-            for index in 0..<(outline.count - 1) {
+        // Each ring's colour at each outline point, once: neighbouring quads share their corners.
+        let count = outline.count
+        var colors = [SIMD4<Float>](repeating: .zero, count: rings.count * count)
+        for (ring, f) in rings.enumerated() {
+            for index in 0..<count { colors[ring * count + index] = color(f, lit: lit[index]) }
+        }
+        for ring in 0..<(rings.count - 1) {
+            let inner = rings[ring], outer = rings[ring + 1]
+            let innerRow = ring * count, outerRow = innerRow + count
+            for index in 0..<(count - 1) {
                 let next = index + 1
                 let a = at(index, inner), d = at(next, inner), p = at(index, outer), q = at(next, outer)
-                let ca = color(inner, lit: lit[index]), cd = color(inner, lit: lit[next])
-                let cp = color(outer, lit: lit[index]), cq = color(outer, lit: lit[next])
+                let ca = colors[innerRow + index], cd = colors[innerRow + next]
+                let cp = colors[outerRow + index], cq = colors[outerRow + next]
                 if inner == 0 {
                     b.triangle(a, p, q, ca, cp, cq)
                 } else {
@@ -3282,15 +3481,6 @@ final class SoundstageScene: CanvasScene {
             b.disk(at.point, radius: 4.75 * at.scale, Theme.displayRGB.simd(0.9 * p))
             b.disk(at.point, radius: 3.5 * at.scale, hue.simd(alpha))
         }
-    }
-
-    /// A closed field fanned from `center`: brighter at the centre, fading toward the edge, with a line along it.
-    private func drawField(_ b: inout ShapeBuilder, center: CGPoint, points: [CGPoint], color: Theme.RGB, fill: Float, edge: Float) {
-        guard points.count >= 2 else { return }
-        for (p, q) in zip(points, points.dropFirst() + [points[0]]) {
-            b.triangle(center, p, q, color.simd(fill), color.simd(fill * 0.35), color.simd(fill * 0.35))
-        }
-        for (p, q) in zip(points, points.dropFirst() + [points[0]]) { b.line(p, q, width: 1.25, color.simd(edge)) }
     }
 
     /// A closed polygon with each edge bent toward a Catmull-Rom curve through the vertices by `amount` (0 keeps
@@ -3582,7 +3772,7 @@ enum PreviewAudio {
             throw Failure(description: "unsupported rate \(rate)")
         }
         pipeline.spatialSpectrum = true
-        pipeline.spatialSidesAtNinety = layout.sidesAtNinety
+        pipeline.spatialGeometry = SpeakerLayoutStore.storedGeometry(for: layout, nebula: DisplayOptions.stored.nebula)
         pipeline.spatialCoherence = DisplayOptions.stored.nebula.threshold
         pipeline.spectrum.spectrogramMode = DisplayOptions.stored.spectrogramAnalysis == .enhanced ? .enhanced : .classic
         let tick = Int((rate / MeterPipeline.tickRate).rounded())

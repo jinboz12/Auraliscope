@@ -21,6 +21,12 @@ struct VUMeterPanel: View {
         let running = model.running
         let reference = fixedReference < 0 ? Float(fixedReference) : Float(model.loudnessTarget)
         VUDial()
+            .background {
+                if Theme.isConsole {
+                    ConsoleVUDialSurface()
+                        .padding(.horizontal, PanelPlate.inset).padding(.top, PanelPlate.top).padding(.bottom, PanelPlate.inset)
+                }
+            }
             .overlay {
                 VUNeedle(model: model, running: running, frozen: model.frozen, roles: model.routedRoles, reference: reference)
             }
@@ -29,13 +35,13 @@ struct VUMeterPanel: View {
                 let vu = VUScale.vu(fromDecibels: level, reference: reference)
                 StableNumber(text: level > -100 ? MeterScale.tenths(vu, floor: -99) + " VU" : "— VU", template: "−88.8 VU",
                              font: .system(size: 10, weight: .semibold),
-                             color: vu >= 0 && level > -100 ? Theme.ember : (level > -100 ? Theme.ink : Theme.tertiary))
+                             color: vu >= 0 && level > -100 ? Theme.vuEmber : (level > -100 ? Theme.vuInk : Theme.vuSecondary))
                     .padding(.trailing, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
             .overlay(alignment: .top) { CardTitle(title: "VU · " + L("ALL CHANNELS"), model: model, panel: .vu, settings: .vu, short: "VU") }
             .overlay(alignment: .bottomLeading) {
                 Text(verbatim: "0 VU = \(MeterScale.signedInteger(reference)) dBFS")
-                    .font(.axis).foregroundStyle(Theme.tertiary)
+                    .font(.axis).foregroundStyle(Theme.vuSecondary)
                     .padding(.leading, PanelPlate.inset + 10).padding(.bottom, PanelPlate.inset + 6)
             }
             .background { PanelPlate() }
@@ -84,7 +90,7 @@ private struct VUDial: View {
         Canvas { context, size in
             let dial = VUGeometry(size: size)
             let radius = dial.radius
-            let line = Theme.ink.opacity(0.62), ember = Theme.ember.opacity(0.9)
+            let line = Theme.vuInk.opacity(Theme.isConsole ? 0.85 : 0.62), ember = Theme.vuEmber.opacity(0.9)
             let style = StrokeStyle(lineWidth: Self.stroke, lineCap: .round, lineJoin: .round)
             func arc(from: Double, to: Double, steps: Int = 48) -> Path {
                 Path { path in
@@ -113,11 +119,11 @@ private struct VUDial: View {
                 guard major || dense else { continue }
                 let label = mark > 0 ? "+\(Int(mark))" : (mark == 0 ? "0" : "\(Int(-mark))")
                 context.draw(Text(label).font(.system(size: 8, weight: .semibold).monospacedDigit())
-                                .foregroundColor(mark > 0 ? Theme.ember : Theme.ink.opacity(0.8)),
+                                .foregroundColor(mark > 0 ? Theme.vuEmber : Theme.vuInk.opacity(0.8)),
                              at: dial.point(f, radius + 15))
             }
             context.draw(Text(verbatim: "VU").font(.system(size: 13, weight: .semibold).width(.expanded))
-                            .foregroundColor(Theme.ink.opacity(0.24)),
+                            .foregroundColor(Theme.vuInk.opacity(0.24)),
                          at: CGPoint(x: dial.pivot.x, y: dial.pivot.y - radius * 0.46))
         }
     }
@@ -125,6 +131,8 @@ private struct VUDial: View {
 
 /// Needle and hub, as layers above the dial.
 private struct VUNeedle: NSViewRepresentable {
+    @Environment(\.canvasesHeld) private var held
+    @Environment(\.panelContext) private var panelContext
     let model: MeterModel
     let running: Bool
     let frozen: Bool
@@ -134,32 +142,35 @@ private struct VUNeedle: NSViewRepresentable {
     func makeNSView(context: Context) -> VUNeedleView { VUNeedleView(model: model) }
 
     func updateNSView(_ view: VUNeedleView, context: Context) {
+        view.panelContext = panelContext
         view.roles = roles
         view.reference = reference
-        view.update(running: running, frozen: frozen)
+        view.update(running: running, frozen: frozen, held: held)
     }
 
     static func dismantleNSView(_ view: VUNeedleView, coordinator: ()) { view.shutDown() }
 }
 
-/// Owns the IEC 60268-17 ballistics. A display link (a 60 Hz timer before macOS 14) steps them while capture
-/// runs and the window is visible; otherwise the needle rests and nothing ticks. Paused, it stays where it was.
-final class VUNeedleView: NSView {
+/// Owns the IEC 60268-17 ballistics. The canvases' display link (`CanvasDriver`) steps them while capture runs and
+/// the window is visible, in the same refresh as the canvases; otherwise the needle rests and nothing ticks.
+/// Paused, it stays where it was.
+final class VUNeedleView: NSView, DisplayFrameClient {
     private weak var model: MeterModel?
     var roles = [Bool](repeating: false, count: Role.count)
     var reference: Float = VUScale.defaultReference
     private var running = false
     /// Paused with the picture held (`MeterModel.frozen`).
     private var frozen = false
+    private var held = false
+    var panelContext = PanelContext.grid
+    private(set) var frameCount = 0
 
     private let ballistics = VUBallistics()
     private let shaft = CAShapeLayer()
     private let hub = CAShapeLayer()
     private let pin = CAShapeLayer()
     private var shownFraction = -1.0
-    private var ticker: AnyObject?
     private var occlusionObserver: NSObjectProtocol?
-    private var rateObserver: NSObjectProtocol?
 
     init(model: MeterModel) {
         self.model = model
@@ -170,11 +181,17 @@ final class VUNeedleView: NSView {
         shaft.lineWidth = VUDial.stroke + 0.2
         shaft.lineCap = .round
         shaft.fillColor = nil
-        hub.fillColor = Theme.displayRGB.cgColor()
-        hub.strokeColor = Theme.inkRGB.cgColor(0.62)
+        hub.fillColor = Theme.isConsole ? Theme.RGB(hex: 0x666758).cgColor() : Theme.displayRGB.cgColor()
+        hub.strokeColor = Theme.vuInkRGB.cgColor(0.62)
         hub.lineWidth = VUDial.stroke
-        pin.fillColor = Theme.inkRGB.cgColor(0.85)
+        pin.fillColor = Theme.isConsole ? Theme.RGB(hex: 0xE8DFC8).cgColor() : Theme.inkRGB.cgColor(0.85)
         pin.strokeColor = nil
+        if Theme.isConsole {
+            shaft.shadowColor = NSColor.black.cgColor
+            shaft.shadowOpacity = 0.30
+            shaft.shadowRadius = 0.6
+            shaft.shadowOffset = CGSize(width: 1, height: 1.5)
+        }
         for sublayer in [shaft, hub, pin] {
             sublayer.actions = ["transform": NSNull(), "position": NSNull(), "path": NSNull(), "strokeColor": NSNull()]
             layer?.addSublayer(sublayer)
@@ -200,6 +217,7 @@ final class VUNeedleView: NSView {
         path.addLine(to: CGPoint(x: 0, y: -(dial.radius + 5)))
         shaft.bounds = .zero
         shaft.path = path
+        if Theme.isConsole { shaft.shadowPath = path.copy(strokingWithWidth: shaft.lineWidth, lineCap: .round, lineJoin: .round, miterLimit: 1) }
         shaft.position = dial.pivot
         // The hub: a ring with a pin, like a reel's.
         for part in [hub, pin] {
@@ -234,18 +252,18 @@ final class VUNeedleView: NSView {
     }
 
     func shutDown() {
-        stopTicker()
+        CanvasDriver.shared.remove(client: self)
         if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
         occlusionObserver = nil
-        if let rateObserver { NotificationCenter.default.removeObserver(rateObserver) }
-        rateObserver = nil
     }
 
     /// Both at once, so pausing never passes through a stopped state that would drop the needle.
-    func update(running: Bool, frozen: Bool) {
-        guard running != self.running || frozen != self.frozen else { return }
+    func update(running: Bool, frozen: Bool, held: Bool) {
+        guard running != self.running || frozen != self.frozen || held != self.held else { updateTicker(); return }
         self.running = running
         self.frozen = frozen
+        if held != self.held { ballistics.hold() }
+        self.held = held
         if !running {
             if frozen {
                 ballistics.hold()
@@ -261,65 +279,35 @@ final class VUNeedleView: NSView {
     private func restyle() {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        shaft.strokeColor = Theme.inkRGB.cgColor(running || frozen ? 1 : 0.5)
+        shaft.strokeColor = Theme.vuInkRGB.cgColor(running || frozen ? 1 : 0.5)
         CATransaction.commit()
     }
 
-    private var visible: Bool { window?.occlusionState.contains(.visible) == true }
+    private var visible: Bool { panelPhysicallyVisible && PanelPlacement.shared.permitsDrawing(.vu, context: panelContext) }
+
+    /// Measuring, in a window, on screen.
+    var wantsFrames: Bool { running && !held && window != nil && visible }
 
     private func updateTicker() {
-        if running && window != nil && visible { startTicker() } else { stopTicker() }
+        // Keep a weak registration while attached, including the first transparent frame of a reveal.
+        // The driver filters wantsFrames and can wake it once the placement transition has settled.
+        if window != nil { CanvasDriver.shared.add(client: self) } else { CanvasDriver.shared.remove(client: self) }
     }
 
-    private func startTicker() {
-        guard ticker == nil else { return }
-        if rateObserver == nil {
-            // A new display frame rate (Settings ▸ General) restarts the needle at it.
-            rateObserver = NotificationCenter.default.addObserver(forName: CanvasDriver.frameRateChanged, object: nil,
-                                                                  queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.stopTicker()
-                    self?.updateTicker()
-                }
-            }
-        }
-        // The canvases' rate (60 Hz, also on a 120 Hz display, or 30), so the needle moves with them.
-        let rate = Float(CanvasDriver.shared.frameRate)
-        if #available(macOS 14, *) {
-            let link = displayLink(target: self, selector: #selector(tick))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(30, rate), maximum: rate, preferred: rate)
-            link.add(to: .main, forMode: .common)
-            ticker = link
-        } else {
-            let timer = Timer(timeInterval: 1 / Double(rate), repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.tick() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            ticker = timer
-        }
-    }
-
-    private func stopTicker() {
-        if #available(macOS 14, *), let link = ticker as? CADisplayLink { link.invalidate() }
-        (ticker as? Timer)?.invalidate()
-        ticker = nil
-    }
-
-    @objc private func tick() {
-        guard running, let model else { return }
+    func displayFrame() {
+        guard wantsFrames, let model else { return }
+        frameCount += 1
         let level = VUScale.aggregate(rms: model.pollSnapshot().channelRMS, roles: roles)
         let target = VUScale.fraction(vu: VUScale.vu(fromDecibels: level, reference: reference))
-        show(ballistics.step(toward: target, at: CACurrentMediaTime()))
+        show(ballistics.step(toward: target, at: CanvasDriver.now))
     }
 
-    /// Rotates the needle; a needle at rest commits nothing.
+    /// Rotates the needle; a needle at rest commits nothing. The shaft has no transform action, so the change needs no
+    /// transaction of its own: it rides on the run loop's, flushed right after this frame's display link callbacks. An
+    /// explicit begin/commit here sent the render server a commit of its own every frame (build 103 profile).
     private func show(_ fraction: Double) {
         guard abs(fraction - shownFraction) > 0.00005 else { return }
         shownFraction = fraction
-        let rotation = CATransform3DMakeRotation(CGFloat(VUGeometry.angle(fraction)), 0, 0, 1)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        shaft.transform = rotation
-        CATransaction.commit()
+        shaft.transform = CATransform3DMakeRotation(CGFloat(VUGeometry.angle(fraction)), 0, 0, 1)
     }
 }

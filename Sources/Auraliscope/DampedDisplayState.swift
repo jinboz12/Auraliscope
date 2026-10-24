@@ -1,6 +1,17 @@
 import AnalysisCore
 import Foundation
 
+/// A stopped scene gets two seconds to finish its decays, independent of the chosen display rate.
+struct DisplayIdle {
+    private var changedAt: TimeInterval?
+    private(set) var settled = false
+
+    mutating func update(changed: Bool, at time: TimeInterval) {
+        if changed || changedAt == nil { changedAt = time }
+        settled = time - (changedAt ?? time) >= 2
+    }
+}
+
 // Critically damped, time-based display filter. Raw DSP and LUFS measurements remain untouched.
 final class DampedDisplayState {
     private var value = MeterSnapshot()

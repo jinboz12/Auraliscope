@@ -15,6 +15,19 @@
 //                                   held true peak keeps: it may exceed the reference's continuous sine by up to this
 //                                   much (never read below it); 0.05 dB otherwise
 //
+// --geometry below|meters        this many seconds after subscribing (--geometry-after, default 3), send a speaker
+//                                 geometry (SPATIAL_CONFIG): the plugin must acknowledge it, its results must switch to the
+//                                 observations (tag 58) with its hash and never return to an earlier one, put each
+//                                 channel's tone at its configured place, and equal Auraliscope's own analysis with it;
+//                                 this probe keeps the observations (WELCOME capability 1), so each frame must come once
+//                                 and the newest received must always be the plugin's newest
+// --reconfigure-after s           send a second geometry then; results must follow it and never go back
+// --reconnect-after s             drop the connection then (the plugin reconnects); the geometry must come back
+// --expect-legacy                 an older plugin (before build 98): no geometry is sent to it and its results keep the
+//                                 bins (tag 54)
+// --observations-every-result     a plugin of build 98, which sends the observations in every result whatever the
+//                                 display keeps
+//
 // --trace without --verify   once a second, every instance's state and how much its analysis has measured; at the
 //                            end, whether any instance measured while it reported an offline render (it must not)
 //
@@ -54,19 +67,27 @@ func sources(_ server: OpaquePointer) -> [AbrSourceInfo] {
 }
 
 func db(_ v: Float) -> Double { 20 * log10(Double(max(v, 1e-9))) }
+func session(_ info: AbrSourceInfo) -> [UInt8] { withUnsafeBytes(of: info.session_id) { Array($0) } }
 
 /// Auraliscope's own analysis of the harness signal for instance `instance` (channel c: 0.5/(c+1)·2⁻ⁱ at
 /// 997 + 502c Hz, so L 997 Hz at 0.5, R 1499 Hz at 0.25), channel c on speaker role `roles[c]`, 8 s at `rate`, one
 /// tick at a time; with `spatial`, the spectrum sums every channel.
-func reference(rate: Double, roles: [Int], instance: Int, spatial: Bool = false) -> [Float] {
+/// The harness signal through Auraliscope's own pipeline for `ticks` 1/60 s ticks (8 s by default; longer when the
+/// observations at a later window end are wanted).
+func reference(rate: Double, roles: [Int], instance: Int, spatial: Bool = false, geometry: SpatialGeometry? = nil,
+               spatialFrom: Int = 0, observationsAt: Set<UInt64> = [], ticks: Int = 480,
+               observed: ((UInt64, [Float]) -> Void)? = nil) -> [Float] {
     let channels = roles.count
     let active = (0..<Role.count).map { roles.contains($0) }
     let pipeline = MeterPipeline(sampleRate: rate, activeRoles: active, detector: FormatDetector(), streamID: 1)!
-    pipeline.spatialSpectrum = spatial
+    pipeline.spatialSpectrum = spatial && spatialFrom == 0
+    if let geometry { pipeline.spatialGeometry = geometry }
     let scale = pow(2.0, -Double(instance))
     var values = [Float](repeating: 0, count: SnapshotSlots.total)
     var position = 0
-    for tick in 0..<480 {
+    for tick in 0..<ticks {
+        // A plugin turns the spatial analysis on when a display asks for it: its fields fall on the ticks counted from there.
+        if spatial && tick == spatialFrom && spatialFrom > 0 { pipeline.spatialSpectrum = true }
         let end = Int((Double(tick + 1) * rate / MeterPipeline.tickRate).rounded())
         var buffer = [Float](repeating: 0, count: (end - position) * channels)
         for i in 0..<(end - position) {
@@ -80,6 +101,14 @@ func reference(rate: Double, roles: [Int], instance: Int, spatial: Bool = false)
         }
         position = end
         values.withUnsafeMutableBufferPointer { pipeline.publish(into: $0.baseAddress!, now: Double(tick + 1) / 60) }
+        if let observed {
+            let o = SnapshotSlots.spatialObservations
+            let end = values.withUnsafeBufferPointer { SpatialObservations.windowEnd($0.baseAddress! + o) }
+            if values[o] == 1, observationsAt.contains(end) {
+                let count = Int(values[o + SpatialObservations.Header.count])
+                observed(end, Array(values[o..<(o + SpatialObservations.first + count * SpatialObservations.fields)]))
+            }
+        }
     }
     return values
 }
@@ -105,6 +134,26 @@ let expectedRoles = arg("--expect-roles").map { $0.split(separator: ",").compact
 let expectedLayout = arg("--expect-layout")
 let controls = CommandLine.arguments.contains("--controls")
 let trace = CommandLine.arguments.contains("--trace")
+let geometryKind = arg("--geometry")
+let geometryAfter = arg("--geometry-after").flatMap(Double.init) ?? 3
+let reconfigureAfter = arg("--reconfigure-after").flatMap(Double.init)
+let reconnectAfter = arg("--reconnect-after").flatMap(Double.init)
+let expectLegacy = CommandLine.arguments.contains("--expect-legacy")
+let observationsEveryResult = CommandLine.arguments.contains("--observations-every-result")
+var geometrySent: [SpatialGeometry] = []
+var reconnected = false
+
+/// The probe's layouts for a bus of `roles`: the rear heights (or R) below the ear plane, or every speaker in meters.
+func probeGeometry(_ kind: String, roles: [Int], revision: UInt32) -> SpatialGeometry {
+    var p = SpatialGeometry.standardPlacements(sidesAtNinety: SpeakerGeometry.sidesAtNinety(roles))
+    p[Role.left] = SpeakerPlacement(azimuth: -38, elevation: 4, distance: 1.9)
+    p[Role.right] = SpeakerPlacement(azimuth: 33, elevation: -12, distance: 2.6)
+    p[Role.leftTopRear] = SpeakerPlacement(azimuth: -140, elevation: -25, distance: 2.8)
+    p[Role.rightTopRear] = SpeakerPlacement(azimuth: 128, elevation: -30, distance: 3.1)
+    for role in 0..<Role.count where p[role].distance == nil { p[role].distance = 2.4 + 0.05 * Double(role) }
+    return SpatialGeometry(placements: p, mapping: kind == "meters" ? .positions : .directions, detail: kind == "meters" ? 28 : 20,
+                           revision: revision, roles: roles)
+}
 
 var error = [CChar](repeating: 0, count: 256)
 guard let server = abr_server_start(nil, &error, error.count) else {
@@ -159,7 +208,34 @@ while CFAbsoluteTimeGetCurrent() - start < seconds {
         abr_server_set_coherence(server, 500)
         say("asked for every channel in the spectrum")
     }
-    if let s = selected, let info = sources(server).first(where: { $0.connection_serial == s.connection_serial }) { newest = info }
+    if let kind = geometryKind, selected != nil, let info = newest, info.role_count > 0 || info.channels > 0 {
+        let elapsed = CFAbsoluteTimeGetCurrent() - subscribedAt
+        let roles = info.role_count > 0 ? withUnsafeBytes(of: info.roles) { Array($0.prefix(Int(info.role_count))).map(Int.init) }
+            : (info.channels == 1 ? [Role.left] : [Role.left, Role.right])
+        if geometrySent.isEmpty && elapsed >= geometryAfter
+            || geometrySent.count == 1 && reconfigureAfter.map({ elapsed >= $0 }) == true {
+            let other = geometrySent.isEmpty ? kind : (kind == "meters" ? "below" : "meters")
+            let geometry = probeGeometry(other, roles: roles, revision: UInt32(geometrySent.count + 1))
+            let bytes = SpatialConfigWire.encode(geometry)
+            bytes.withUnsafeBufferPointer { abr_server_set_spatial_config(server, $0.baseAddress, UInt32($0.count), geometry.revision) }
+            geometrySent.append(geometry)
+            say("sent the \(other) geometry, revision \(geometry.revision), hash \(String(geometry.hash, radix: 16)) (\(bytes.count) bytes)")
+        }
+        if let after = reconnectAfter, !reconnected, elapsed >= after, let s = selected {
+            reconnected = true
+            withUnsafeBytes(of: s.session_id) { abr_server_disconnect(server, $0.bindMemory(to: UInt8.self).baseAddress!, 300) }
+            say("dropped the connection")
+        }
+    }
+    if let s = selected, let info = sources(server).first(where: { session($0) == session(s) && $0.compatible != 0 }) {
+        if info.connection_serial != s.connection_serial {
+            // The plugin reconnected (a new connection of the same insert): select it again.
+            selected = info
+            withUnsafeBytes(of: info.session_id) { abr_server_select(server, $0.bindMemory(to: UInt8.self).baseAddress) }
+            say("reconnected; selected again")
+        }
+        newest = info
+    }
     if trace, verify == nil {
         let elapsed = CFAbsoluteTimeGetCurrent() - start
         if elapsed - lastTrace >= 1 {
@@ -185,8 +261,6 @@ while CFAbsoluteTimeGetCurrent() - start < seconds {
     }
     Thread.sleep(forTimeInterval: trace ? 0.25 : 0.05)
 }
-
-func session(_ info: AbrSourceInfo) -> [UInt8] { withUnsafeBytes(of: info.session_id) { Array($0) } }
 
 if controls, let target = selected {
     // Commands, each acknowledged, with its effect on the results.
@@ -240,7 +314,7 @@ inbox.lock.lock()
 let results = inbox.results
 let bytes = inbox.bytes
 inbox.lock.unlock()
-let final = sources(server).first { $0.connection_serial == target.connection_serial } ?? newest ?? target
+let final = sources(server).first { session($0) == session(target) } ?? newest ?? target
 abr_server_stop(server)
 guard let last = results.last?.message else {
     say("FAIL no results")
@@ -259,9 +333,12 @@ if subscribeAfter > 0, let first = results.first?.message {
 }
 // Order: every column serial once, in order, within a generation.
 var gaps: UInt64 = 0, repeats = 0, specLast: UInt64 = 0, waveLast: UInt64 = 0, generation: UInt32 = 0, timelineBack = 0
-var previousTimeline: UInt64 = 0
+var previousTimeline: UInt64 = 0, subscription: UInt32 = 0
 for r in results.map(\.message) {
-    if r.generation != generation { generation = r.generation; specLast = 0; waveLast = 0; previousTimeline = 0 }
+    // A new generation, or a new subscription after a reconnection (it starts from the oldest columns still held).
+    if r.generation != generation || r.subscription != subscription {
+        generation = r.generation; subscription = r.subscription; specLast = 0; waveLast = 0; previousTimeline = 0
+    }
     for i in 0..<r.spectrogramColumns {
         let s = r.spectrogramFirst + UInt64(i)
         if specLast > 0 && s <= specLast { repeats += 1 } else if specLast > 0 && s > specLast + 1 { gaps += s - specLast - 1 }
@@ -333,9 +410,10 @@ if immersiveAfter != nil {
     }
     check(worst <= 0.6 && images == 0,
           String(format: "each channel's tone at its own speaker within %.2f dB of its level, %d coherent images", worst, images))
-    // Its bins (tag 54, build 87). Every channel carries only its own tone, so every bin sits on a speaker: each tone's
-    // energy at its own speaker at its level, and next to nothing between speakers (where neighbouring tones' window
-    // tails meet, far below them).
+    // Its bins (tag 54, build 87), while no geometry was sent (afterwards the observations, checked below). Every channel
+    // carries only its own tone, so every bin sits on a speaker: each tone's energy at its own speaker at its level, and
+    // next to nothing between speakers (where neighbouring tones' window tails meet, far below them).
+    if geometrySent.isEmpty {
     var points = [Float](repeating: 0, count: SpatialPoints.floats)
     let binsDecoded = last.spatialPoints.map { bytes in
         bytes.withUnsafeBytes { raw in points.withUnsafeMutableBufferPointer { SpatialPointsWire.decode(raw, into: $0.baseAddress!) } }
@@ -371,6 +449,157 @@ if immersiveAfter != nil {
     check(worstLevel <= 0.6 && between <= 1e-4 * all,
           String(format: "each channel's tone's bins on its own speaker at its level (within %.2f dB); between speakers %.1f dB below the rest",
                  worstLevel, 10 * log10(Double(max(between, 1e-30) / max(all, 1e-30)))))
+    }
+}
+// The spatial geometry: acknowledged, results switching to its observations and never back, each tone where its
+// speaker is, and the same observations as Auraliscope's own analysis with that geometry.
+if geometryKind != nil || expectLegacy {
+    func hash(_ m: ResultMessage) -> UInt64? {
+        guard let bytes = m.spatialObservations, bytes.count >= SpatialObservationsWire.headerBytes else { return nil }
+        return bytes.withUnsafeBytes { UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self)) }
+    }
+    /// The observation frame a result carries (status, serial, window end, hash), from tag 58's header.
+    struct Frame: Equatable { var status: UInt8; var serial: UInt32; var end: UInt64; var hash: UInt64 }
+    func frame(_ m: ResultMessage) -> Frame? {
+        guard let bytes = m.spatialObservations, bytes.count >= SpatialObservationsWire.headerBytes else { return nil }
+        return bytes.withUnsafeBytes {
+            Frame(status: $0[1], serial: UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 28, as: UInt32.self)),
+                  end: UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: 16, as: UInt64.self)),
+                  hash: UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: 8, as: UInt64.self)))
+        }
+    }
+    let spatialResults = results.map(\.message).filter { $0.spatialField != nil }
+    if expectLegacy {
+        check(final.spatial_revision_sent == 0 && final.spatial_acks_received == 0 && (final.capabilities & UInt32(ABR_CAPABILITY_SPATIAL_CONFIG)) == 0,
+              "an older plugin (no SPATIAL_CONFIG capability) is sent no geometry")
+        check(!spatialResults.isEmpty && spatialResults.allSatisfy { $0.spatialObservations == nil && $0.spatialPoints != nil },
+              "…and keeps sending the bins of the standard layout (tag 54), \(spatialResults.count) results")
+    } else if let last = geometrySent.last {
+        check(final.spatial_acks_received >= UInt32(geometrySent.count) && final.spatial_ack_revision == last.revision
+                  && final.spatial_ack_outcome == UInt32(ABR_SPATIAL_APPLIED) && final.spatial_ack_hash == last.hash,
+              "the plugin acknowledged revision \(final.spatial_ack_revision) with its hash (\(final.spatial_acks_received) acknowledgements)")
+        // Order: legacy bins until a geometry is in force (from a plugin of build 98, the standard layout's observations
+        // in flight), then each geometry's, never back. A result without observations or bins keeps the newest
+        // observations (each frame is sent once); the bins after a configured geometry's observations went back, and so
+        // would an earlier hash. A frame of no observations (status 0: no audio) has no geometry to order.
+        let known = [SpatialGeometry.standard(roles: last.channelRolesForProbe(final)).hash] + geometrySent.map(\.hash)
+        var stage = -1, regressions = 0, unknown = 0, subscription: UInt32 = 0, final_stage = -1
+        for m in spatialResults {
+            // A reconnection is a new subscription: the plugin starts afresh from the standard layout and its bins, and
+            // takes the geometry again.
+            if m.subscription != subscription { subscription = m.subscription; stage = -1 }
+            guard let f = frame(m) else {
+                if m.spatialPoints != nil && stage > 0 { regressions += 1 }
+                continue
+            }
+            guard f.status == 1 else { continue }
+            guard let index = known.firstIndex(of: f.hash) else { unknown += 1; continue }
+            if index < stage { regressions += 1 }
+            stage = max(stage, index)
+            final_stage = stage
+        }
+        check(regressions == 0 && unknown == 0 && final_stage == known.count - 1,
+              "results switch to each geometry in turn and never go back (\(spatialResults.count) results, \(regressions) regressions, \(unknown) unknown hashes)")
+        // Each frame once to this probe, which keeps the observations (a plugin of build 98: in every result), and the
+        // newest received always the plugin's newest: a frame is made every second tick, so it ends less than two ticks
+        // before the frames a result says were analysed (an older one would be two ticks further behind).
+        let twoTicks = UInt64((2 * (spatialResults.last?.sampleRate ?? 48_000) / MeterPipeline.tickRate).rounded())
+        var newest: Frame?, generation: UInt32 = 0
+        var carried = 0, configured = 0, repeats = 0, behind = 0, lag: UInt64 = 0
+        subscription = 0
+        for m in spatialResults {
+            if m.subscription != subscription || m.generation != generation { subscription = m.subscription; generation = m.generation; newest = nil }
+            if m.spatialPoints != nil { newest = nil; continue }  // the bins: not configured (yet, or again)
+            if let f = frame(m) {
+                if f == newest { repeats += 1 }
+                newest = f
+                carried += 1
+            }
+            guard let n = newest else { continue }
+            configured += 1
+            guard n.status == 1, m.flags & ResultFlags.idle == 0 else { continue }
+            let since = m.framesAnalysed > n.end ? m.framesAnalysed - n.end : 0
+            lag = max(lag, since)
+            if since >= twoTicks { behind += 1 }
+        }
+        if observationsEveryResult {
+            check(configured > 0 && carried == configured,
+                  "a plugin of build 98: every configured result carries the observations (\(carried) of \(configured))")
+        } else {
+            check(configured > 0 && carried < configured && repeats == 0,
+                  "each observation frame comes once: \(carried) of \(configured) configured results carried them, none repeating a frame")
+        }
+        check(behind == 0, "after every result the newest frame received is the plugin's newest (at most \(lag) frames behind the analysis; a frame every \(twoTicks))")
+        // The newest result with the last geometry: each channel's tone at its speaker's configured place.
+        if let m = spatialResults.last(where: { hash($0) == last.hash }), let bytes = m.spatialObservations, let roles = m.channelRoles {
+            var v = [Float](repeating: 0, count: SpatialObservations.floats)
+            let decoded = bytes.withUnsafeBytes { raw in v.withUnsafeMutableBufferPointer { SpatialObservationsWire.decode(raw, sampleRate: m.sampleRate, into: $0.baseAddress!) } }
+            check(decoded && v[SpatialObservations.Header.mapping] == Float(last.mapping.rawValue), "the observations decode, in the geometry's mapping")
+            var starts = [Int](repeating: 0, count: SpatialField.bandCount + 1)
+            for b in 0..<SpatialField.bandCount { starts[b + 1] = starts[b] + Int(v[SpatialObservations.counts + b]) }
+            var worst: Double = 0
+            for (c, role) in roles.enumerated() where role != Role.lfe {
+                guard let expected = last.position(role: role) else { continue }
+                let hz = 997.0 + 502 * Double(c)
+                let band = Int(log(hz / 20) / log(1_000) * Double(SpatialField.bandCount))
+                // The band's strongest observation: the tone's own.
+                var best: (Float, SIMD3<Double>) = (0, .zero)
+                for i in starts[band]..<starts[band + 1] {
+                    let o = SpatialObservations.observation(i)
+                    if v[o + 3] > best.0 { best = (v[o + 3], SIMD3(Double(v[o]), Double(v[o + 1]), Double(v[o + 2]))) }
+                }
+                let d = best.1 - expected
+                worst = max(worst, (d * d).sum().squareRoot() / last.extent(roles: roles))
+            }
+            check(worst <= 1e-3, String(format: "each channel's tone at its speaker's configured place, within %.2e of the layout's radius", worst))
+            // Auraliscope's own analysis with the same geometry, at the same window end.
+            let end = SpatialObservations.windowEnd(v)
+            var local: [Float]?
+            // Spatial analysis switched on later, on either parity of ticks, as the plugin's was; as far as that window end.
+            let ticks = max(480, Int((Double(end) / m.sampleRate * MeterPipeline.tickRate).rounded(.up)) + 2)
+            for from in [0, 20, 21] where local == nil {
+                _ = reference(rate: m.sampleRate, roles: roles, instance: instance, spatial: true, geometry: last, spatialFrom: from,
+                              observationsAt: [end], ticks: ticks) { _, o in local = o }
+            }
+            if let local {
+                var worstCentre: Double = 0, worstEnergy: Double = 0
+                var at = (plugin: 0, local: 0)
+                // Bands within 60 dB of the loudest: below that, float rounding of the loud tones dominates either side.
+                var loudest = 0.0
+                for b in 0..<SpatialField.bandCount {
+                    var e = 0.0
+                    var start = 0
+                    for k in 0..<b { start += Int(local[SpatialObservations.counts + k]) }
+                    for i in start..<(start + Int(local[SpatialObservations.counts + b])) { e += Double(local[SpatialObservations.observation(i) + 3]) }
+                    loudest = max(loudest, e)
+                }
+                for b in 0..<SpatialField.bandCount {
+                    let np = Int(v[SpatialObservations.counts + b]), nl = Int(local[SpatialObservations.counts + b])
+                    func summary(_ x: [Float], _ start: Int, _ n: Int) -> (Double, SIMD3<Double>) {
+                        var e = 0.0, c = SIMD3<Double>.zero
+                        for i in start..<(start + n) {
+                            let o = SpatialObservations.observation(i)
+                            e += Double(x[o + 3]); c += SIMD3(Double(x[o]), Double(x[o + 1]), Double(x[o + 2])) * Double(x[o + 3])
+                        }
+                        return (e, e > 0 ? c / e : .zero)
+                    }
+                    let p = summary(v, at.plugin, np), l = summary(local, at.local, nl)
+                    at.plugin += np; at.local += nl
+                    guard l.0 > loudest * 1e-6 else { continue }
+                    worstEnergy = max(worstEnergy, abs(p.0 - l.0) / l.0)
+                    let d = p.1 - l.1
+                    worstCentre = max(worstCentre, (d * d).sum().squareRoot() / last.extent(roles: roles))
+                }
+                check(worstEnergy <= 1e-4 && worstCentre <= 1e-5,
+                      String(format: "the plugin's observations equal Auraliscope's own (bands within 60 dB: energy within %.1e, centres within %.1e of the radius)",
+                             worstEnergy, worstCentre))
+            } else {
+                check(false, "Auraliscope's own analysis has a frame ending where the plugin's does (\(end))")
+            }
+        } else {
+            check(false, "a result with the last geometry arrived")
+        }
+    }
 }
 // Values against Auraliscope's own analysis of the same signal.
 if !controls {
@@ -403,3 +632,12 @@ say(String(format: "plugin: state %u, unanalysed %llu frames, breaks %u, results
 check(final.frames_dropped_by_plugin == 0, "nothing went unanalysed")
 say(failures == 0 ? "PASS" : "FAILED (\(failures))")
 exit(failures == 0 ? 0 : 1)
+
+
+extension SpatialGeometry {
+    /// The roles of the probed bus, as its STATUS reports them.
+    func channelRolesForProbe(_ info: AbrSourceInfo) -> [Int] {
+        info.role_count > 0 ? withUnsafeBytes(of: info.roles) { Array($0.prefix(Int(info.role_count))).map(Int.init) }
+            : (info.channels == 1 ? [Role.left] : [Role.left, Role.right])
+    }
+}
