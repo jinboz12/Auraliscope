@@ -7,7 +7,9 @@ import Foundation
 /// `--capture-selftest <device id>`: end-to-end check of the capture path on a loopback device (for example a
 /// Pro Tools Audio Bridge). Every output channel plays 1 kHz at its own level; capture then reads the inputs
 /// through a scrambled routing, so each role must show the level of the input it is routed to. It proves the
-/// channel map, the C input callback and the ring mapping agree. Needs microphone permission.
+/// channel map, the C input callback and the ring mapping agree. The IO is then restarted as capture recovery restarts
+/// it (`AudioCapture.restart`, same ring) and measured again, with the IO callback's health record before and after.
+/// Needs microphone permission.
 /// With `--output` the same tones are read back through a process tap on the device's output instead of its
 /// input (System Audio Recording permission; without it macOS delivers silence, which reads as FAIL).
 enum CaptureSelfTest {
@@ -48,6 +50,31 @@ enum CaptureSelfTest {
         }
         defer { capture.stop() }
         print("Device \(device.name) \(output ? "output (tap)" : "input"): \(channels) channels, capture delivers \(capture.deliveredChannels)")
+        var passed = measure(capture, routing: routing)
+        // Recovery's restart (`AudioCapture.restart`): the IO opens again on the same ring, which keeps its count; the
+        // health record shows each IO delivering whole slices and failing none; every role still reads its input.
+        let first = capture.health()
+        let dropped = channel_ring_dropped(capture.ring)
+        do { try capture.restart(device: device, sourceForRole: routing, minimumFrames: 0) } catch {
+            print("FAIL: restart: \(error.localizedDescription)")
+            return false
+        }
+        print("Restarted the IO on the same ring")
+        passed = measure(capture, routing: routing) && passed
+        let second = capture.health()
+        for (label, health) in [("before the restart", first), ("after it", second)] {
+            print("Health \(label): \(health.delivered_slices) whole slices (\(health.delivered_frames) frames), "
+                  + "\(health.failed_slices) failed, largest \(health.largest_slice) frames")
+        }
+        let healthy = first.delivered_slices > 0 && first.failed_slices == 0 && second.delivered_slices > 0
+            && second.failed_slices == 0 && channel_ring_dropped(capture.ring) >= dropped
+        print(healthy ? "PASS: both IOs delivered whole slices, none failed, and the ring kept its count across the restart"
+                      : "FAIL: health record or ring count across the restart")
+        return passed && healthy
+    }
+
+    /// Reads the ring for 1.6 s and compares each role's level after the first 0.8 s with its routed input's tone.
+    private static func measure(_ capture: AudioCapture, routing: [Int32]) -> Bool {
         var frames = [ChannelFrame](repeating: ChannelFrame(), count: 4096)
         var sums = [Double](repeating: 0, count: Role.count)
         var count = 0

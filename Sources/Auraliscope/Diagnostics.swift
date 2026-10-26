@@ -38,6 +38,10 @@ enum Diagnostics {
     static let testSettingsDraft = CommandLine.arguments.contains("--test-settings-draft")
     /// `--listen` (with `--capture-selftest`): another process plays the tones; only report what arrives.
     static let captureListen = CommandLine.arguments.contains("--listen")
+    /// `--ignore-configuration-changes` (QA bundles only): the captured device's rate and alive notifications are ignored,
+    /// as if Core Audio never sent them, so a real rate change shows what capture recovery does when one is missed.
+    static let ignoreConfigurationChanges = CommandLine.arguments.contains("--ignore-configuration-changes")
+        && Bundle.main.bundleIdentifier?.hasSuffix(".QA") == true
     /// `--welcome-page <n>` opens the welcome on that page (0–2), for snapshots of each.
     static var welcomePage: Int? { argument("--welcome-page").flatMap(Int.init) }
     static let showAbout = CommandLine.arguments.contains("--show-about")

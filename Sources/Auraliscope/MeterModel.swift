@@ -1007,6 +1007,10 @@ final class MeterModel: ObservableObject {
     /// again, and the same source, still there, starts afresh with the device's new configuration.
     func deviceConfigurationChanged() {
         guard wantsCapture else { return }
+        if Diagnostics.ignoreConfigurationChanges {
+            DiagnosticLog.event("Device configuration change ignored (--ignore-configuration-changes)")
+            return
+        }
         let previousID = selectedID
         let wasRunning = running
         refreshDevices()

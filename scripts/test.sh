@@ -46,5 +46,10 @@ fi
 clang -std=c11 -O2 "${c_flags[@]}" -I Sources/AnalysisKernels/include \
     Tests/AnalysisKernelsChecks.c "$check_dir/AnalysisKernels.o" -o "$check_dir/KernelChecks"
 "$check_dir/KernelChecks"
+# The capture health record written on one thread while another reads it (race-free under `scripts/test.sh thread`).
+clang -std=c11 -O2 "${c_flags[@]}" -I Sources/AnalysisKernels/include -I Sources/AudioRing/include \
+    Tests/CaptureHealthConcurrency.c "$check_dir/AudioRing.o" "$check_dir/CaptureCallback.o" -framework AudioToolbox \
+    -o "$check_dir/CaptureHealthConcurrency"
+"$check_dir/CaptureHealthConcurrency"
 # String tables against the code and the language policy (see Sources/Auraliscope/Localizer.swift).
 python3 scripts/check-localization.py
