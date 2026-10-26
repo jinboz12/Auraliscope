@@ -586,60 +586,28 @@ final class MeterModel: ObservableObject {
     var levelsBands = MeterModel.storedBands(DisplayOptions.levelsBandsKey)
     /// The stereometer's style, chosen on the Soundstage header; plain, like the band resolutions.
     var stageStyle = StageStyle.stored
-    /// The panels' display choices, made on each panel (`PanelSettingsButton`).
-    private let multiFFTPreview = MultiFFTPreviewSource()
-    private var multiFFTPanelUsers = 0
-    private var multiFFTLoggedState = ""
-    /// A pending stop of the engine. A panel that moves between the grid, the Dock and a window of its own
-    /// disappears before it reappears; the engine and its history survive that moment instead of refilling.
-    private var multiFFTTeardown: DispatchWorkItem?
-    static let multiFFTTeardownDelay = 0.4
-    private var multiFFTSettingsData = MultiFFTPreferences.storedData
-    private var multiFFTSettings = MultiFFTPreferences.stored
-    private var legacySTFTSettings = MultiFFTPreferences.legacySTFT
+    /// The Multi-FFT engine and the shared STFT of the current analysis.
+    private lazy var spectrumEngines = SpectrumEngineCoordinator { [weak self] in self?.worker }
+    static let multiFFTTeardownDelay = SpectrumEngineCoordinator.teardownDelay
 
     func multiFFTPanelVisible(_ visible: Bool) {
-        multiFFTPanelUsers = max(0, multiFFTPanelUsers + (visible ? 1 : -1))
+        spectrumEngines.panelVisible(visible)
         configureSpectrumArchitecture()
     }
 
     func configureSpectrumArchitecture() {
-        let placement = PanelPlacement.shared
-        placement.setDockSupportsMultiFFT(format == .stereo && !sourceIsBridge)
-        let visible = multiFFTPanelUsers > 0 && (placement.isShown(.multiFFT) || placement.detached.contains(.multiFFT) || (placement.strip && placement.displayedStripPanels.contains(.multiFFT)))
-        let wanted = visible && format == .stereo ? multiFFTSettings : nil
-        if Diagnostics.enabled {
-            let state = "users \(multiFFTPanelUsers), shown \(placement.isShown(.multiFFT)), detached \(placement.detached.contains(.multiFFT)), dock \(placement.strip && placement.displayedStripPanels.contains(.multiFFT)), format \(format), bridge \(sourceIsBridge), wants \(wanted == nil ? "no engine" : wanted!.preset.rawValue)"
-            if state != multiFFTLoggedState { multiFFTLoggedState = state; Diagnostics.log("[multifft] \(state)") }
-        }
-        if wanted != nil {
-            multiFFTTeardown?.cancel(); multiFFTTeardown = nil
-            applyMultiFFT(wanted)
-        } else if multiFFTTeardown == nil {
-            let teardown = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.multiFFTTeardown = nil
-                self.applyMultiFFT(nil)
-            }
-            multiFFTTeardown = teardown
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.multiFFTTeardownDelay, execute: teardown)
-        }
-        let choice: LegacySTFT = format == .spatial || displayOptions.spectrogramAnalysis == .enhanced
-            ? .legacy : legacySTFTSettings
-        worker?.setLegacySTFT(choice)
-    }
-
-    private func applyMultiFFT(_ wanted: MultiFFTConfiguration?) {
-        if Diagnostics.demo, Diagnostics.multiFFTTestTone { multiFFTPreview.configure(wanted) }
-        worker?.setMultiFFT(!sourceIsBridge ? wanted : nil)
+        spectrumEngines.configure(spectrumInputs)
     }
 
     func multiFFTFrame() -> MultiFFTSnapshot? {
-        guard format == .stereo, running else { return nil }
-        if Diagnostics.demo, Diagnostics.multiFFTTestTone { return multiFFTPreview.latest() }
-        return worker?.latestMultiFFT(frozen: frozen)
+        spectrumEngines.frame(spectrumInputs, running: running, frozen: frozen)
     }
 
+    private var spectrumInputs: SpectrumEngineCoordinator.Inputs {
+        .init(format: format, sourceIsBridge: sourceIsBridge, enhancedSpectrogram: displayOptions.spectrogramAnalysis == .enhanced)
+    }
+
+    /// The panels' display choices, made on each panel (`PanelSettingsButton`).
     var displayOptions = DisplayOptions.stored
     /// `SpectrogramMode` of the newest column shown (plain: the panel settings read it when they open).
     private(set) var lastSpectrogramMode: Float = 0
@@ -803,13 +771,7 @@ final class MeterModel: ObservableObject {
                 if style != self.stageStyle { self.stageStyle = style }
                 let options = DisplayOptions.stored
                 if options != self.displayOptions { self.displayOptions = options }
-                // Every defaults write lands here, including each step of a divider drag: decode only a changed value.
-                let settingsData = MultiFFTPreferences.storedData
-                if settingsData != self.multiFFTSettingsData {
-                    self.multiFFTSettingsData = settingsData
-                    self.multiFFTSettings = MultiFFTPreferences.decode(settingsData)
-                }
-                self.legacySTFTSettings = MultiFFTPreferences.legacySTFT
+                self.spectrumEngines.reloadSettings()
                 self.configureSpectrumArchitecture()
             }
         }

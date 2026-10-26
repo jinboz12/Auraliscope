@@ -72,7 +72,9 @@ enum ModelLifecycleSelfTest {
         private(set) var spatialSpectrum: [Bool] = []
         private(set) var spectrogramModes: [SpectrogramMode] = []
         private(set) var legacy: [LegacySTFT] = []
-        private(set) var multiFFTActive = false
+        /// Every Multi-FFT configuration it was given (nil: stop the engine).
+        private(set) var multiFFTConfigurations: [MultiFFTConfiguration?] = []
+        var multiFFTActive: Bool { (multiFFTConfigurations.last ?? nil) != nil }
 
         init(stream: UInt32, journal: Journal) {
             self.stream = stream
@@ -88,7 +90,7 @@ enum ModelLifecycleSelfTest {
         func setSpatialSpectrum(_ spatial: Bool) { spatialSpectrum.append(spatial) }
         func setSpectrogramMode(_ mode: SpectrogramMode) { spectrogramModes.append(mode) }
         func setSpatialField(threshold: Float, geometry: SpatialGeometry) {}
-        func setMultiFFT(_ configuration: MultiFFTConfiguration?) { multiFFTActive = configuration != nil }
+        func setMultiFFT(_ configuration: MultiFFTConfiguration?) { multiFFTConfigurations.append(configuration) }
         func latestMultiFFT(frozen: Bool) -> MultiFFTSnapshot? { nil }
         func setLegacySTFT(_ choice: LegacySTFT) { legacy.append(choice) }
     }
@@ -391,8 +393,39 @@ enum ModelLifecycleSelfTest {
         model.pin(.stereo)
         _ = model.canvasFrame()
         check(engine.multiFFTActive, "back in stereo the same analysis starts the engine again")
-        model.multiFFTPanelVisible(false)
+
+        // Settings: a changed Multi-FFT configuration reaches the running engine; the shared STFT chosen in Settings
+        // feeds a classic stereo spectrogram, and Immersive uses the reassigned analysis instead.
+        MultiFFTPreferences.save(.make(.economy))
+        await settle(0.3)
+        _ = model.canvasFrame()
+        check((engine.multiFFTConfigurations.last ?? nil) == MultiFFTPreferences.stored && MultiFFTPreferences.stored.preset == .economy,
+              "a changed Multi-FFT setting reaches the running engine")
+        UserDefaults.standard.set(LegacySTFT.shared8192.rawValue, forKey: MultiFFTPreferences.legacyKey)
+        await settle(0.3)
+        _ = model.canvasFrame()
+        check(engine.legacy.last == .shared8192, "the shared STFT chosen in Settings feeds the classic stereo spectrogram")
+        model.pin(.spatial)
+        _ = model.canvasFrame()
+        check(engine.legacy.last == .legacy, "Immersive uses the reassigned analysis rather than the shared STFT")
+        model.pin(.stereo)
+        UserDefaults.standard.removeObject(forKey: MultiFFTPreferences.legacyKey)
+        UserDefaults.standard.removeObject(forKey: MultiFFTPreferences.key)
+        await settle(0.3)
+
+        // The delayed stop goes to the analysis running when it fires: the panel hidden, then a restart at once.
         placement.setShown(.multiFFT, false)
+        model.multiFFTPanelVisible(false)
+        _ = model.canvasFrame()
+        let callsBefore = engine.multiFFTConfigurations.count
+        model.select(outputA.id)
+        guard let next = workers.last, next !== engine else { return check(false, "a new analysis was made") }
+        check(next.multiFFTConfigurations.isEmpty, "a new analysis is not given an engine its panel no longer shows")
+        await settle(MeterModel.multiFFTTeardownDelay + 0.4)
+        check(engine.multiFFTConfigurations.count == callsBefore && next.multiFFTConfigurations.first == .some(nil)
+              && !next.multiFFTActive,
+              "the engine's delayed stop goes to the analysis running when it fires, never to the stopped one")
+        model.select(outputB.id)
 
         // A device that disappears stops capture; the saved one coming back is measured again.
         let lost = stream()
