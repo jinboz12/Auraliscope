@@ -55,6 +55,10 @@
 "Demo signal · no audio device open" = "演示信号 · 未打开音频设备";
 "No audio device available" = "没有可用的音频设备";
 "%@ (output)" = "%@（输出）";
+"%@ · capture keeps failing · restarting it (attempt %d of %d)" = "%@ · 采集持续失败 · 正在重新启动（第 %d 次，共 %d 次）";
+"%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again" = "%@ · 重新启动 %d 次后采集仍然失败：%@ · 选择“开始采集”可重试";
+"the device refused audio (OSStatus %@)" = "设备拒绝提供音频（OSStatus %@）";
+"the device delivered more audio per cycle than the capture holds" = "设备每个周期送出的音频超过了采集的容量";
 
 /* Errors */
 "Could not allocate the audio ring buffer" = "无法分配音频环形缓冲区";

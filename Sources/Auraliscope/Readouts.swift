@@ -107,6 +107,7 @@ final class Readouts: ObservableObject {
     private func tick() {
         guard let model else { return }
         model.refreshDroppedFrames()
+        model.superviseCapture()
         guard model.running else {
             // Paused, the readings hold as they were; stopped, the peak badge and the lit keys go out.
             if !model.frozen {

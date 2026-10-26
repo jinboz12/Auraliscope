@@ -55,6 +55,10 @@
 "Demo signal · no audio device open" = "Demo signal · no audio device open";
 "No audio device available" = "No audio device available";
 "%@ (output)" = "%@ (output)";
+"%@ · capture keeps failing · restarting it (attempt %d of %d)" = "%@ · capture keeps failing · restarting it (attempt %d of %d)";
+"%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again" = "%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again";
+"the device refused audio (OSStatus %@)" = "the device refused audio (OSStatus %@)";
+"the device delivered more audio per cycle than the capture holds" = "the device delivered more audio per cycle than the capture holds";
 
 /* Errors */
 "Could not allocate the audio ring buffer" = "Could not allocate the audio ring buffer";

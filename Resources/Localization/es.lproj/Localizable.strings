@@ -55,6 +55,10 @@
 "Demo signal · no audio device open" = "Señal de demostración · ningún dispositivo de audio abierto";
 "No audio device available" = "No hay ningún dispositivo de audio disponible";
 "%@ (output)" = "%@ (salida)";
+"%@ · capture keeps failing · restarting it (attempt %d of %d)" = "%@ · la captura sigue fallando · reiniciándola (intento %d de %d)";
+"%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again" = "%@ · la captura siguió fallando tras %d reinicios: %@ · elige Iniciar captura para volver a intentarlo";
+"the device refused audio (OSStatus %@)" = "el dispositivo rechazó el audio (OSStatus %@)";
+"the device delivered more audio per cycle than the capture holds" = "el dispositivo entregó más audio por ciclo del que cabe en la captura";
 
 /* Errors */
 "Could not allocate the audio ring buffer" = "No se ha podido reservar el búfer circular de audio";

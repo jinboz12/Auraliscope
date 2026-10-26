@@ -552,6 +552,7 @@ enum ModelLifecycleSelfTest {
         await checkPlugins(model, check: check, until: until, settle: settle)
         await checkPluginPause(model, check: check, until: until, settle: settle)
         await checkTransitions(model, check: check, until: until, settle: settle)
+        checkCaptureRecovery(model, check: check)
 
         restoreDomain()
         print("PASS: model lifecycle checks complete")
@@ -1087,5 +1088,287 @@ enum ModelLifecycleSelfTest {
 
         receiver.plugins = []
         check(model.running && capturing(outputA), "the transitions end on the device last chosen")
+    }
+
+    /// Capture that keeps failing (P0-1): what the model restarts, how often, when it gives up, and what stops it. The
+    /// stand-in capture reports what its IO callback would have seen; the model's clock moves only when a check moves
+    /// it, and the readings are made at once (`superviseCapture`), so nothing here waits.
+    @MainActor
+    private static func checkCaptureRecovery(_ model: MeterModel, check: (Bool, String) -> Void) {
+        guard let capture else { return check(false, "the stand-in capture has a ring") }
+        let rate = 48_000.0
+        func tick() { model.superviseCapture() }
+        func advance(_ seconds: Double) {
+            clock += seconds
+            tick()
+        }
+        /// The IO failing for `seconds` of audio over `slices` callbacks; refused unless `failures` says otherwise.
+        func fail(_ seconds: Double, slices: UInt64 = 100, failures: UInt32 = CAPTURE_FAILURE_REFUSED, largest: UInt32 = 512) {
+            var health = CaptureHealthReading()
+            health.delivered_frames = capture.reading.delivered_frames
+            health.failed_slices = slices
+            health.run_slices = slices
+            health.run_lost_frames = UInt64(seconds * rate)
+            health.run_failures = failures
+            health.last_status = -10_863
+            health.largest_slice = largest
+            capture.reading = health
+        }
+        /// The IO delivering `seconds` of audio whole since it opened.
+        func deliver(_ seconds: Double) {
+            var health = CaptureHealthReading()
+            health.delivered_frames = UInt64(seconds * rate)
+            health.delivered_slices = UInt64(seconds * rate / 512)
+            health.largest_slice = 512
+            capture.reading = health
+        }
+        /// The status of a restart pending or being verified (every check here measures output A).
+        func recovering(_ attempt: Int) -> Bool {
+            guard case let .recovering(message) = model.status else { return false }
+            return message.text == L("%@ · capture keeps failing · restarting it (attempt %d of %d)",
+                                     L("%@ (output)", outputA.name), attempt, 3)
+        }
+        func capturing(_ device: InputDevice) -> Bool {
+            if case let .capturing(name, output, _, _) = model.status { return name == device.name && output == device.output }
+            return false
+        }
+        func restarts(since mark: Int) -> [String] { journal.events[mark...].filter { $0.hasPrefix("capture.restart") } }
+        func restart(_ device: InputDevice, _ minimumFrames: UInt32 = 0) -> String {
+            "capture.restart \(device.uid) \(routing(model.sourceForRole)) \(minimumFrames)"
+        }
+        /// A clean start on outputA with nothing seen, and no episode left from a check before.
+        func freshStart() {
+            model.select(outputB.id)
+            model.select(outputA.id)
+            capture.reading = CaptureHealthReading()
+            tick()
+        }
+
+        freshStart()
+        check(model.running && capturing(outputA), "the recovery checks start on a device that captures")
+
+        // 1. A passing glitch, and failures short of sustained, restart nothing: they are only counted (as before).
+        var mark = journal.mark
+        fail(0.01, slices: 1)
+        tick()
+        fail(0.99)
+        advance(0.5)
+        fail(5, slices: 2)
+        advance(0.5)
+        deliver(2)
+        advance(0.5)
+        check(restarts(since: mark).isEmpty && journal.lifecycle(since: mark).isEmpty && capturing(outputA),
+              "a passing glitch, 0.99 s of refusals, or 5 s in two slices restart nothing")
+
+        // 2–3, 13–15. A refusal that lasts 1 s: one restart of the capture alone, at once, keeping the analysis and the
+        // count of what was lost; repeated readings make no second restart; audio delivered again ends it.
+        mark = journal.mark
+        let analysis = model.captureGeneration
+        channel_ring_lose(capture.ring, 48_000)
+        model.refreshDroppedFrames()
+        let droppedBefore = model.droppedFrames
+        fail(1)
+        tick()
+        check(restarts(since: mark) == [restart(outputA)] && journal.lifecycle(since: mark) == [restart(outputA)]
+              && model.captureGeneration == analysis && model.running && recovering(1),
+              "a refusal lasting 1 s restarts the capture alone, at once, with the same analysis (restarting, 1 of 3)")
+        for _ in 0..<10 { tick() }
+        fail(0.5)
+        for _ in 0..<5 { advance(0.1) }
+        check(restarts(since: mark).count == 1, "repeated readings, and failures short of sustained after it, make no second restart")
+        model.refreshDroppedFrames()
+        check(channel_ring_dropped(capture.ring) == 48_000 && model.droppedFrames == droppedBefore && droppedBefore >= 48_000,
+              "the restart keeps the ring's count of frames lost: nothing reset, nothing counted twice")
+        var frame = [Float](repeating: 0.25, count: 2)
+        var map = [Int32](repeating: -1, count: Role.count)
+        map[0] = 0; map[1] = 1
+        channel_ring_write(capture.ring, &frame, 1, 2, map)
+        var out = [ChannelFrame](repeating: ChannelFrame(), count: 4)
+        var ringMark = ChannelRingMark()
+        var marked: Int32 = 0
+        _ = channel_ring_read_marked(capture.ring, &out, 4, &ringMark, &marked)
+        check(marked != 0 && ringMark.lost_frames == 48_000 && ringMark.reasons == CHANNEL_RING_LOST,
+              "the frames lost make one break where the restarted capture writes first")
+        _ = channel_ring_read_marked(capture.ring, &out, 4, &ringMark, &marked)
+        deliver(0.4)
+        tick()
+        check(recovering(1), "0.4 s delivered does not yet prove the restart")
+        deliver(0.5)
+        tick()
+        check(capturing(outputA) && model.running && model.captureGeneration == analysis,
+              "0.5 s delivered whole proves it: capturing again, same analysis")
+
+        // 14. 30 s without a sustained failure end the episode: the next failure starts from the first restart again.
+        deliver(31)
+        advance(30.5)
+        mark = journal.mark
+        fail(1)
+        tick()
+        check(restarts(since: mark) == [restart(outputA)] && recovering(1), "30 s after recovering, a new failure starts from restart 1 of 3")
+
+        // 4. A restart that fails again: the next comes 2 s later and works.
+        fail(1)
+        advance(0.1)
+        check(restarts(since: mark).count == 1 && recovering(2), "the restart failing again waits for restart 2")
+        advance(1.8)
+        check(restarts(since: mark).count == 1, "not before 2 s have passed")
+        advance(0.3)
+        deliver(0.5)
+        tick()
+        check(restarts(since: mark).count == 2 && capturing(outputA) && model.captureGeneration == analysis,
+              "restart 2 after 2 s works: capturing again, same analysis")
+
+        // 5. Restarts that do not work: one cannot open the device, one delivers nothing, one fails again; then the
+        // capture stops, the status says why and how to try again, and nothing restarts it by itself.
+        freshStart()
+        deliver(31)
+        advance(31)
+        mark = journal.mark
+        let stream = model.captureGeneration
+        capture.failNextRestart = true
+        fail(1)
+        tick()
+        check(restarts(since: mark).count == 1 && model.running && model.captureGeneration == stream && recovering(2),
+              "a restart that cannot open the device holds the analysis and waits for restart 2")
+        advance(2.1)
+        check(restarts(since: mark).count == 2 && recovering(2), "restart 2, 2 s later")
+        advance(2.8)
+        check(restarts(since: mark).count == 2, "a restart that delivers nothing is given 3 s")
+        advance(0.3)
+        check(restarts(since: mark).count == 2 && recovering(3), "after 3 s with nothing delivered, restart 2 failed: restart 3 is next")
+        advance(8.1)
+        check(restarts(since: mark).count == 3, "restart 3, 8 s later")
+        mark = journal.mark
+        fail(1)
+        tick()
+        var gaveUp = false
+        if case let .failure(message) = model.status {
+            gaveUp = message.text == L("%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again",
+                                        outputA.output ? L("%@ (output)", outputA.name) : outputA.name, 3,
+                                        L("the device refused audio (OSStatus %@)", "-10863"))
+        }
+        check(gaveUp && !model.running && journal.lifecycle(since: mark) == ["worker.stop \(stream)", "capture.stop"]
+              && model.captureActionTitle == L("Start Capture"),
+              "after 3 restarts that did not work, capture stops and the status says why and to choose Start Capture")
+        mark = journal.mark
+        model.refreshDevices()
+        advance(60)
+        check(!model.running && journal.lifecycle(since: mark).isEmpty, "nothing restarts it by itself: not a device-list change, not time")
+        model.resume()
+        check(model.running && capturing(outputA) && model.captureGeneration != stream, "Start Capture measures again, afresh")
+        fail(1)
+        mark = journal.mark
+        tick()
+        check(restarts(since: mark).count == 1 && recovering(1), "the person's start gives back every restart")
+
+        // 6. Stopped (no device chosen) while a restart is pending: nothing restarts, nothing comes back by itself.
+        fail(1)
+        advance(0.1)
+        check(recovering(2), "a restart is pending")
+        mark = journal.mark
+        model.select(.noOutput)
+        advance(10)
+        check(!model.running && model.status == .noSelection && restarts(since: mark).isEmpty
+              && !journal.lifecycle(since: mark).contains { $0.hasPrefix("capture.start") },
+              "no device chosen while a restart is pending: the restart never comes, capture stays stopped")
+        model.select(outputA.id)
+
+        // 7. Paused while a restart is pending: no restart while paused; resume carries the analysis on, with no
+        // restart left over.
+        capture.reading = CaptureHealthReading()
+        tick()
+        fail(1)
+        tick()
+        fail(1)
+        advance(0.1)
+        check(recovering(2), "a restart is pending")
+        let paused = model.captureGeneration
+        mark = journal.mark
+        model.toggleCapture()
+        advance(10)
+        check(model.status == .paused && restarts(since: mark).isEmpty, "paused, the pending restart never comes")
+        model.toggleCapture()
+        advance(10)
+        check(model.running && model.captureGeneration == paused && capturing(outputA) && restarts(since: mark).isEmpty,
+              "resume carries the analysis on, with no restart left from before the pause")
+
+        // 8, 12. Another source chosen while a restart is pending, then the first source again: the restart decided for
+        // the first capture never reaches either.
+        fail(1)
+        tick()
+        fail(1)
+        advance(0.1)
+        mark = journal.mark
+        model.select(outputB.id)
+        advance(5)
+        check(capturing(outputB) && restarts(since: mark).isEmpty, "another source chosen: the pending restart never comes")
+        model.select(outputA.id)
+        advance(10)
+        check(capturing(outputA) && restarts(since: mark).isEmpty, "back on the first source: a new capture, no restart left from the old one")
+
+        // 9. The device gone by the time a restart is due: the device list's own path takes over.
+        fail(1)
+        tick()
+        fail(1)
+        advance(0.1)
+        mark = journal.mark
+        deviceList = [outputB]
+        advance(2.1)
+        check(model.status == .noDevice && !model.running && restarts(since: mark).isEmpty,
+              "a device gone when its restart is due: no restart, the status says no device")
+        deviceList = [outputA, outputB]
+        model.refreshDevices()
+        check(model.running && capturing(outputA), "the device coming back is measured again")
+
+        // 10. The device's rate changes during recovery: its notification starts afresh and ends the episode; without
+        // one, the restart finds the new rate and starts afresh at it.
+        fail(1)
+        tick()
+        fail(1)
+        advance(0.1)
+        mark = journal.mark
+        var before = model.captureGeneration
+        capture.rateAtNextStart = 44_100
+        model.deviceConfigurationChanged()
+        advance(5)
+        check(model.sampleRate == 44_100 && model.captureGeneration != before && capturing(outputA) && restarts(since: mark).isEmpty,
+              "a rate notification during recovery starts afresh at the new rate, and the pending restart never comes")
+        capture.rateAtNextStart = 48_000
+        before = model.captureGeneration
+        mark = journal.mark
+        fail(1)
+        tick()
+        check(model.sampleRate == 48_000 && model.captureGeneration != before && restarts(since: mark).count == 1
+              && journal.lifecycle(since: mark).contains("worker.make \(model.captureGeneration)") && recovering(1),
+              "a restart that finds another rate (no notification) starts the analysis afresh at it")
+        deliver(0.5)
+        tick()
+        check(capturing(outputA) && model.sampleRate == 48_000, "the fresh analysis delivers: capturing again")
+
+        // 11. Slices longer than the storage (the IO buffer grew): the restart asks for storage for them, and the next
+        // one for the newest size.
+        deliver(31)
+        advance(31)
+        mark = journal.mark
+        fail(1, failures: CAPTURE_FAILURE_OVERSIZE, largest: 8_192)
+        tick()
+        fail(1, failures: CAPTURE_FAILURE_OVERSIZE, largest: 12_000)
+        advance(0.1)
+        advance(2.1)
+        check(restarts(since: mark) == [restart(outputA, 8_192), restart(outputA, 12_000)],
+              "slices too long for the storage restart with storage for them, sized from the newest slices")
+        deliver(0.5)
+        tick()
+
+        // Sources recovery never touches: no device chosen, and DAW plugins (they have their own paths).
+        mark = journal.mark
+        model.select(.anyPlugin)
+        fail(5)
+        advance(20)
+        check(restarts(since: mark).isEmpty && !model.running, "Host plugins: nothing restarts the idle device capture")
+        model.select(outputA.id)
+        capture.reading = CaptureHealthReading()
+        tick()
+        check(model.running && capturing(outputA), "the recovery checks end on a device that captures")
     }
 }

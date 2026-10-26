@@ -277,6 +277,8 @@ enum MeterStatus: Equatable {
     case capturing(device: String, output: Bool, channels: Int, layout: String)
     /// A DAW plugin source: its name and what it is doing.
     case bridge(name: String, condition: BridgeCondition, channels: Int, layout: String)
+    /// A device capture that keeps failing, being restarted (`CaptureRecoveryPolicy`).
+    case recovering(StatusMessage)
     case failure(StatusMessage)
 
     /// Rendered on demand so a language switch also updates the current message.
@@ -313,7 +315,7 @@ enum MeterStatus: Equatable {
             case let .ambiguous(count):
                 return L("%@ · %d connected inserts could be the saved one · choose one in Settings or click its plugin button", name, count)
             }
-        case let .failure(message): return message.text
+        case let .recovering(message), let .failure(message): return message.text
         }
     }
 
@@ -324,6 +326,7 @@ enum MeterStatus: Equatable {
             return "Capturing \(output ? "output" : "input") \"\(device)\" · \(channels) ch → \(layout)"
         case let .bridge(name, condition, channels, layout):
             return "DAW plugin \"\(name)\": \(condition) · \(channels) ch → \(layout)"
+        case let .recovering(message): return "Recovering: \(message.text)"
         case let .failure(message): return "Error: \(message.text)"
         default: return "Status: \(self)"
         }
@@ -650,6 +653,14 @@ final class MeterModel: ObservableObject {
     /// Changes whenever capture (re)starts; diagnostics use it to prove an operation left the audio path alone.
     var captureGeneration: UInt32 { streamID }
     private var hardwareObserver: HardwareObserver?
+    /// Restarts of a device capture that keeps failing (`superviseCapture`).
+    private var recovery = CaptureRecoveryPolicy()
+    /// Changes whenever capture stops for any reason (and so before every start), except recovery's own restarts: a
+    /// recovery decision then never reaches a capture other than the one it was made for.
+    private var captureSession: UInt64 = 0
+    /// The source whose capture recovery gave up on: nothing restarts it by itself (a device-list change, for one)
+    /// until the person starts capture or the source changes.
+    private var recoveryHalted: SourceID?
     private var permissionPending = false
     private var wantsCapture = true
     /// What a pause left waiting in place: the source and routing the analysis was measuring, and when it paused.
@@ -1029,7 +1040,7 @@ final class MeterModel: ObservableObject {
             selectedID = restored.id
             loadAssignment()
             if wantsCapture { requestPermissionAndStart() }
-        } else if !running && wantsCapture {
+        } else if !running && wantsCapture && !recovery.isActive && recoveryHalted != selectedID {
             requestPermissionAndStart()
         }
     }
@@ -1060,6 +1071,7 @@ final class MeterModel: ObservableObject {
             }
         }
         // The person's choice: remembered with its context, and final (no longer provisional or ambiguous).
+        recoveryHalted = nil
         bridgeCandidates = []
         link.choose(id)
         loadAssignment()
@@ -1213,6 +1225,7 @@ final class MeterModel: ObservableObject {
 
     func resume() {
         wantsCapture = true
+        recoveryHalted = nil
         if Diagnostics.demo {
             if !continueDemo() { startDemo() }
             return
@@ -1262,6 +1275,7 @@ final class MeterModel: ObservableObject {
         // Capture stops before its final counter is read and the ring is cleared. The 10 Hz readout can
         // lag behind the last callback, so carrying its displayed count would lose recent drops.
         droppedBefore += capture?.stop() ?? 0
+        captureSession &+= 1
         droppedFrames = droppedBefore
         paused = PausedSession(source: selectedID, sources: capturedSources, roles: routedRoles, time: CACurrentMediaTime(),
                                bridge: pausedBridge, pluginPaused: pluginPaused)
@@ -1352,6 +1366,7 @@ final class MeterModel: ObservableObject {
         worker?.stop()
         worker = nil
         capture?.stop()
+        captureSession &+= 1
         running = false
     }
 
@@ -1427,6 +1442,7 @@ final class MeterModel: ObservableObject {
                 UserDefaults.standard.set(device.output, forKey: Self.inputDeviceIsOutputKey)
             }
             hardwareObserver?.watch(device.device)
+            recoveryHalted = nil
             DiagnosticLog.event(String(format: "Stream: %.0f Hz, %d ch", capture.sampleRate, Int(capture.channels)))
             DiagnosticLog.event("Routing \(routingSource): \(routingSummary)")
             status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels),
@@ -1436,6 +1452,136 @@ final class MeterModel: ObservableObject {
             status = .failure(StatusMessage { error.localizedDescription })
             Diagnostics.log("Capture error: \(status.text)")
         }
+    }
+
+    // MARK: Capture recovery
+
+    /// Called at the readout rate, whether or not a window shows: watches the selected device's capture for a failure
+    /// that lasts, restarts it a bounded number of times, and gives up visibly (`CaptureRecoveryPolicy`). Only a device
+    /// capture the person wants running is watched: never a paused or stopped one, the demo, or a DAW plugin (whose own
+    /// paths follow its connection and format).
+    func superviseCapture() {
+        guard let capture, wantsCapture, demoStart == nil, let device = selectedDevice, !device.isBridge,
+              running || recovery.isActive else {
+            recovery.reset()
+            return
+        }
+        // A phase kept from another capture session is over (`observe` forgets it).
+        let before = recovery.session == captureSession ? recovery.phase : .watching
+        let decision = recovery.observe(capture.health(), sampleRate: sampleRate, session: captureSession,
+                                        now: dependencies.clock())
+        switch decision {
+        case let .restart(attempt, failure)?: recoverCapture(device, attempt: attempt, failure: failure, from: before)
+        case let .giveUp(attempts, failure)?: giveUpCapture(device, attempts: attempts, failure: failure)
+        case nil: showRecovery(device, from: before)
+        }
+    }
+
+    /// Restart number `attempt` of the selected device's capture. Opened again at its rate, the device's IO carries on
+    /// into the same analysis: the ring keeps its count of lost frames, and they make one break where the new IO writes
+    /// first. At another rate, or with no analysis left (an earlier restart could not open the device), capture starts
+    /// afresh, as a rate notification would have it.
+    private func recoverCapture(_ chosen: InputDevice, attempt: Int, failure: CaptureRecoveryPolicy.Failure,
+                                from before: CaptureRecoveryPolicy.Phase) {
+        showRecovery(chosen, from: before)
+        // The latest device list first: a device gone by now is the device list's to follow (no device, then its return).
+        let session = captureSession
+        refreshDevices()
+        guard captureSession == session, let capture, let device = selectedDevice, device.id == chosen.id else { return }
+        DiagnosticLog.event("Capture recovery: restart \(attempt) of \(recovery.thresholds.backoff.count)")
+        /// Capture afresh (`restart`): opened when it made a new session that runs.
+        func startAfresh() -> Bool {
+            let previous = captureSession
+            restart()
+            recovery.adopt(session: captureSession)
+            return captureSession != previous && running
+        }
+        var opened = true
+        if worker != nil && running {
+            do {
+                try capture.restart(device: device, sourceForRole: capturedSources, minimumFrames: failure.minimumFrames)
+                if capture.sampleRate != sampleRate {
+                    DiagnosticLog.event(String(format: "Capture recovery: the device runs at %.0f Hz now; the analysis starts afresh",
+                                               capture.sampleRate))
+                    // Never into the analysis made for the old rate, even if a fresh start cannot follow.
+                    capture.stop()
+                    opened = startAfresh()
+                }
+            } catch {
+                DiagnosticLog.event("Capture recovery: restart \(attempt) could not open the device: \(error.localizedDescription)")
+                opened = false
+            }
+        } else {
+            opened = startAfresh()
+        }
+        if opened {
+            showRecovering(device, attempt: attempt, of: recovery.thresholds.backoff.count)
+        } else if case let .giveUp(attempts, failure)? = recovery.restartFailed(now: dependencies.clock()) {
+            giveUpCapture(device, attempts: attempts, failure: failure)
+        } else if case let .waiting(next, due, _, _) = recovery.phase {
+            DiagnosticLog.event(String(format: "Capture recovery: restart %d in %.1f s", next, max(0, due - dependencies.clock())))
+            showRecovering(device, attempt: next, of: recovery.thresholds.backoff.count)
+        }
+    }
+
+    /// The episode's restarts are spent: capture stops, releasing the device rather than keeping it failing, and the
+    /// status says why. Start Capture, or choosing a source, tries again.
+    private func giveUpCapture(_ device: InputDevice, attempts: Int, failure: CaptureRecoveryPolicy.Failure) {
+        DiagnosticLog.event("Capture recovery gave up after \(attempts) restarts (\(failure.logDescription)), "
+                            + "\(droppedFrames) frames dropped: capture stopped")
+        stop()
+        recovery.reset()
+        recoveryHalted = selectedID
+        let name = device.output ? L("%@ (output)", device.name) : device.name
+        status = .failure(StatusMessage {
+            L("%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again", name, attempts, failure.text)
+        })
+    }
+
+    /// The status while recovery holds the capture (a restart pending or being verified) and once it lets go, with a
+    /// line in the diagnostic log for each step; `before` is the phase the step started from.
+    private func showRecovery(_ device: InputDevice, from before: CaptureRecoveryPolicy.Phase) {
+        let phase = recovery.phase
+        guard phase != before else { return }
+        let total = recovery.thresholds.backoff.count
+        let detected: Bool
+        switch before {
+        case .watching, .recovered: detected = true
+        case .waiting, .verifying: detected = false
+        }
+        switch phase {
+        case let .waiting(attempt, due, failure, _):
+            let wait = String(format: "%.1f s", max(0, due - dependencies.clock()))
+            if detected {
+                DiagnosticLog.event("Capture keeps failing (\(failure.logDescription)), \(droppedFrames) frames dropped: "
+                                    + "restart \(attempt) of \(total) in \(wait)")
+            } else if case .verifying = before {
+                DiagnosticLog.event("Capture recovery: restart \(attempt - 1) did not bring audio back; restart \(attempt) in \(wait)")
+            }
+            showRecovering(device, attempt: attempt, of: total)
+        case let .verifying(attempt, _, failure):
+            if detected { DiagnosticLog.event("Capture keeps failing (\(failure.logDescription)), \(droppedFrames) frames dropped") }
+            showRecovering(device, attempt: attempt, of: total)
+        case let .recovered(attempts, _):
+            if case .verifying = before { DiagnosticLog.event("Capture recovered after restart \(attempts): audio delivered again") }
+            if case .waiting = before { DiagnosticLog.event("Capture came back by itself before restart \(attempts + 1)") }
+            showCapturing(device)
+        case .watching:
+            if case .recovered = before { DiagnosticLog.event("Capture healthy since it recovered: every restart available again") }
+            showCapturing(device)
+        }
+    }
+
+    private func showRecovering(_ device: InputDevice, attempt: Int, of total: Int) {
+        let name = device.output ? L("%@ (output)", device.name) : device.name
+        let text = { L("%@ · capture keeps failing · restarting it (attempt %d of %d)", name, attempt, total) }
+        if case let .recovering(shown) = status, shown.text == text() { return }
+        status = .recovering(StatusMessage(text))
+    }
+
+    private func showCapturing(_ device: InputDevice) {
+        guard case .recovering = status, running, let capture else { return }
+        status = .capturing(device: device.name, output: device.output, channels: Int(capture.channels), layout: shownLayoutName)
     }
 
     // MARK: DAW Bridge

@@ -55,6 +55,10 @@
 "Demo signal · no audio device open" = "デモ信号 · オーディオデバイスは開いていません";
 "No audio device available" = "使用できるオーディオデバイスがありません";
 "%@ (output)" = "%@（出力）";
+"%@ · capture keeps failing · restarting it (attempt %d of %d)" = "%@ · キャプチャが失敗し続けています · 再起動しています（%d 回目 / 全 %d 回）";
+"%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again" = "%@ · %d 回再起動してもキャプチャが失敗しました：%@ · 「キャプチャを開始」を選ぶともう一度試します";
+"the device refused audio (OSStatus %@)" = "デバイスがオーディオを拒否しました（OSStatus %@）";
+"the device delivered more audio per cycle than the capture holds" = "デバイスが 1 サイクルで送るオーディオがキャプチャの容量を超えました";
 
 /* Errors */
 "Could not allocate the audio ring buffer" = "オーディオのリングバッファを確保できませんでした";

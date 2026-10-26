@@ -55,6 +55,10 @@
 "Demo signal · no audio device open" = "示範訊號 · 未開啟音訊裝置";
 "No audio device available" = "沒有可用的音訊裝置";
 "%@ (output)" = "%@（輸出）";
+"%@ · capture keeps failing · restarting it (attempt %d of %d)" = "%@ · 擷取持續失敗 · 正在重新啟動（第 %d 次，共 %d 次）";
+"%@ · capture kept failing after %d restarts: %@ · choose Start Capture to try again" = "%@ · 重新啟動 %d 次後擷取仍然失敗：%@ · 選擇「開始擷取」可再試一次";
+"the device refused audio (OSStatus %@)" = "裝置拒絕提供音訊（OSStatus %@）";
+"the device delivered more audio per cycle than the capture holds" = "裝置每個週期送出的音訊超過了擷取的容量";
 
 /* Errors */
 "Could not allocate the audio ring buffer" = "無法配置音訊環形緩衝區";
