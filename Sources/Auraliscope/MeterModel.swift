@@ -620,8 +620,6 @@ final class MeterModel: ObservableObject {
     var sourceIsBridge: Bool { selectedID.bridge != nil }
     /// The newest snapshot's observations: status, source and the hash of the geometry they were computed with.
     private(set) var lastObservations: (status: Float, source: SpatialObservations.Source, hash: UInt64) = (0, .none, 0)
-    /// The user's layout a plugin refused (its session and the layout's hash): the standard one is used meanwhile.
-    private var refusedGeometry: (session: String, hash: UInt64)?
     static func storedBands(_ key: String) -> StereoBands.Resolution {
         // The Soundstage's key may also name a single band ("five.2"; `BandChoice`).
         BandChoice(rawValue: UserDefaults.standard.string(forKey: key) ?? "")?.resolution ?? .five
@@ -646,8 +644,6 @@ final class MeterModel: ObservableObject {
     }
     /// A DAW plugin source: where its results arrive (the plugin analyses; nothing is analysed here).
     private var resultInbox: ResultInbox?
-    /// The newest command sent to the bound plugin, until its acknowledgement is logged.
-    private var pendingBridgeCommand: (session: String, id: UInt32, name: String)?
     private var demoStart: CFTimeInterval?
     private var demoDetector = FormatDetector()
     private var streamID: UInt32 = 0
@@ -669,7 +665,8 @@ final class MeterModel: ObservableObject {
     private var paused: PausedSession?
 
     // DAW Bridge: plugin instances are listed with the devices and selected like one.
-    private let bridge: BridgeReceiving?
+    /// The receiver, the plugins it reports, commands, and what plugins answered (`BridgeLink`).
+    private let link: BridgeLink
     /// The insert chosen last, saved with its context so the same insert can be found again (BridgeRestoration).
     private var bridgeSaved: BridgeSelection?
     /// The inserts that could be the saved one while that is ambiguous (their sessions); empty otherwise.
@@ -686,18 +683,14 @@ final class MeterModel: ObservableObject {
     @Published private(set) var measurementBreaks = 0
     @Published private(set) var missingSeconds = 0.0
     /// Why the receiver could not start (nil while it runs).
-    let bridgeError: String?
+    var bridgeError: String? { link.error }
     /// Newest report of every connected plugin instance (polled, not published: counters change constantly).
-    private(set) var bridgeSources: [BridgeSource] = []
+    var bridgeSources: [BridgeSource] { link.sources }
     /// The instance and format the ring is attached to, while a DAW source runs.
     private var attachedBridge: (session: String, epoch: UInt32, channels: Int)?
     /// Frames lost before the current attachment, so the status bar counts this stream only.
     private var bridgeLostBase: UInt64 = 0
     private var bridgeTimer: Timer?
-    /// Focus requests already acted on, per session.
-    private var focusHandled: [String: UInt32] = [:]
-    /// Breaks of the bound insert already written to the diagnostic log (session, count).
-    private var breaksLogged: (session: String, count: UInt64)?
     private static let bridgeNameKey = "bridgeSourceName"
 
     deinit {
@@ -718,10 +711,7 @@ final class MeterModel: ObservableObject {
         // 2.0 stored the pinned multichannel mode as "surround". A pinned Mono needs Mono enabled.
         let mode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
         formatMode = mode == .mono && !showMono ? .stereo : mode
-        switch dependencies.startReceiver() {
-        case let .success(receiver): bridge = receiver; bridgeError = nil
-        case let .failure(error): bridge = nil; bridgeError = error.reason
-        }
+        link = BridgeLink(dependencies.startReceiver())
         devices = dependencies.availableSources()
         let savedUID = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey)
         let savedOutput = UserDefaults.standard.bool(forKey: Self.inputDeviceIsOutputKey)
@@ -790,7 +780,7 @@ final class MeterModel: ObservableObject {
                 Task { @MainActor in self?.deviceSpeakersChanged() }
             })
         }
-        if bridge != nil {
+        if link.receiver != nil {
             let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.pollBridge() }
             }
@@ -827,17 +817,17 @@ final class MeterModel: ObservableObject {
         worker?.setSpatialSpectrum(format == .spatial)
         // A DAW plugin sums every channel of its bus in the spectrum (and keeps each one's band energy for the
         // immersive soundstage) while Immersive is shown, as the local analysis does.
-        bridge?.setSpectrum(everyChannel: format == .spatial)
+        link.receiver?.setSpectrum(everyChannel: format == .spatial)
         // Which speakers share an image (the nebula's coherence setting), for the local analysis and the plugin's; and
         // the speaker geometry both analyses and the dome use.
         noteSpatialAnswer()
         let geometry = displayGeometry(for: shownLayout)
         worker?.setSpatialField(threshold: displayOptions.nebula.threshold, geometry: geometry)
-        bridge?.setCoherence(displayOptions.nebula.threshold)
-        bridge?.setSpatial(geometry)
+        link.receiver?.setCoherence(displayOptions.nebula.threshold)
+        link.receiver?.setSpatial(geometry)
         let mode: SpectrogramMode = displayOptions.spectrogramAnalysis == .enhanced ? .enhanced : .classic
         worker?.setSpectrogramMode(mode)
-        bridge?.setSpectrogram(mode)
+        link.receiver?.setSpectrogram(mode)
         let snapshot = pollSnapshot()
         lastSpectrogramMode = snapshot.spectrogramMode
         if let status = snapshot.spatialField.first { lastSpatialFieldStatus = status }
@@ -865,7 +855,7 @@ final class MeterModel: ObservableObject {
     func displayGeometry(for layout: SpeakerLayout) -> SpatialGeometry {
         let configured = SpeakerLayoutStore.shared.geometry(for: layout, nebula: displayOptions.nebula)
         guard let source = selectedBridgeSource,
-              !source.takesSpatialGeometry || (refusedGeometry?.session == source.sessionKey && refusedGeometry?.hash == configured.hash)
+              !source.takesSpatialGeometry || link.refused(configured, by: source)
         else { return configured }
         var standard = SpatialGeometry.standard(roles: layout.roles, detail: configured.detail, window: configured.window)
         // Another revision, so its acknowledgement is not taken for the refused one's.
@@ -879,7 +869,7 @@ final class MeterModel: ObservableObject {
         let configured = SpeakerLayoutStore.shared.geometry(for: shownLayout, nebula: displayOptions.nebula)
         if let source = selectedBridgeSource {
             if !configured.isStandard(roles: shownLayout.roles) && !source.takesSpatialGeometry { return .pluginTooOld }
-            if refusedGeometry?.session == source.sessionKey && refusedGeometry?.hash == configured.hash { return .pluginRefused }
+            if link.refused(configured, by: source) { return .pluginRefused }
         }
         // Observations of another geometry than the one drawn: on their way (a change just made), never drawn.
         if lastObservations.status == 1, lastObservations.source == .measured, lastObservations.hash != displayGeometry(for: shownLayout).hash {
@@ -891,13 +881,8 @@ final class MeterModel: ObservableObject {
     /// A plugin's answer to the geometry it was sent: a refusal of the user's layout makes the dome (and the plugin)
     /// use the standard one, with a note, until the layout changes.
     private func noteSpatialAnswer() {
-        guard let source = selectedBridgeSource, let ack = source.spatialAck else { return }
-        let configured = SpeakerLayoutStore.shared.geometry(for: shownLayout, nebula: displayOptions.nebula)
-        if ack.revision == configured.revision, ack.outcome != SpatialConfigWire.Outcome.applied.rawValue,
-           refusedGeometry?.hash != configured.hash {
-            refusedGeometry = (source.sessionKey, configured.hash)
-            DiagnosticLog.event("The plugin refused the speaker layout (outcome \(ack.outcome)); showing the standard layout")
-        }
+        guard let source = selectedBridgeSource, source.spatialAck != nil else { return }
+        link.noteSpatialAnswer(of: source, to: SpeakerLayoutStore.shared.geometry(for: shownLayout, nebula: displayOptions.nebula))
     }
 
     /// Roles that carry signal: routed and part of the current layout. Mono keeps only the input routed to L.
@@ -964,7 +949,7 @@ final class MeterModel: ObservableObject {
 
     func resetMeasurements() {
         // A DAW plugin owns its measurement: it starts afresh there (a new generation), for every display.
-        if let attached = attachedBridge, sendBridgeCommand(ABR_COMMAND_RESET, name: "reset", to: attached.session) {
+        if let attached = attachedBridge, link.send(ABR_COMMAND_RESET, name: "reset", to: attached.session) {
             clearMeasurements()
             if running { captureStarted = Date() }
             return
@@ -985,7 +970,7 @@ final class MeterModel: ObservableObject {
     func resetTruePeak() {
         worker?.resetTruePeaks()
         if let attached = attachedBridge {
-            sendBridgeCommand(ABR_COMMAND_RESET_TRUE_PEAK, name: "reset true peak", to: attached.session)
+            link.send(ABR_COMMAND_RESET_TRUE_PEAK, name: "reset true peak", to: attached.session)
         }
         readouts.resetTruePeak()
         truePeakEpoch += 1
@@ -1024,17 +1009,10 @@ final class MeterModel: ObservableObject {
 
     /// Connected DAW plugin instances as sources, in connection order. One of another protocol version is left
     /// out (Settings names it as needing an update).
-    private var bridgeDevices: [InputDevice] {
-        let compatible = bridgeSources.filter(\.compatible)
-        return compatible.map { source in
-            InputDevice(device: 0, name: source.displayName, channels: UInt32(max(source.channels, 0)),
-                        uid: bridgeUIDPrefix + source.persistentKey, bridgeSession: source.sessionKey,
-                        detail: source.label(among: compatible))
-        }
-    }
+    private var bridgeDevices: [InputDevice] { link.devices }
 
     /// Plugins of another protocol version, by host: named in Settings as needing an update.
-    var incompatibleBridgePlugins: [BridgeSource] { bridgeSources.filter { !$0.compatible } }
+    var incompatibleBridgePlugins: [BridgeSource] { link.incompatible }
 
     /// Accepts an injected list so a disappearing input or output can be checked without unplugging hardware.
     func refreshDevices(using available: [InputDevice]) {
@@ -1292,7 +1270,7 @@ final class MeterModel: ObservableObject {
         // holds its picture. The subscription stays, so the plugin's state keeps arriving.
         let pausedBridge = attachedBridge
         if let attached = attachedBridge {
-            sendBridgeCommand(ABR_COMMAND_PAUSE, name: "pause measurement", to: attached.session)
+            link.send(ABR_COMMAND_PAUSE, name: "pause measurement", to: attached.session)
         }
         // Capture stops before its final counter is read and the ring is cleared. The 10 Hz readout can
         // lag behind the last callback, so carrying its displayed count would lose recent drops.
@@ -1334,7 +1312,7 @@ final class MeterModel: ObservableObject {
               let source = bridgeSources.first(where: { $0.sessionKey == format.session && $0.compatible }),
               source.formatEpoch == format.epoch, source.channels == format.channels, source.sampleRate == sampleRate
         else { return false }
-        sendBridgeCommand(ABR_COMMAND_RESUME, name: "resume measurement", to: format.session)
+        link.send(ABR_COMMAND_RESUME, name: "resume measurement", to: format.session)
         worker.resume()
         captureChannels = format.channels
         carryOn(after: CACurrentMediaTime() - session.time)
@@ -1374,10 +1352,10 @@ final class MeterModel: ObservableObject {
         demoStart = nil
         hardwareObserver?.watch(nil)
         // The ring's producer goes first (the bridge thread or the device), then its consumer.
-        bridge?.detach()
+        link.receiver?.detach()
         if let attached = attachedBridge, paused != nil {
             // Stopping a paused DAW source: its measurement must not stay paused for nobody.
-            sendBridgeCommand(ABR_COMMAND_RESUME, name: "resume measurement", to: attached.session)
+            link.send(ABR_COMMAND_RESUME, name: "resume measurement", to: attached.session)
         }
         attachedBridge = nil
         resultInbox = nil
@@ -1398,7 +1376,7 @@ final class MeterModel: ObservableObject {
                              channels: 0, layout: shownLayoutName)
                 return
             }
-            bridge?.select(nil)
+            link.receiver?.select(nil)
             status = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey) == "" ? .noSelection : .noDevice
             return
         }
@@ -1436,7 +1414,7 @@ final class MeterModel: ObservableObject {
         guard let capture else { status = .ringFailed; return }
         guard let device = devices.first(where: { $0.id == selectedID }) else { status = .noDevice; return }
         if device.isBridge { startBridge(device, capture: capture); return }
-        bridge?.select(nil)
+        link.receiver?.select(nil)
         do {
             try capture.start(device: device, sourceForRole: capturedSources)
             streamID = streamID == 1_000_000 ? 1 : streamID + 1
@@ -1484,7 +1462,7 @@ final class MeterModel: ObservableObject {
     /// Diagnostics: breaks the selected insert's connection, as a failure would; the plugin reconnects by itself.
     func dropBridgeConnection() {
         guard let session = selectedID.bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) else { return }
-        bridge?.disconnect(source.session, refusingFor: 1_500)
+        link.receiver?.disconnect(source.session, refusingFor: 1_500)
     }
 
     /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
@@ -1505,8 +1483,7 @@ final class MeterModel: ObservableObject {
     /// One click in a plugin window ("Show in / Open Auraliscope Labs"): select that insert, resume if paused, and
     /// bring the meter window forward. It is the person's choice, as in the source list.
     private func followFocusRequests() {
-        for source in bridgeSources where source.compatible && source.focusRequests > focusHandled[source.sessionKey, default: 0] {
-            focusHandled[source.sessionKey] = source.focusRequests
+        for source in link.takeFocusRequests() {
             DiagnosticLog.event("DAW plugin \"\(source.displayName)\" asked to be shown")
             let id = SourceID(device: 0, bridge: source.sessionKey)
             if !wantsCapture { wantsCapture = true }
@@ -1514,8 +1491,6 @@ final class MeterModel: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             MainWindow.window?.makeKeyAndOrderFront(nil)
         }
-        let live = Set(bridgeSources.map(\.sessionKey))
-        focusHandled = focusHandled.filter { live.contains($0.key) }
     }
 
     /// The condition for the status line. The plugin reports how long ago its host last gave it audio, whatever
@@ -1535,7 +1510,7 @@ final class MeterModel: ObservableObject {
     /// receiver writes that instance's audio into the ring. Every format change comes back through here, so the
     /// analyzers are always configured for exactly the audio they receive.
     private func startBridge(_ device: InputDevice, capture: CaptureBackend) {
-        guard let bridge else {
+        guard let receiver = link.receiver else {
             status = .failure(StatusMessage { L("DAW plugin receiver unavailable: %@", self.bridgeError ?? "") })
             return
         }
@@ -1543,7 +1518,7 @@ final class MeterModel: ObservableObject {
             status = .bridge(name: device.name, condition: .disconnected, channels: 0, layout: shownLayoutName)
             return
         }
-        bridge.select(source.session)
+        receiver.select(source.session)
         guard source.hasUsableFormat else {
             // Subscribed, so it streams as soon as it has a format; `pollBridge` restarts then.
             status = .bridge(name: source.label(among: bridgeSources), condition: BridgeCondition(source),
@@ -1561,7 +1536,7 @@ final class MeterModel: ObservableObject {
         }
         self.worker = worker
         resultInbox = inbox
-        bridge.attach(inbox)
+        receiver.attach(inbox)
         attachedBridge = (source.sessionKey, source.formatEpoch, source.channels)
         bridgeLostBase = source.framesDroppedByPlugin
         sampleRate = source.sampleRate
@@ -1581,8 +1556,8 @@ final class MeterModel: ObservableObject {
     /// Five times a second: picks up plugin instances that came or went, follows the selected one through
     /// format changes, disconnection and return, finds the saved insert again, and keeps the status current.
     private func pollBridge() {
-        guard let bridge else { return }
-        bridgeSources = bridge.sources()
+        guard link.receiver != nil else { return }
+        link.refresh()
         let listed = devices.filter(\.isBridge)
         if listed != bridgeDevices {
             if listed.map(\.id) != bridgeDevices.map(\.id) {
@@ -1617,7 +1592,7 @@ final class MeterModel: ObservableObject {
             }
         }
         if bridgeProvisionalUntil == nil { remember(source) }
-        logBreaks(source)
+        link.logBreaks(source)
         if let attached = attachedBridge {
             // Reconfigure whenever the audio the receiver would deliver no longer matches the pipeline.
             if attached.session != source.sessionKey || attached.epoch != source.formatEpoch || attached.channels != source.channels {
@@ -1634,37 +1609,6 @@ final class MeterModel: ObservableObject {
         let next = MeterStatus.bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
                                       channels: source.channels, layout: shownLayoutName)
         if status != next { status = next }
-    }
-
-    /// Writes each new break the bound insert's analysis saw to the diagnostic log, with its reasons (only the
-    /// newest is known when several arrive between two refreshes), and each command's acknowledgement.
-    private func logBreaks(_ source: BridgeSource) {
-        if let pending = pendingBridgeCommand, pending.session == source.sessionKey, source.lastAck.id == pending.id {
-            DiagnosticLog.event(String(format: "DAW plugin \"%@\": %@ %@ · generation %u · %@", source.displayName, pending.name,
-                                       source.lastAck.outcomeName, source.lastAck.generation,
-                                       source.lastAck.measurement == UInt32(ABR_MEASUREMENT_PAUSED) ? "paused" : "measuring"))
-            pendingBridgeCommand = nil
-        }
-        let count = UInt64(source.pluginInterruptions)
-        guard let logged = breaksLogged, logged.session == source.sessionKey else {
-            breaksLogged = (source.sessionKey, count)
-            return
-        }
-        guard count > logged.count else { return }
-        DiagnosticLog.event(String(format: "DAW plugin \"%@\": %llu break(s) (newest: %@; timeline jumps %u)",
-                                   source.displayName, count - logged.count, source.lastBreakReasonNames, source.transportJumps))
-        breaksLogged = (source.sessionKey, count)
-    }
-
-    /// Sends a command to a connected DAW plugin; returns whether it went out. Its acknowledgement is logged.
-    @discardableResult
-    private func sendBridgeCommand(_ command: Int, name: String, to session: String) -> Bool {
-        guard let bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) else { return false }
-        let id = bridge.command(source.session, Int32(command))
-        guard id != 0 else { return false }
-        pendingBridgeCommand = (session, id, name)
-        DiagnosticLog.event("DAW plugin \"\(source.displayName)\": \(name) sent (command \(id))")
-        return true
     }
 
     /// The bound plugin's results as they arrive (tests and diagnostics).
@@ -1742,7 +1686,7 @@ final class MeterModel: ObservableObject {
             snapshot = MeterSnapshot()
             clearMeasurements()
         }
-        bridge?.select(nil)
+        link.receiver?.select(nil)
         bridgeProvisionalUntil = nil
         bridgeCandidates = sessions
         selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix + saved.persistent)

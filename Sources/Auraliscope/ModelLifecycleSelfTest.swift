@@ -151,7 +151,8 @@ enum ModelLifecycleSelfTest {
     /// and the speaker geometry. Its identities are 16 copies of one byte; stereo unless `roles` name each channel's
     /// speaker; a copy (`copyOf`) carries the identity its saved state had.
     static func plugin(session: UInt8, persistent: UInt8, name: String, copyOf: UInt8? = nil, roles: [Int] = [],
-                       epoch: UInt32 = 1, compatible: Bool = true, focusRequests: UInt32 = 0) -> AbrSourceInfo {
+                       epoch: UInt32 = 1, compatible: Bool = true, focusRequests: UInt32 = 0, dropped: UInt64 = 0,
+                       spatialAnswer: (revision: UInt32, outcome: UInt32)? = nil) -> AbrSourceInfo {
         func fill<T>(_ field: inout T, with byte: UInt8) {
             withUnsafeMutableBytes(of: &field) { raw in for index in raw.indices { raw[index] = byte } }
         }
@@ -192,6 +193,12 @@ enum ModelLifecycleSelfTest {
         info.seconds_since_message = 0.05
         info.seconds_since_result = -1
         info.focus_requests = focusRequests
+        info.frames_dropped_by_plugin = dropped
+        if let spatialAnswer {
+            info.spatial_acks_received = 1
+            info.spatial_ack_revision = spatialAnswer.revision
+            info.spatial_ack_outcome = spatialAnswer.outcome
+        }
         return info
     }
 
@@ -598,15 +605,42 @@ enum ModelLifecycleSelfTest {
         check(model.truePeakEpoch == peaks + 1 && receiver.commands.last == command(ABR_COMMAND_RESET_TRUE_PEAK),
               "a true-peak reset is sent to the plugin")
 
-        // A format change restarts the results stream; a disconnection holds it for the same insert's return.
-        receiver.plugins = [plugin(session: 0x11, persistent: 0xA1, name: "QA Bus", epoch: 2)]
+        // Frames the plugin's own analysis dropped count from the moment its results were attached.
+        receiver.plugins = [plugin(session: 0x11, persistent: 0xA1, name: "QA Bus", dropped: 6)]
+        check(await until(1) { model.droppedFrames == 6 } && model.captureGeneration == results,
+              "frames the plugin's analysis dropped are counted, on the same results stream")
+
+        // A plugin that refuses the user's speaker layout is sent the standard one, and the panel says so.
+        let configured = SpeakerLayoutStore.shared.geometry(for: model.shownLayout, nebula: model.displayOptions.nebula)
+        _ = model.canvasFrame()
+        check(receiver.spatialRevision == configured.revision && model.geometryNotice == nil,
+              "the plugin is sent the user's speaker layout")
+        receiver.plugins = [plugin(session: 0x11, persistent: 0xA1, name: "QA Bus", dropped: 6,
+                                   spatialAnswer: (configured.revision, SpatialConfigWire.Outcome.invalid.rawValue))]
+        await settle(0.4)
+        _ = model.canvasFrame()
+        check(model.geometryNotice == .pluginRefused && receiver.spatialRevision == configured.revision ^ 0x8000_0000
+              && model.displayGeometry(for: model.shownLayout).revision == configured.revision ^ 0x8000_0000,
+              "a plugin that refuses the layout is sent the standard one, a revision apart, with a notice in the panel")
+
+        // Diagnostics can break the bound insert's connection, as a failure would.
+        let disconnects = journal.events.filter { $0 == "bridge.disconnect" }.count
+        model.dropBridgeConnection()
+        check(journal.events.filter { $0 == "bridge.disconnect" }.count == disconnects + 1,
+              "a diagnostic disconnect reaches the receiver for the bound insert")
+
+        // A format change restarts the results stream, its drops counted afresh; a disconnection holds it for the same
+        // insert's return.
+        let formatChanged = plugin(session: 0x11, persistent: 0xA1, name: "QA Bus", epoch: 2, dropped: 6)
+        receiver.plugins = [formatChanged]
         check(await until(1) { model.captureGeneration == results + 1 } && model.running && condition() == .streaming,
               "a format change in the plugin restarts its results stream")
+        check(await until(1) { model.droppedFrames == 0 }, "the plugin's earlier drops are not counted against the new stream")
         let held = model.captureGeneration
         receiver.plugins = []
         check(await until(1) { condition() == .disconnectedHeld } && model.running && model.captureGeneration == held,
               "an insert that disconnects holds its analysis for its return")
-        receiver.plugins = [plugin(session: 0x11, persistent: 0xA1, name: "QA Bus", epoch: 2)]
+        receiver.plugins = [formatChanged]
         check(await until(1) { condition() == .streaming } && model.captureGeneration == held,
               "the same live insert returning carries on with the held analysis")
 
