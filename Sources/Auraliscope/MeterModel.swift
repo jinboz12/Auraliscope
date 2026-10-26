@@ -615,21 +615,20 @@ final class MeterModel: ObservableObject {
             multiFFTTeardown = teardown
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.multiFFTTeardownDelay, execute: teardown)
         }
-        guard let local = worker as? DSPWorker else { return }
         let choice: LegacySTFT = format == .spatial || displayOptions.spectrogramAnalysis == .enhanced
             ? .legacy : legacySTFTSettings
-        local.setLegacySTFT(choice)
+        worker?.setLegacySTFT(choice)
     }
 
     private func applyMultiFFT(_ wanted: MultiFFTConfiguration?) {
         if Diagnostics.demo, Diagnostics.multiFFTTestTone { multiFFTPreview.configure(wanted) }
-        (worker as? DSPWorker)?.setMultiFFT(!sourceIsBridge ? wanted : nil)
+        worker?.setMultiFFT(!sourceIsBridge ? wanted : nil)
     }
 
     func multiFFTFrame() -> MultiFFTSnapshot? {
         guard format == .stereo, running else { return nil }
         if Diagnostics.demo, Diagnostics.multiFFTTestTone { return multiFFTPreview.latest() }
-        return (worker as? DSPWorker)?.latestMultiFFT(frozen: frozen)
+        return worker?.latestMultiFFT(frozen: frozen)
     }
 
     var displayOptions = DisplayOptions.stored

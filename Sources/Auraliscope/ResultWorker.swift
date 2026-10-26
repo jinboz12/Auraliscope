@@ -15,6 +15,12 @@ protocol MeterWorker: AnyObject {
     func setSpectrogramMode(_ mode: SpectrogramMode)
     /// The spatial field's coherence threshold and the shown layout's side surrounds.
     func setSpatialField(threshold: Float, geometry: SpatialGeometry)
+    /// Runs the Multi-FFT engine with `configuration`, or stops it (nil).
+    func setMultiFFT(_ configuration: MultiFFTConfiguration?)
+    /// The newest Multi-FFT frame (a stale one too while `frozen`); nil without one.
+    func latestMultiFFT(frozen: Bool) -> MultiFFTSnapshot?
+    /// The shared display STFT behind the spectrum and spectrogram (`LegacySTFT`).
+    func setLegacySTFT(_ choice: LegacySTFT)
 }
 
 extension DSPWorker: MeterWorker {}
@@ -82,6 +88,11 @@ final class ResultWorker: MeterWorker {
     func setSpectrogramMode(_ mode: SpectrogramMode) {}
     /// The plugin analyses: its threshold travels in SUBSCRIBE (`BridgeSource.setCoherence`).
     func setSpatialField(threshold: Float, geometry: SpatialGeometry) {}
+    /// Multi-FFT needs local PCM; a plugin sends results only.
+    func setMultiFFT(_ configuration: MultiFFTConfiguration?) {}
+    func latestMultiFFT(frozen: Bool) -> MultiFFTSnapshot? { nil }
+    /// The plugin keeps its own analysis.
+    func setLegacySTFT(_ choice: LegacySTFT) {}
 
     deinit {
         stop()
