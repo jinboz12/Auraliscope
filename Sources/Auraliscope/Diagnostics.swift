@@ -21,8 +21,7 @@ enum Diagnostics {
     /// `--settings-apply <language>`: with `--show-settings`, stages that language and Light appearance in Settings
     /// one second after it opens, presses Apply two seconds later (unless `--settings-stage-only`), then prints
     /// the outcome and the menu bar, so the Apply flow can be checked in a snapshot.
-    static let settingsApply: AppLanguage? = CommandLine.arguments.firstIndex(of: "--settings-apply")
-        .flatMap { CommandLine.arguments.indices.contains($0 + 1) ? AppLanguage(rawValue: CommandLine.arguments[$0 + 1]) : nil }
+    static let settingsApply: AppLanguage? = argument("--settings-apply").flatMap(AppLanguage.init(rawValue:))
     static let settingsStageOnly = CommandLine.arguments.contains("--settings-stage-only")
     /// `--settings-preview`: stages Light and the spectrum on the left, previews, then reverts, printing each state.
     static let settingsPreview = CommandLine.arguments.contains("--settings-preview")
@@ -61,20 +60,11 @@ enum Diagnostics {
     static let snapshotPaused = CommandLine.arguments.contains("--snapshot-paused")
     /// With `--snapshot`: drives the demo 10 dB hot, so true-peak overs and the loudness warnings show.
     static let snapshotHot = CommandLine.arguments.contains("--snapshot-hot")
-    static var snapshotSize: CGSize? {
-        let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--snapshot-size"), index + 1 < arguments.count else { return nil }
-        let parts = arguments[index + 1].split(separator: "x").compactMap { Double($0) }
-        return parts.count == 2 ? CGSize(width: parts[0], height: parts[1]) : nil
-    }
+    static var snapshotSize: CGSize? { size("--snapshot-size") }
     /// `--preview-stereo` draws `--render-preview` in Stereo instead of the layout's Spatial view.
     static let previewStereo = CommandLine.arguments.contains("--preview-stereo")
     /// `--preview-layout 7.1.4` picks the layout drawn by `--render-preview`.
-    static var previewLayout: SpeakerLayout {
-        let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--preview-layout"), index + 1 < arguments.count else { return .s916 }
-        return SpeakerLayout(rawValue: arguments[index + 1]) ?? .s916
-    }
+    static var previewLayout: SpeakerLayout { argument("--preview-layout").flatMap(SpeakerLayout.init(rawValue:)) ?? .s916 }
     /// `--preview-audio <file>` fills `--render-preview`'s spectrum and waterfall from an audio file run through the
     /// real analysis (`PreviewAudio`) instead of the synthetic demo, drawn in Stereo; `--preview-output <png>` names
     /// the image (the temporary directory's Auraliscope-preview.png otherwise).
@@ -82,43 +72,34 @@ enum Diagnostics {
     static var previewOutput: URL? { argument("--preview-output").map { URL(fileURLWithPath: $0) } }
     /// `--preview-stage-size WxH`: `--render-preview` draws only the Soundstage, at that size in points (2× pixels),
     /// following the demo or `--preview-audio` as it would live; for checking the Immersive nebula.
-    static var previewStageSize: CGSize? {
-        let parts = argument("--preview-stage-size")?.split(separator: "x").compactMap { Double($0) } ?? []
-        return parts.count == 2 && parts[0] >= 100 && parts[1] >= 100 ? CGSize(width: parts[0], height: parts[1]) : nil
-    }
+    static var previewStageSize: CGSize? { size("--preview-stage-size").flatMap { $0.width >= 100 && $0.height >= 100 ? $0 : nil } }
     /// `--preview-image <png>`: also writes the spectrogram's exported image (`SpectrogramImage`).
     static var previewImage: URL? { argument("--preview-image").map { URL(fileURLWithPath: $0) } }
+    /// The value after `name`, when there is one.
     private static func argument(_ name: String) -> String? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: name), index + 1 < arguments.count else { return nil }
         return arguments[index + 1]
     }
+    /// The two numbers after `name`, written with `separator` between them; nil when absent or not two numbers.
+    private static func numbers(_ name: String, separator: Character) -> (Double, Double)? {
+        let parts = argument(name)?.split(separator: separator).compactMap { Double($0) } ?? []
+        return parts.count == 2 ? (parts[0], parts[1]) : nil
+    }
+    /// A point written `x,y` (points).
+    private static func point(_ name: String) -> CGPoint? { numbers(name, separator: ",").map { CGPoint(x: $0.0, y: $0.1) } }
+    /// A size written `WxH` (points).
+    private static func size(_ name: String) -> CGSize? { numbers(name, separator: "x").map { CGSize(width: $0.0, height: $0.1) } }
     /// `--snapshot-inspect x,y` holds the Spectrum well's inspector at that point of the well (points), so a
     /// snapshot shows its crosshair and readout without a pointer.
-    static var inspectPoint: CGPoint? {
-        let parts = argument("--snapshot-inspect")?.split(separator: ",").compactMap { Double($0) } ?? []
-        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
-    }
+    static var inspectPoint: CGPoint? { point("--snapshot-inspect") }
     /// `--snapshot-dome-probe x,y` holds the Immersive dome's pointer readout at that point of the well (points).
-    static var domeProbePoint: CGPoint? {
-        let parts = argument("--snapshot-dome-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
-        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
-    }
+    static var domeProbePoint: CGPoint? { point("--snapshot-dome-probe") }
     /// `--snapshot-multifft-probe x,y` holds the Multi-FFT Spectrum's hover readout at that point of its plot (points).
-    static var multiFFTProbePoint: CGPoint? {
-        let parts = argument("--snapshot-multifft-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
-        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
-    }
+    static var multiFFTProbePoint: CGPoint? { point("--snapshot-multifft-probe") }
     /// `--snapshot-wave-probe x,y` holds the Waveform's pointer cursor and readout at that point of the well.
-    static var waveProbePoint: CGPoint? {
-        let parts = argument("--snapshot-wave-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
-        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
-    }
-    static var requestedDeviceID: UInt32? {
-        let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--input-device"), index + 1 < arguments.count else { return nil }
-        return UInt32(arguments[index + 1])
-    }
+    static var waveProbePoint: CGPoint? { point("--snapshot-wave-probe") }
+    static var requestedDeviceID: UInt32? { argument("--input-device").flatMap { UInt32($0) } }
     static func log(_ message: String) {
         if enabled {
             print(message)
