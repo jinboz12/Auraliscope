@@ -18,7 +18,7 @@ FILES = (".gitignore", "Package.swift", "README.md", "COPYRIGHT.md", "LICENSE", 
          "Bridge/README.md", "Bridge/ARCHITECTURE.md", "Bridge/PROTOCOL.md", "Bridge/THIRD_PARTY_NOTICES.md",
          "docs/INSTALLATION.md", "docs/THIRD_PARTY_NOTICES.md", "docs/LOUDNESS_REFERENCES.md",
          "docs/SPEAKER_LAYOUT_FORMAT.md", "docs/ASSET_RIGHTS.md", "docs/SOURCE_DISTRIBUTION.md",
-         "docs/2.0_RC2_RELEASE_NOTES.md", "docs/MULTIFFT_ARCHITECTURE.md", "docs/2.0_RC1_RELEASE_NOTES.md", "docs/UPDATE_LOG_since_1.2.2.md")
+         "docs/2.0_RC3_RELEASE_NOTES.md", "docs/2.0_RC2_RELEASE_NOTES.md", "docs/MULTIFFT_ARCHITECTURE.md", "docs/2.0_RC1_RELEASE_NOTES.md", "docs/UPDATE_LOG_since_1.2.2.md")
 
 
 def main():
@@ -29,7 +29,8 @@ def main():
     args = parser.parse_args()
     info = plistlib.loads((ROOT / "Resources/Info.plist").read_bytes())
     build = info["CFBundleVersion"]
-    prefix = f"Auraliscope-2.0-rc2-build{build}"
+    # "2.0 rc 3" → "2.0-rc3": the archive is named after the release label.
+    prefix = f"Auraliscope-{info['AuraliscopeVersionLabel'].replace(' rc ', '-rc').replace(' ', '-')}-build{build}"
     paths = set(ROOT / name for name in FILES)
     for name in TREES:
         paths.update(p for p in (ROOT / name).rglob("*") if p.is_file())

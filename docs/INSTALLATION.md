@@ -1,8 +1,8 @@
-# Install Auraliscope 2.0 RC 2
+# Install Auraliscope 2.0 RC 3
 
 ## Installer
 
-1. Download `Auraliscope 2.0 rc 2 build 118.pkg`. Quit Auraliscope, LABS and your DAW.
+1. Download `Auraliscope 2.0 rc 3 build 120.pkg`. Quit Auraliscope, LABS and your DAW.
 2. Open the package. If blocked, use System Settings → Privacy & Security → Open Anyway after checking the source.
    The installer is unsigned and not notarized. Administrator authentication takes place in macOS, never in chat.
 3. Select the app, VST3 and/or Audio Unit. The app goes to `/Applications/Auraliscope.app`; plugins go to

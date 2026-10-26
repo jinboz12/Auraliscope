@@ -1,17 +1,53 @@
-# Auraliscope — update log from 1.2.2 (build 62) to 2.0 RC 2 (build 118)
+# Auraliscope — update log from 1.2.2 (build 62) to 2.0 RC 3 (build 120)
 
 Auraliscope 2.0 is the largest update since the first release. It adds a DAW plugin, immersive metering up to 9.1.6,
 a rebuilt spectrogram, file analysis with a printable report, a new interface with flexible layouts, six languages and
-settings presets. This log covers every build from 63 to 118, newest first, then the whole 2.0 picture in one list.
+settings presets. This log covers every build from 63 to 120, newest first, then the whole 2.0 picture in one list.
 
 | Builds | Stage | In short |
 | --- | --- | --- |
+| 120 | 2.0 RC 3 (internal QA) | A capture that keeps failing restarts itself; lost audio counted; two DAW plugin fixes |
+| 119 | (not packaged) | Tilt slider, linear frequency scale, Multi-FFT hover readout and settings, no welcome after updates |
 | 118 | 2.0 RC 2 | Multi-FFT matches the other panels; opt-in pre-release updates |
 | 107–117 | 2.0 RC 1 | Stability, licensing, appearance fixes, welcome tutorial, settings presets, feedback links, Multi-FFT Beta |
 | 92–106 | 2.0 beta | File analysis, new report, Dock mode, speaker layouts, Radiant body, routing, themes, languages |
 | 91 | 2.0 | First 2.0 package: LABS work brought into the normal app |
 | 89–90 | 2.0dev | Panel windows, layouts, strip, calibration, frame rate |
 | 63–88 | 1.3dev (tested as "Auraliscope LABS") | Bridge plugin, immersive Soundstage, spectrogram rewrite, redesign |
+
+---
+
+## 2.0 RC 3
+
+### Build 120 — capture recovery and DAW plugin fixes (internal QA)
+
+- A device capture that keeps failing (every audio cycle refused, as when its sample rate changed without notice, or
+  slices longer than the capture holds) restarts itself. After about a second of lost audio it restarts at once, then 2 s
+  and 8 s later if needed, with the status saying so. A restart counts only once audio arrives again; at the same rate
+  the measurement carries on across one marked break, at a new rate it starts afresh. After three restarts that don't
+  help, capture stops with the reason and Start Capture tries again; nothing restarts it by itself until then. Pause, a
+  source change, unplugging or a device change cancel a pending restart. Normal rate changes, unplugging, pause and DAW
+  plugin sources are unchanged.
+- Audio a device refused, audio too long for the capture, and the cut-off end of an over-long output capture are counted
+  as dropped and marked as one break where audio resumes (they used to vanish silently).
+- DAW plugin sources: a saved insert found again by itself no longer re-selects itself a moment after a copy appears
+  (it waits for your choice); a plugin whose measurement you paused here resumes when you switch away or stop.
+- Under the hood: code split into smaller files, settings keys in one place, one shared log-frequency axis (measurements
+  bit-identical in the reference tests); new automated checks, including 163 model checks with simulated devices and
+  plugins; `--capture-selftest` also tests a capture restart.
+
+### Build 119 — tilt, frequency scale and Multi-FFT settings (part of 120)
+
+- Spectrum and spectrogram tilt is a slider, 0 to 6 dB per octave in half-dB steps (was three fixed choices); the old
+  choice carries over. A Log or Linear (from 0 Hz) frequency scale. Shared STFT: Legacy (build 113's analysis) or a
+  shared Hann STFT at a chosen size.
+- Multi-FFT: hover readout of pitch and each curve's level, its own tilt and frequency scale, reorganised settings
+  (preset and priority, display, fusion, each band), each explained. The switch left the Spectrum's settings: show or
+  hide the panel like any other.
+- The welcome sheet no longer appears after every update: only on the very first launch, when "show on launch" is on,
+  or when audio access is missing.
+- The update check finds the installer among GitHub's release files (spaces become dots there), so Download Installer
+  is offered instead of only the release page.
 
 ---
 
