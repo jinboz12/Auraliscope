@@ -542,42 +542,6 @@ final class SoundstageScene: CanvasScene {
         }
     }
 
-    /// Immersive band image: where each `StereoBands` band sits in the room, in the stereometer's band colours.
-    /// Each orb is the band's energy centroid in 3D over every routed speaker but LFE, so its direction says where
-    /// the band comes from, its distance from the listener how focused it is and its height how much the upper
-    /// layer carries it: a bass anchored in the front and air thrown into the surrounds and ceiling read apart at
-    /// a glance. It follows the Immersive presence, so it is gone in Stereo (the stereometer's band view) and Mono.
-    private func drawBandImage(_ b: inout ShapeBuilder, layout: SoundstageLayout, frame: CanvasFrame,
-                               resolution: StereoBands.Resolution) {
-        typealias P3 = SoundstageLayout.Point3
-        let p = presence
-        guard p > 0.002, frame.shown else { return }
-        let power = frame.snapshot.roleBandPower
-        guard power.count == StereoBands.roleFloats else { return }
-        for (group, members) in resolution.groups.enumerated() {
-            var centroid = P3(x: 0, y: 0, z: 0)
-            var total: CGFloat = 0
-            for speaker in layout.speakers where speaker.group != .lfe && frame.activeRoles[speaker.role] {
-                let energy = CGFloat(members.reduce(Float(0)) { $0 + max(0, power[speaker.role * StereoBands.count + $1]) })
-                centroid = centroid + layout.position(speaker) * energy
-                total += energy
-            }
-            // Below −80 dBFS the band has nothing to point with.
-            guard total > 1e-8 else { continue }
-            centroid = centroid * (0.92 / total)
-            let hue = Theme.bandRGB(resolution, group)
-            let at = layout.project(centroid)
-            let level = MeterScale.position(decibels: 10 * log10(Float(total)) + 12)
-            let alpha = (0.45 + 0.55 * level) * p
-            if centroid.y > 0.005 {
-                b.line(layout.point(P3(x: centroid.x, y: 0, z: centroid.z)), at.point, width: 1, hue.simd(0.35 * alpha))
-            }
-            b.glow(at.point, radius: (9 + 8 * CGFloat(level)) * at.scale, hue.simd(0.40 * alpha))
-            b.disk(at.point, radius: 4.75 * at.scale, Theme.displayRGB.simd(0.9 * p))
-            b.disk(at.point, radius: 3.5 * at.scale, hue.simd(alpha))
-        }
-    }
-
     /// A closed polygon with each edge bent toward a Catmull-Rom curve through the vertices by `amount` (0 keeps
     /// the straight edges, 1 is the full curve), so the field can morph between the two.
     private static func smoothed(_ points: [CGPoint], amount: CGFloat, steps: Int = 6) -> [CGPoint] {
