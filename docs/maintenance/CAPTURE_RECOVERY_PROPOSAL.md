@@ -1,7 +1,9 @@
 # Capture recovery proposal (P0-1 sustained refusal)
 
-Status: **design only, not implemented.** Phase 6, batch D. Implementation needs separate authorization. Code references
-are to branch `maintenance/phase6-correctness`.
+Status: **implemented in Phase 7** (branch `maintenance/phase7-capture-recovery`); `PHASE7_FINAL_REPORT.md` says how
+the implementation differs (no work items or coalescing, no buffer-size listener, a capture-only restart that keeps the
+ring rather than marking a fresh one). Written in Phase 6, batch D, as design only; code references below are to branch
+`maintenance/phase6-correctness`.
 
 ## 1. Summary
 

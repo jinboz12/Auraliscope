@@ -57,6 +57,8 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
   or longer than its storage) calls `channel_ring_lose`: the frames count as dropped at once, and the break is marked
   where its next write starts. A ring that is full marks its own overflow. `BaselineChecks.swift` pins both
   (`captureRefusalsAreCountedAsBreaks`, `tapTruncationIsCountedAsBreak`).
+- The IO callbacks also keep the capture's health record (`CaptureHealth`): relaxed atomic loads and stores by the IO
+  thread alone, read by the main thread for capture recovery. Never a read-modify-write, fence or signal there.
 
 ## Contracts that span files
 
@@ -76,6 +78,10 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
   tables; a SwiftUI view that calls `L(` observes `Localizer.shared`; `scripts/check-localization.py` enforces both
   and the glossary.
 - **Names:** never name third-party analyzers or brands in code, UI, keys or docs.
+- **Capture recovery:** `CaptureRecoveryPolicy` decisions belong to `MeterModel.captureSession`, which every `stop()`
+  and `pause()` changes. A new path that stops or restarts capture without them must change it too, or a pending
+  restart could reach another capture. Recovery's own restart (`AudioCapture.restart`) keeps the ring, so lost frames
+  stay counted and marked: never clear it there. `--test-model-lifecycle` checks both.
 
 ## Style
 
