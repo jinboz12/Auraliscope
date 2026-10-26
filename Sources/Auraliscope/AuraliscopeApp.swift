@@ -36,7 +36,7 @@ enum Launcher {
 
 struct AuraliscopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var model = MeterModel()
+    @StateObject private var model = MeterModel(dependencies: ModelLifecycleSelfTest.dependencies() ?? .live)
     @ObservedObject private var l10n = Localizer.shared
     @AppStorage(WelcomeSheet.showOnLaunchKey) private var showWelcomeOnLaunch = true
     @StateObject private var welcome = WelcomeCoordinator()

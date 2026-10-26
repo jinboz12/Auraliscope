@@ -666,7 +666,8 @@ final class MeterModel: ObservableObject {
     private var droppedBefore: UInt64 = 0
     let readouts = Readouts()
 
-    private let capture = AudioCapture()
+    private let dependencies: MeterModelDependencies
+    private let capture: CaptureBackend?
     private var worker: MeterWorker?
 
     /// Tests only (`--test-model-worker`): capture stays off, and the given worker stands in for the analysis.
@@ -700,7 +701,7 @@ final class MeterModel: ObservableObject {
     private var paused: PausedSession?
 
     // DAW Bridge: plugin instances are listed with the devices and selected like one.
-    private let bridge: BridgeReceiver?
+    private let bridge: BridgeReceiving?
     /// The insert chosen last, saved with its context so the same insert can be found again (BridgeRestoration).
     private var bridgeSaved: BridgeSelection?
     /// The inserts that could be the saved one while that is ambiguous (their sessions); empty otherwise.
@@ -739,7 +740,9 @@ final class MeterModel: ObservableObject {
     /// The app's model, for diagnostics that act outside the views (`--snapshot-report`).
     static weak var diagnosticInstance: MeterModel?
 
-    init() {
+    init(dependencies: MeterModelDependencies = .live) {
+        self.dependencies = dependencies
+        capture = dependencies.makeCapture()
         speakerLayout = UserDefaults.standard.string(forKey: Self.speakerLayoutKey).flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
         let savedMode = UserDefaults.standard.string(forKey: Self.formatModeKey)
         let showMono = UserDefaults.standard.bool(forKey: Self.showMonoModeKey)
@@ -747,11 +750,11 @@ final class MeterModel: ObservableObject {
         // 2.0 stored the pinned multichannel mode as "surround". A pinned Mono needs Mono enabled.
         let mode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
         formatMode = mode == .mono && !showMono ? .stereo : mode
-        switch BridgeReceiver.start() {
+        switch dependencies.startReceiver() {
         case let .success(receiver): bridge = receiver; bridgeError = nil
         case let .failure(error): bridge = nil; bridgeError = error.reason
         }
-        devices = AudioDevices.availableSources()
+        devices = dependencies.availableSources()
         let savedUID = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey)
         let savedOutput = UserDefaults.standard.bool(forKey: Self.inputDeviceIsOutputKey)
         let requested = devices.first { !$0.output && $0.device == Diagnostics.requestedDeviceID }
@@ -810,19 +813,21 @@ final class MeterModel: ObservableObject {
                 self.configureSpectrumArchitecture()
             }
         }
-        hardwareObserver = HardwareObserver(devicesChanged: { [weak self] in
-            Task { @MainActor in self?.refreshDevices() }
-        }, configurationChanged: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.wantsCapture else { return }
-                let previousID = self.selectedID
-                let wasRunning = self.running
-                self.refreshDevices()
-                if wasRunning && self.selectedID == previousID && self.selectedDevice != nil { self.restart() }
-            }
-        }, speakersChanged: { [weak self] in
-            Task { @MainActor in self?.deviceSpeakersChanged() }
-        })
+        if dependencies.observesHardware {
+            hardwareObserver = HardwareObserver(devicesChanged: { [weak self] in
+                Task { @MainActor in self?.refreshDevices() }
+            }, configurationChanged: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.wantsCapture else { return }
+                    let previousID = self.selectedID
+                    let wasRunning = self.running
+                    self.refreshDevices()
+                    if wasRunning && self.selectedID == previousID && self.selectedDevice != nil { self.restart() }
+                }
+            }, speakersChanged: { [weak self] in
+                Task { @MainActor in self?.deviceSpeakersChanged() }
+            })
+        }
         if bridge != nil {
             let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.pollBridge() }
@@ -835,6 +840,7 @@ final class MeterModel: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { if let self { BridgeSelfTest.runIfRequested(model: self) } }
             MainActor.assumeIsolated { if let self { ModelWorkerSelfTest.runIfRequested(model: self) } }
+            MainActor.assumeIsolated { if let self { ModelLifecycleSelfTest.runIfRequested(model: self) } }
         }
     }
 
@@ -1051,7 +1057,7 @@ final class MeterModel: ObservableObject {
     }
 
     func refreshDevices() {
-        refreshDevices(using: AudioDevices.availableSources() + bridgeDevices)
+        refreshDevices(using: dependencies.availableSources() + bridgeDevices)
     }
 
     /// Connected DAW plugin instances as sources, in connection order. One of another protocol version is left
@@ -1500,8 +1506,8 @@ final class MeterModel: ObservableObject {
         do {
             try capture.start(device: device, sourceForRole: capturedSources)
             streamID = streamID == 1_000_000 ? 1 : streamID + 1
-            guard let worker = DSPWorker(ring: capture.ring, sampleRate: capture.sampleRate, streamID: streamID,
-                                         activeRoles: routedRoles, detector: makeDetector()) else {
+            guard let worker = dependencies.makeLocalWorker(capture.ring, capture.sampleRate, streamID, routedRoles,
+                                                            makeDetector()) else {
                 capture.stop()
                 status = .dspFailed
                 return
@@ -1594,7 +1600,7 @@ final class MeterModel: ObservableObject {
     /// Starts analysis of a DAW plugin instance: a new pipeline at the plugin's own sample rate, then the
     /// receiver writes that instance's audio into the ring. Every format change comes back through here, so the
     /// analyzers are always configured for exactly the audio they receive.
-    private func startBridge(_ device: InputDevice, capture: AudioCapture) {
+    private func startBridge(_ device: InputDevice, capture: CaptureBackend) {
         guard let bridge else {
             status = .failure(StatusMessage { L("DAW plugin receiver unavailable: %@", self.bridgeError ?? "") })
             return
