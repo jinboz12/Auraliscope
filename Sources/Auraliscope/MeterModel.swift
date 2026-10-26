@@ -1511,7 +1511,7 @@ final class MeterModel: ObservableObject {
         captureStarted = Date()
         droppedFrames = 0
         running = true
-        link.remember(source)
+        link.attached(source)
         DiagnosticLog.event(String(format: "DAW plugin results: %.0f Hz, %d ch %@, %@ %@ in %@, analysis generation %u",
                                    source.sampleRate, source.channels, source.layoutName, source.plugin, source.pluginVersion,
                                    source.hostName, source.generation))

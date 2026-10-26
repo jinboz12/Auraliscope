@@ -160,8 +160,15 @@ final class BridgeLink {
         }
     }
 
+    /// The bound insert's results stream started: a final choice is remembered with its current context. A
+    /// provisional one is not, until it holds (`checkBound`): meanwhile the saved insert stays the one chosen before,
+    /// so restoration never takes the provisional instance for "the same live insert" and binds it by itself.
+    func attached(_ source: BridgeSource) {
+        if provisionalUntil == nil { remember(source) }
+    }
+
     /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
-    func remember(_ source: BridgeSource) {
+    private func remember(_ source: BridgeSource) {
         var selection = BridgeSelection(source.candidate,
                                         knownCopies: saved?.persistent == source.persistentKey ? saved?.knownCopies : nil)
         if selection.noteCopies(among: sources.filter(\.compatible).map(\.candidate)) {

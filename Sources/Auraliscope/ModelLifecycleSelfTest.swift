@@ -670,16 +670,43 @@ enum ModelLifecycleSelfTest {
               "a new instance of the saved insert is not taken at once: restoration waits for others to load")
         check(await until(2) { model.selectedID.bridge == key(returned) && model.running && condition() == .streaming },
               "the saved insert found again as a new instance is measured after that moment")
+        check(BridgeSelection.load()?.session == key(copy),
+              "a provisional choice is not saved: the saved insert is still the one the person chose")
         let copyOfReturned = plugin(session: 0x15, persistent: 0xA3, name: "QA Bus", copyOf: 0xA2)
         receiver.plugins = [returned, copyOfReturned]
         check(await until(1) { condition() == .ambiguous(2) } && !model.running,
               "a copy appearing while that choice is provisional makes it ambiguous again")
+        // Ambiguous until something tells the inserts apart: polls past the settle delay bind neither by themselves.
+        await settle(1.6)
+        check(condition() == .ambiguous(2) && !model.running && receiver.selected == nil
+              && model.bridgeCandidates == [key(returned), key(copyOfReturned)]
+              && BridgeSelection.load()?.session == key(copy),
+              "the ambiguity holds: neither insert is bound again by itself, and the saved choice is unchanged")
+        // The copy going away leaves one insert claiming the saved identity: found again, provisionally.
+        receiver.plugins = [returned]
+        check(await until(2.5) { model.selectedID.bridge == key(returned) && model.running && condition() == .streaming }
+              && model.bridgeCandidates.isEmpty,
+              "once the copy goes away, the only insert claiming the saved identity is found again")
+        // Its connection dropping and coming back within the provisional span: the analysis carries on, and the choice
+        // stays provisional (a copy appearing then still makes it ambiguous).
+        let provisionalStream = model.captureGeneration
+        receiver.plugins = []
+        _ = await until(1) { condition() == .disconnectedHeld }
+        receiver.plugins = [returned]
+        check(await until(2.5) { condition() == .streaming } && model.running && model.captureGeneration == provisionalStream,
+              "a provisional insert whose connection comes back carries on with its analysis")
+        receiver.plugins = [returned, copyOfReturned]
+        check(await until(1) { condition() == .ambiguous(2) } && !model.running,
+              "its return does not make the choice final: a copy appearing then makes it ambiguous")
+        // The person's choice ends it, for good: the copy is then known not to be it.
+        guard let returnedDevice = device(returned) else { return check(false, "the found insert is listed") }
+        model.select(returnedDevice.id)
+        check(model.running && condition() == .streaming && model.bridgeCandidates.isEmpty
+              && BridgeSelection.load()?.session == key(returned)
+              && BridgeSelection.load()?.knownCopies == [BridgeSource(copyOfReturned).persistentKey],
+              "choosing one of the ambiguous inserts measures it and saves it, the copy known not to be it")
         await settle(0.6)
-        // KNOWN ISSUE, kept as it is: the provisional insert was remembered with its session when its results stream
-        // started (`startBridge` calls `remember`), so the next poll binds it again as "the same live instance" and the
-        // ambiguity lasts one poll, against `BridgeRestoration`'s rule of never choosing between inserts by chance.
-        check(model.running && model.selectedID.bridge == key(returned) && model.bridgeCandidates.isEmpty,
-              "KNOWN ISSUE (current behaviour): the provisional choice is bound again within a poll instead of staying ambiguous")
+        check(model.running && model.selectedID == returnedDevice.id, "the person's choice holds beside the copy")
 
         // A click in another plugin's window selects that insert, from a pause too.
         let other = plugin(session: 0x16, persistent: 0xA4, name: "QA Other")
@@ -727,15 +754,17 @@ enum ModelLifecycleSelfTest {
         _ = await until(1) { condition() == .disconnectedHeld }
         let reloaded = plugin(session: 0x23, persistent: 0xB1, name: "QA Keep")
         receiver.plugins = [reloaded, duplicate]
-        check(await until(2.5) { model.selectedID.bridge == key(reloaded) && model.running } && model.bridgeCandidates.isEmpty,
-              "the saved insert returning beside a known copy is found again, not ambiguous")
+        check(await until(2.5) { model.selectedID.bridge == key(reloaded) && model.running } && model.bridgeCandidates.isEmpty
+              && BridgeSelection.load()?.session == key(keeper),
+              "the saved insert returning beside a known copy is found again, not ambiguous (provisionally, not yet saved)")
         await settle(5.3)
         let later = plugin(session: 0x24, persistent: 0xB3, name: "QA Keep", copyOf: 0xB1)
         receiver.plugins = [reloaded, duplicate, later]
         await settle(0.8)
         check(model.selectedID.bridge == key(reloaded) && model.running && model.bridgeCandidates.isEmpty
+              && BridgeSelection.load()?.session == key(reloaded)
               && BridgeSelection.load()?.knownCopies?.contains(BridgeSource(later).persistentKey) == true,
-              "after the provisional span a new copy no longer makes the found insert ambiguous, and is remembered")
+              "after the provisional span the found insert is saved, and a new copy no longer makes it ambiguous but is remembered")
 
         // Back to Audio devices: the device chosen last, captured locally, the plugin unsubscribed.
         let back = model.preferredDeviceSource()
