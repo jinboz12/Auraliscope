@@ -526,6 +526,7 @@ enum ModelLifecycleSelfTest {
 
         await checkPlugins(model, check: check, until: until, settle: settle)
         await checkPluginPause(model, check: check, until: until, settle: settle)
+        await checkTransitions(model, check: check, until: until, settle: settle)
 
         restoreDomain()
         print("PASS: model lifecycle checks complete")
@@ -888,5 +889,178 @@ enum ModelLifecycleSelfTest {
         model.select(outputB.id)
         receiver.plugins = []
         check(model.running && !model.showingBridgeResults, "back on the device after the pause checks")
+    }
+
+    /// Transitions back to back, as quick clicks or a host reloading make them: every analysis and capture started is
+    /// stopped exactly once, nothing is subscribed or sent twice, and the model ends in the last state asked for.
+    @MainActor
+    private static func checkTransitions(_ model: MeterModel, check: (Bool, String) -> Void,
+                                         until: (Double, () -> Bool) async -> Bool, settle: (Double) async -> Void) async {
+        func key(_ info: AbrSourceInfo) -> String { BridgeSource(info).sessionKey }
+        func device(_ info: AbrSourceInfo) -> InputDevice? { model.devices.first { $0.bridgeSession == key(info) } }
+        func condition() -> BridgeCondition? {
+            if case let .bridge(_, condition, _, _) = model.status { return condition }
+            return nil
+        }
+        func capturing(_ device: InputDevice) -> Bool {
+            if case let .capturing(name, output, channels, _) = model.status {
+                return name == device.name && output == device.output && channels == Int(device.channels)
+            }
+            return false
+        }
+        func start(_ device: InputDevice) -> String { "capture.start \(device.uid) \(routing(model.sourceForRole))" }
+        func count(_ prefix: String, since mark: Int) -> Int { journal.events[mark...].filter { $0.hasPrefix(prefix) }.count }
+        /// The streams of the stand-in analyses made ("worker.make ") or stopped ("worker.stop ") since `mark`.
+        func streams(_ prefix: String, since mark: Int) -> [UInt32] {
+            journal.events[mark...].compactMap { $0.hasPrefix(prefix) ? UInt32($0.dropFirst(prefix.count)) : nil }
+        }
+        guard let capture else { return check(false, "the stand-in capture has a ring") }
+
+        // Twenty quick switches between devices: each replaced analysis and capture is stopped once, before the next.
+        model.select(outputB.id)
+        var mark = journal.mark
+        let first = model.captureGeneration
+        for _ in 0..<10 {
+            model.select(outputA.id)
+            model.select(outputB.id)
+        }
+        var made = streams("worker.make ", since: mark)
+        check(model.running && capturing(outputB) && made.count == 20 && made.last == model.captureGeneration
+              && streams("worker.stop ", since: mark) == [first] + made.dropLast()
+              && count("capture.start", since: mark) == 20 && count("capture.stop", since: mark) == 20,
+              "twenty quick device switches stop each replaced analysis and capture once, and measure the last")
+
+        // Ten pauses and resumes: the same analysis throughout, capture stopped and started once each time.
+        mark = journal.mark
+        let held = model.captureGeneration
+        let dropped = model.droppedFrames
+        for _ in 0..<10 {
+            model.toggleCapture()
+            model.toggleCapture()
+        }
+        let cycle = ["worker.pause \(held)", "capture.stop", start(outputB), "worker.resume \(held)"]
+        check(model.running && capturing(outputB) && model.captureGeneration == held && model.droppedFrames == dropped
+              && journal.lifecycle(since: mark) == Array((0..<10).map { _ in cycle }.joined()),
+              "ten pauses and resumes carry on with one analysis, stopping and starting capture once each time")
+
+        // Quick switches between a plugin and a device end on the last one, with no command sent to the plugin.
+        let bus = plugin(session: 0x51, persistent: 0xE1, name: "QA Switch")
+        receiver.plugins = [bus]
+        guard await until(1, { device(bus) != nil }), let busDevice = device(bus) else {
+            return check(false, "the insert is listed")
+        }
+        mark = journal.mark
+        var sent = receiver.sent.count
+        let deviceStream = model.captureGeneration
+        for _ in 0..<5 {
+            model.select(busDevice.id)
+            model.select(outputA.id)
+        }
+        model.select(busDevice.id)
+        made = streams("worker.make ", since: mark)
+        check(model.running && condition() == .streaming && model.showingBridgeResults
+              && receiver.selected.map(BridgeSource.hex) == key(bus) && made.count == 5
+              && streams("worker.stop ", since: mark) == [deviceStream] + made
+              && count("bridge.attach", since: mark) == 6 && count("capture.start", since: mark) == 5
+              && receiver.sent.count == sent,
+              "quick switches between a plugin and a device stop each device analysis once and end on the plugin")
+
+        // Ten pauses and resumes of the plugin: one pause and one resume each, in order, on one results stream.
+        mark = journal.mark
+        sent = receiver.sent.count
+        let results = model.captureGeneration
+        for _ in 0..<10 {
+            model.toggleCapture()
+            model.toggleCapture()
+        }
+        let commands = ["\(ABR_COMMAND_PAUSE) \(key(bus))", "\(ABR_COMMAND_RESUME) \(key(bus))"]
+        check(model.running && condition() == .streaming && model.captureGeneration == results
+              && Array(receiver.sent[sent...]) == Array((0..<10).map { _ in commands }.joined())
+              && count("bridge.select", since: mark) == 0 && count("bridge.attach", since: mark) == 0,
+              "ten pauses and resumes of a plugin send one pause and one resume each, in order, on one results stream")
+
+        // The insert's connection lost and back five times: the held analysis carries on, nothing subscribed or sent.
+        mark = journal.mark
+        sent = receiver.sent.count
+        var cycles = 0
+        for _ in 0..<5 {
+            receiver.plugins = []
+            let lost = await until(1) { condition() == .disconnectedHeld }
+            receiver.plugins = [bus]
+            let back = await until(1) { condition() == .streaming }
+            if lost && back { cycles += 1 }
+        }
+        check(cycles == 5 && model.running && model.captureGeneration == results && receiver.sent.count == sent
+              && count("bridge.select", since: mark) == 0 && count("bridge.attach", since: mark) == 0,
+              "an insert lost and back five times carries on with its held analysis, with nothing subscribed or sent")
+
+        // The project opened twice (two holders of the saved identity, no copy): ambiguous, and polls change nothing;
+        // the saved live insert coming back ends it, as the same insert.
+        receiver.plugins = []
+        _ = await until(1) { condition() == .disconnectedHeld }
+        let twinA = plugin(session: 0x52, persistent: 0xE1, name: "QA Switch")
+        let twinB = plugin(session: 0x53, persistent: 0xE1, name: "QA Switch")
+        receiver.plugins = [twinA, twinB]
+        check(await until(1.5) { condition() == .ambiguous(2) } && !model.running && receiver.selected == nil
+              && model.bridgeCandidates == [key(twinA), key(twinB)],
+              "two holders of the saved identity are ambiguous: nothing analysed, nothing subscribed")
+        mark = journal.mark
+        sent = receiver.sent.count
+        await settle(1.2)
+        check(condition() == .ambiguous(2) && journal.mark == mark && receiver.sent.count == sent,
+              "polls while ambiguous change nothing and ask nothing of the receiver")
+        receiver.plugins = [twinA, twinB, bus]
+        check(await until(1) { model.selectedID.bridge == key(bus) && model.running && condition() == .streaming }
+              && model.bridgeCandidates.isEmpty && BridgeSelection.load()?.session == key(bus),
+              "the saved live insert coming back ends the ambiguity: the same insert is measured again")
+
+        // Starts that fail three times in a row, then one that works: nothing is left from the failures.
+        mark = journal.mark
+        capture.failNextStart = true
+        model.select(outputA.id)
+        for _ in 0..<2 {
+            capture.failNextStart = true
+            model.resume()
+        }
+        let failedThrice = !model.running
+        model.resume()
+        let attempt = ["capture.stop", start(outputA)]
+        check(failedThrice && model.running && capturing(outputA)
+              && journal.lifecycle(since: mark) == Array((0..<4).map { _ in attempt }.joined()) + ["worker.make \(model.captureGeneration)"],
+              "three failed starts leave no analysis behind; the fourth measures with one new analysis")
+
+        // Multi-FFT across quick switches: each new stereo analysis gets the engine while its panel shows; a plugin
+        // gets none; the hidden panel's delayed stop goes only to the analysis running when it fires.
+        let placement = PanelPlacement.shared
+        placement.setShown(.multiFFT, true)
+        model.multiFFTPanelVisible(true)
+        model.select(outputB.id)
+        model.select(outputA.id)
+        model.select(outputB.id)
+        let engines = Array(workers.suffix(3))
+        let given = engines.map(\.multiFFTConfigurations.count)
+        check(engines.allSatisfy(\.multiFFTActive) && Set(engines.map(\.stream)).count == 3,
+              "each analysis made by quick switches is given the Multi-FFT engine while its panel shows")
+        await settle(0.5)
+        check(engines.prefix(2).map(\.multiFFTConfigurations.count) == Array(given.prefix(2)),
+              "an analysis replaced by a switch is given nothing more")
+        model.select(busDevice.id)
+        check(model.running && model.multiFFTFrame() == nil, "a plugin source gets no Multi-FFT")
+        model.select(outputA.id)
+        guard let live = workers.last else { return check(false, "an analysis was made") }
+        check(live.multiFFTActive, "back on a device after a plugin, the new analysis gets the engine again")
+        placement.setShown(.multiFFT, false)
+        model.multiFFTPanelVisible(false)
+        model.select(outputB.id)
+        model.select(outputA.id)
+        let between = workers[workers.count - 2], last = workers[workers.count - 1]
+        let liveCalls = live.multiFFTConfigurations.count
+        await settle(MeterModel.multiFFTTeardownDelay + 0.4)
+        check(live.multiFFTConfigurations.count == liveCalls && between.multiFFTConfigurations.isEmpty
+              && !last.multiFFTConfigurations.isEmpty && last.multiFFTConfigurations.allSatisfy { $0 == nil },
+              "after two quick switches the hidden panel's delayed stop reaches only the analysis running when it fires")
+
+        receiver.plugins = []
+        check(model.running && capturing(outputA), "the transitions end on the device last chosen")
     }
 }
