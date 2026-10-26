@@ -710,6 +710,33 @@ enum ModelLifecycleSelfTest {
               && film.enumerated().allSatisfy { model.sourceForRole[$0.element] == Int32($0.offset) },
               "an immersive bus is drawn in its own format, each channel routed to the speaker it reports, in the bus's order")
 
+        // A copy appearing while its original is bound is known not to be it: when the original returns as a new
+        // instance beside that copy, it is found again (after the settle delay), not ambiguous. Once the provisional span
+        // has passed, a new copy no longer makes that choice ambiguous either.
+        let keeper = plugin(session: 0x21, persistent: 0xB1, name: "QA Keep")
+        receiver.plugins = [keeper]
+        _ = await until(1) { device(keeper) != nil }
+        guard let keeperDevice = device(keeper) else { return check(false, "the insert is listed") }
+        model.select(keeperDevice.id)
+        let duplicate = plugin(session: 0x22, persistent: 0xB2, name: "QA Keep", copyOf: 0xB1)
+        receiver.plugins = [keeper, duplicate]
+        check(await until(1) { BridgeSelection.load()?.knownCopies == [BridgeSource(duplicate).persistentKey] }
+              && model.running && model.selectedID == keeperDevice.id,
+              "a copy appearing while its original is bound is remembered as not being it")
+        receiver.plugins = [duplicate]
+        _ = await until(1) { condition() == .disconnectedHeld }
+        let reloaded = plugin(session: 0x23, persistent: 0xB1, name: "QA Keep")
+        receiver.plugins = [reloaded, duplicate]
+        check(await until(2.5) { model.selectedID.bridge == key(reloaded) && model.running } && model.bridgeCandidates.isEmpty,
+              "the saved insert returning beside a known copy is found again, not ambiguous")
+        await settle(5.3)
+        let later = plugin(session: 0x24, persistent: 0xB3, name: "QA Keep", copyOf: 0xB1)
+        receiver.plugins = [reloaded, duplicate, later]
+        await settle(0.8)
+        check(model.selectedID.bridge == key(reloaded) && model.running && model.bridgeCandidates.isEmpty
+              && BridgeSelection.load()?.knownCopies?.contains(BridgeSource(later).persistentKey) == true,
+              "after the provisional span a new copy no longer makes the found insert ambiguous, and is remembered")
+
         // Back to Audio devices: the device chosen last, captured locally, the plugin unsubscribed.
         let back = model.preferredDeviceSource()
         mark = journal.mark

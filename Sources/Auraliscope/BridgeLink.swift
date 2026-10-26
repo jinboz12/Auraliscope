@@ -4,8 +4,9 @@ import Foundation
 
 /// The app's end of the DAW plugin link, as the model uses it: the receiver and the plugins it reports (offered as
 /// sources, or named as needing an update), the commands sent to a plugin and their acknowledgements, a plugin's breaks
-/// and focus requests, and the speaker layout a plugin refused. Which insert is analysed, and when, stays with
-/// `MeterModel`, which owns this link; main thread.
+/// and focus requests, the speaker layout a plugin refused, and the insert chosen last with how restoration finds it
+/// again (`BridgeRestoration`, with its settle delay and provisional span). `MeterModel`, which owns this link, acts on
+/// what it finds: the selection, the status and the analysis stay there. Main thread.
 @MainActor
 final class BridgeLink {
     /// Nil when the receiver could not start (`error` says why).
@@ -21,6 +22,35 @@ final class BridgeLink {
     private var pendingCommand: (session: String, id: UInt32, name: String)?
     /// The user's layout a plugin refused (its session and the layout's hash): the standard one is used meanwhile.
     private var refusedGeometry: (session: String, hash: UInt64)?
+
+    /// The name of the insert chosen last, shown while it is away. The key is permanent.
+    static let nameKey = "bridgeSourceName"
+    /// A new instance of the saved insert is bound only once it has claimed the saved identity this long, so the
+    /// others of a project that is still loading can arrive.
+    static let restorationSettle: TimeInterval = 1.0
+    /// For this long after restoration chose an insert, another one claiming the saved identity makes it ambiguous.
+    static let provisionalSpan: TimeInterval = 5.0
+    /// The insert chosen last, saved with its context so the same insert can be found again (`BridgeRestoration`).
+    private(set) var saved: BridgeSelection?
+    /// Chosen by restoration rather than by the person: until then another insert claiming the saved identity
+    /// makes the choice ambiguous again, and analysis stops.
+    private var provisionalUntil: Date?
+    /// When an insert claiming the saved identity first appeared.
+    private var claimSeen: Date?
+
+    /// Where restoration found the saved insert while nothing bound is connected.
+    enum Restoration {
+        /// The same live instance (for good), or a new instance after the settle delay (provisionally).
+        case bind(BridgeSource, provisional: Bool)
+        /// A new instance claims the saved identity, and the settle delay has not passed yet.
+        case settling
+        /// No connected insert claims it.
+        case wait
+        /// Several could be it: the person must choose.
+        case ambiguous([String])
+        /// The insert restoration names is not connected as a compatible one: nothing changes.
+        case unchanged
+    }
 
     init(_ started: Result<BridgeReceiving, BridgeReceiverError>) {
         switch started {
@@ -107,5 +137,92 @@ final class BridgeLink {
             refusedGeometry = (source.sessionKey, configured.hash)
             DiagnosticLog.event("The plugin refused the speaker layout (outcome \(ack.outcome)); showing the standard layout")
         }
+    }
+
+    // MARK: The insert chosen last
+
+    /// At launch, a DAW plugin was the source: the insert with this persistent identity, with its saved context, or
+    /// only its name when an older version saved it.
+    func restoreSaved(persistent: String) {
+        saved = BridgeSelection.load().flatMap { $0.persistent == persistent ? $0 : nil }
+            ?? BridgeSelection(persistent: persistent, name: UserDefaults.standard.string(forKey: Self.nameKey) ?? "")
+    }
+
+    /// The person chose a source: final, no longer provisional. A connected insert is remembered with its context; a
+    /// device, or Host plugins with no insert chosen, forgets the saved one.
+    func choose(_ id: SourceID) {
+        provisionalUntil = nil
+        claimSeen = nil
+        if let session = id.bridge, let source = sources.first(where: { $0.sessionKey == session }) {
+            remember(source)
+        } else if id.bridge == nil || id == .anyPlugin {
+            saved = nil
+        }
+    }
+
+    /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
+    func remember(_ source: BridgeSource) {
+        var selection = BridgeSelection(source.candidate,
+                                        knownCopies: saved?.persistent == source.persistentKey ? saved?.knownCopies : nil)
+        if selection.noteCopies(among: sources.filter(\.compatible).map(\.candidate)) {
+            DiagnosticLog.event("DAW plugin \"\(source.displayName)\" was copied; the copy is known not to be it")
+        }
+        guard selection != saved else { return }
+        saved = selection
+        selection.save()
+        UserDefaults.standard.set(bridgeUIDPrefix + source.persistentKey, forKey: MeterModel.inputDeviceUIDKey)
+        UserDefaults.standard.set(false, forKey: MeterModel.inputDeviceIsOutputKey)
+        UserDefaults.standard.set(source.displayName, forKey: Self.nameKey)
+    }
+
+    /// The bound insert is connected. While restoration's choice is provisional: the sessions that now make it
+    /// ambiguous (another insert claiming the saved identity arrived), or nil. Otherwise its context is kept current.
+    func checkBound(_ source: BridgeSource, now: Date = Date()) -> [String]? {
+        if let until = provisionalUntil {
+            if now > until {
+                provisionalUntil = nil
+            } else if let saved {
+                let decision = BridgeRestoration.decide(for: saved, among: sources.filter(\.compatible).map(\.candidate),
+                                                        matchingSession: false)
+                if case let .ambiguous(sessions) = decision { return sessions }
+            }
+        }
+        if provisionalUntil == nil { remember(source) }
+        return nil
+    }
+
+    /// Nothing bound is connected: where the saved insert is among the connected ones, or nil with none saved.
+    func findSaved(now: Date = Date()) -> Restoration? {
+        guard let saved else { return nil }
+        let candidates = sources.filter(\.compatible)
+        switch BridgeRestoration.decide(for: saved, among: candidates.map(\.candidate)) {
+        case let .bind(session):
+            guard let source = candidates.first(where: { $0.sessionKey == session }) else { return .unchanged }
+            // The same live insert: Auraliscope restarted, or its connection came back.
+            if session == saved.session { return .bind(source, provisional: false) }
+            // A new instance of the saved insert (the project reopened, the plugin reloaded). A project still loading
+            // may bring more claimants, so the choice waits a moment, and stays provisional after that.
+            if claimSeen == nil { claimSeen = now }
+            if now.timeIntervalSince(claimSeen!) < Self.restorationSettle { return .settling }
+            return .bind(source, provisional: true)
+        case .wait:
+            claimSeen = nil
+            return .wait
+        case let .ambiguous(sessions):
+            claimSeen = nil
+            return .ambiguous(sessions)
+        }
+    }
+
+    /// Restoration bound `source`: for good, or provisionally for `provisionalSpan`.
+    func bound(_ source: BridgeSource, provisional: Bool, now: Date = Date()) {
+        claimSeen = nil
+        provisionalUntil = provisional ? now.addingTimeInterval(Self.provisionalSpan) : nil
+        if !provisional { remember(source) }
+    }
+
+    /// The saved insert became ambiguous: no choice stands, provisional or not, until the person's.
+    func becameAmbiguous() {
+        provisionalUntil = nil
     }
 }

@@ -667,18 +667,8 @@ final class MeterModel: ObservableObject {
     // DAW Bridge: plugin instances are listed with the devices and selected like one.
     /// The receiver, the plugins it reports, commands, and what plugins answered (`BridgeLink`).
     private let link: BridgeLink
-    /// The insert chosen last, saved with its context so the same insert can be found again (BridgeRestoration).
-    private var bridgeSaved: BridgeSelection?
     /// The inserts that could be the saved one while that is ambiguous (their sessions); empty otherwise.
     @Published private(set) var bridgeCandidates: [String] = []
-    /// Chosen by restoration rather than by the person: until then another insert claiming the saved identity
-    /// makes the choice ambiguous again, and analysis stops.
-    private var bridgeProvisionalUntil: Date?
-    /// When an insert claiming the saved identity first appeared: restoration waits a moment for the others of a
-    /// project that is still loading.
-    private var bridgeClaimSeen: Date?
-    private static let restorationSettle: TimeInterval = 1.0
-    private static let provisionalSpan: TimeInterval = 5.0
     /// Breaks in the current analysis and the seconds known missing at them (from the snapshot), for the status bar.
     @Published private(set) var measurementBreaks = 0
     @Published private(set) var missingSeconds = 0.0
@@ -691,7 +681,6 @@ final class MeterModel: ObservableObject {
     /// Frames lost before the current attachment, so the status bar counts this stream only.
     private var bridgeLostBase: UInt64 = 0
     private var bridgeTimer: Timer?
-    private static let bridgeNameKey = "bridgeSourceName"
 
     deinit {
         worker?.stop()
@@ -735,8 +724,7 @@ final class MeterModel: ObservableObject {
             // A DAW plugin chosen last time: wait for that insert to connect rather than fall back to a device.
             let persistent = String(savedUID.dropFirst(bridgeUIDPrefix.count))
             selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix + persistent)
-            bridgeSaved = BridgeSelection.load().flatMap { $0.persistent == persistent ? $0 : nil }
-                ?? BridgeSelection(persistent: persistent, name: UserDefaults.standard.string(forKey: Self.bridgeNameKey) ?? "")
+            link.restoreSaved(persistent: persistent)
         } else if savedUID == "" {
             // An explicit empty UID means the person chose "no device"; that choice is kept.
             selectedID = savedOutput ? .noOutput : .none
@@ -1058,21 +1046,15 @@ final class MeterModel: ObservableObject {
             UserDefaults.standard.set(device.uid, forKey: Self.inputDeviceUIDKey)
             UserDefaults.standard.set(device.output, forKey: Self.inputDeviceIsOutputKey)
             if device.isBridge {
-                UserDefaults.standard.set(device.name, forKey: Self.bridgeNameKey)
+                UserDefaults.standard.set(device.name, forKey: BridgeLink.nameKey)
             } else {
                 UserDefaults.standard.set(device.uid, forKey: Self.lastDeviceKey)
                 UserDefaults.standard.set(device.output, forKey: Self.lastDeviceOutputKey)
             }
         }
         // The person's choice: remembered with its context, and final (no longer provisional or ambiguous).
-        bridgeProvisionalUntil = nil
-        bridgeClaimSeen = nil
         bridgeCandidates = []
-        if let session = id.bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) {
-            remember(source)
-        } else if id.bridge == nil || id == .anyPlugin {
-            bridgeSaved = nil
-        }
+        link.choose(id)
         loadAssignment()
         if wantsCapture { requestPermissionAndStart() }
     }
@@ -1452,7 +1434,7 @@ final class MeterModel: ObservableObject {
 
     /// Name shown while the selected DAW plugin is away: the name it had when chosen.
     private var waitingBridgeName: String {
-        [bridgeSaved?.name, UserDefaults.standard.string(forKey: Self.bridgeNameKey)].compactMap { $0 }
+        [link.saved?.name, UserDefaults.standard.string(forKey: BridgeLink.nameKey)].compactMap { $0 }
             .first { !$0.isEmpty } ?? L("DAW plugin")
     }
 
@@ -1463,21 +1445,6 @@ final class MeterModel: ObservableObject {
     func dropBridgeConnection() {
         guard let session = selectedID.bridge, let source = bridgeSources.first(where: { $0.sessionKey == session }) else { return }
         link.receiver?.disconnect(source.session, refusingFor: 1_500)
-    }
-
-    /// Remembers `source` as the chosen insert, with its current context (kept up to date while it is bound).
-    private func remember(_ source: BridgeSource) {
-        var selection = BridgeSelection(source.candidate,
-                                        knownCopies: bridgeSaved?.persistent == source.persistentKey ? bridgeSaved?.knownCopies : nil)
-        if selection.noteCopies(among: bridgeSources.filter(\.compatible).map(\.candidate)) {
-            DiagnosticLog.event("DAW plugin \"\(source.displayName)\" was copied; the copy is known not to be it")
-        }
-        guard selection != bridgeSaved else { return }
-        bridgeSaved = selection
-        selection.save()
-        UserDefaults.standard.set(bridgeUIDPrefix + source.persistentKey, forKey: Self.inputDeviceUIDKey)
-        UserDefaults.standard.set(false, forKey: Self.inputDeviceIsOutputKey)
-        UserDefaults.standard.set(source.displayName, forKey: Self.bridgeNameKey)
     }
 
     /// One click in a plugin window ("Show in / Open Auraliscope Labs"): select that insert, resume if paused, and
@@ -1544,7 +1511,7 @@ final class MeterModel: ObservableObject {
         captureStarted = Date()
         droppedFrames = 0
         running = true
-        remember(source)
+        link.remember(source)
         DiagnosticLog.event(String(format: "DAW plugin results: %.0f Hz, %d ch %@, %@ %@ in %@, analysis generation %u",
                                    source.sampleRate, source.channels, source.layoutName, source.plugin, source.pluginVersion,
                                    source.hostName, source.generation))
@@ -1577,21 +1544,12 @@ final class MeterModel: ObservableObject {
     /// The bound insert is connected: re-check a provisional choice, follow its format, and keep its status and
     /// saved context current.
     private func followBound(_ source: BridgeSource) {
-        if let until = bridgeProvisionalUntil {
-            if Date() > until {
-                bridgeProvisionalUntil = nil
-            } else if let saved = bridgeSaved {
-                let decision = BridgeRestoration.decide(for: saved, among: bridgeSources.filter(\.compatible).map(\.candidate),
-                                                        matchingSession: false)
-                if case let .ambiguous(sessions) = decision {
-                    // Another insert claiming the saved one arrived after the automatic choice: it no longer holds.
-                    DiagnosticLog.event("DAW plugin choice became ambiguous: \(sessions.count) inserts claim \"\(saved.name)\"")
-                    becomeAmbiguous(sessions, saved: saved)
-                    return
-                }
-            }
+        if let sessions = link.checkBound(source), let saved = link.saved {
+            // Another insert claiming the saved one arrived after the automatic choice: it no longer holds.
+            DiagnosticLog.event("DAW plugin choice became ambiguous: \(sessions.count) inserts claim \"\(saved.name)\"")
+            becomeAmbiguous(sessions, saved: saved)
+            return
         }
-        if bridgeProvisionalUntil == nil { remember(source) }
         link.logBreaks(source)
         if let attached = attachedBridge {
             // Reconfigure whenever the audio the receiver would deliver no longer matches the pipeline.
@@ -1626,35 +1584,22 @@ final class MeterModel: ObservableObject {
                                          condition: waitingForLaunch ? unchosenPluginCondition : attachedBridge != nil ? .disconnectedHeld : .disconnected,
                                          channels: 0, layout: shownLayoutName)
         // Launched by a plugin's button: its request selects the insert; the saved one is not restored meanwhile.
-        guard !waitingForLaunch, let saved = bridgeSaved else {
+        guard !waitingForLaunch, let restoration = link.findSaved(), let saved = link.saved else {
             if status != waiting { status = waiting }
             return
         }
-        let candidates = bridgeSources.filter(\.compatible)
-        switch BridgeRestoration.decide(for: saved, among: candidates.map(\.candidate)) {
-        case let .bind(session):
-            guard let source = candidates.first(where: { $0.sessionKey == session }) else { return }
-            if session == saved.session {
-                // The same live insert: Auraliscope Labs restarted, or its connection came back.
-                bind(source, provisional: false)
-                return
-            }
-            // A new instance of the saved insert (the project reopened, the plugin reloaded). A project still
-            // loading may bring more claimants, so the choice waits a moment, and stays provisional after that.
-            let now = Date()
-            if bridgeClaimSeen == nil { bridgeClaimSeen = now }
-            if now.timeIntervalSince(bridgeClaimSeen!) < Self.restorationSettle {
-                if status != waiting { status = waiting }
-                return
-            }
-            bind(source, provisional: true)
+        switch restoration {
+        case let .bind(source, provisional):
+            bind(source, provisional: provisional)
+        case .settling:
+            if status != waiting { status = waiting }
         case .wait:
-            bridgeClaimSeen = nil
             if !bridgeCandidates.isEmpty { bridgeCandidates = [] }
             if status != waiting { status = waiting }
         case let .ambiguous(sessions):
-            bridgeClaimSeen = nil
             if sessions != bridgeCandidates || attachedBridge != nil { becomeAmbiguous(sessions, saved: saved) }
+        case .unchanged:
+            break
         }
     }
 
@@ -1666,9 +1611,7 @@ final class MeterModel: ObservableObject {
         DiagnosticLog.event("DAW plugin \"\(source.displayName)\" (\(source.hostName) \(source.plugin)) \(continuing ? "returned; analysis continues" : provisional ? "found again; analysis starts (provisional)" : "found again; analysis starts")")
         selectedID = SourceID(device: 0, bridge: source.sessionKey)
         bridgeCandidates = []
-        bridgeClaimSeen = nil
-        bridgeProvisionalUntil = provisional ? Date().addingTimeInterval(Self.provisionalSpan) : nil
-        if !provisional { remember(source) }
+        link.bound(source, provisional: provisional)
         if continuing {
             status = .bridge(name: source.label(among: bridgeSources), condition: shownCondition(source),
                              channels: source.channels, layout: shownLayoutName)
@@ -1687,7 +1630,7 @@ final class MeterModel: ObservableObject {
             clearMeasurements()
         }
         link.receiver?.select(nil)
-        bridgeProvisionalUntil = nil
+        link.becameAmbiguous()
         bridgeCandidates = sessions
         selectedID = SourceID(device: 0, bridge: SourceID.waitingPrefix + saved.persistent)
         status = .bridge(name: waitingBridgeName, condition: .ambiguous(sessions.count), channels: 0,
