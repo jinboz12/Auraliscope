@@ -42,12 +42,12 @@ struct AuraliscopeApp: App {
     @StateObject private var welcome = WelcomeCoordinator()
 
     init() {
-        if CommandLine.arguments.contains(where: { ["--test-panel-drawing","--test-multifft-layout"].contains($0) }), Bundle.main.bundleIdentifier?.hasSuffix("QA") != true {
+        if Diagnostics.selfTestRequested, Bundle.main.bundleIdentifier?.hasSuffix("QA") != true {
             fputs("UI self-tests require an isolated QA bundle identifier.\n", stderr)
             exit(2)
         }
         Diagnostics.runIfRequested()
-        if CommandLine.arguments.contains(where: { ["--test-panel-drawing","--test-multifft-layout"].contains($0) }) {
+        if Diagnostics.selfTestRequested {
             DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
         }
     }

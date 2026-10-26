@@ -27,7 +27,7 @@ enum CaptureSelfTest {
         let tone = Tone()
         tone.channels = channels
         // `--listen`: another process plays; only report what arrives.
-        let listen = CommandLine.arguments.contains("--listen")
+        let listen = Diagnostics.captureListen
         let toneUnit = listen ? nil : startTone(device: deviceID, tone: tone)
         guard listen || toneUnit != nil else { return false }
         defer {

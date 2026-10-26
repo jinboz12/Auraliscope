@@ -27,6 +27,17 @@ enum Diagnostics {
     /// `--settings-preview`: stages Light and the spectrum on the left, previews, then reverts, printing each state.
     static let settingsPreview = CommandLine.arguments.contains("--settings-preview")
     static let showWelcome = CommandLine.arguments.contains("--show-welcome")
+    /// `--multifft-test-tone` (with `--demo`): the Multi-FFT panel analyses a synthetic three-tone signal through the
+    /// real FFT (`MultiFFTPreviewSource`) instead of waiting for local PCM.
+    static let multiFFTTestTone = CommandLine.arguments.contains("--multifft-test-tone")
+    /// `--benchmark-stage` (with `--render-preview --preview-stage-size`): times the Soundstage's CPU and GPU work.
+    static let benchmarkStage = CommandLine.arguments.contains("--benchmark-stage")
+    /// `--settings-preview-hold` (with `--settings-preview`): stays in the preview instead of reverting it.
+    static let settingsPreviewHold = CommandLine.arguments.contains("--settings-preview-hold")
+    /// `--test-settings-draft`: Settings checks its staged-draft regressions when it opens.
+    static let testSettingsDraft = CommandLine.arguments.contains("--test-settings-draft")
+    /// `--listen` (with `--capture-selftest`): another process plays the tones; only report what arrives.
+    static let captureListen = CommandLine.arguments.contains("--listen")
     /// `--welcome-page <n>` opens the welcome on that page (0–2), for snapshots of each.
     static var welcomePage: Int? { argument("--welcome-page").flatMap(Int.init) }
     static let showAbout = CommandLine.arguments.contains("--show-about")

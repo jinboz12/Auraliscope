@@ -622,13 +622,13 @@ final class MeterModel: ObservableObject {
     }
 
     private func applyMultiFFT(_ wanted: MultiFFTConfiguration?) {
-        if Diagnostics.demo, CommandLine.arguments.contains("--multifft-test-tone") { multiFFTPreview.configure(wanted) }
+        if Diagnostics.demo, Diagnostics.multiFFTTestTone { multiFFTPreview.configure(wanted) }
         (worker as? DSPWorker)?.setMultiFFT(!sourceIsBridge ? wanted : nil)
     }
 
     func multiFFTFrame() -> MultiFFTSnapshot? {
         guard format == .stereo, running else { return nil }
-        if Diagnostics.demo, CommandLine.arguments.contains("--multifft-test-tone") { return multiFFTPreview.latest() }
+        if Diagnostics.demo, Diagnostics.multiFFTTestTone { return multiFFTPreview.latest() }
         return (worker as? DSPWorker)?.latestMultiFFT(frozen: frozen)
     }
 

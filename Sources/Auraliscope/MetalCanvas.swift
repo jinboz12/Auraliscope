@@ -2175,7 +2175,7 @@ final class CanvasRenderer {
         command.commit()
         command.waitUntilCompleted()
         if let error = command.error { throw error }
-        if CommandLine.arguments.contains("--benchmark-stage") {
+        if Diagnostics.benchmarkStage {
             var cpu: [Double] = [], gpuTimes: [Double] = []
             // 30 Hz snapshots displayed at 60 Hz; no audio capture or wall-clock sleeps.
             for tick in 0..<140 {

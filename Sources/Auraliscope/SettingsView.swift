@@ -289,7 +289,7 @@ final class SettingsDraft: ObservableObject {
             self.binding(\.palette, live: { ThemeSettings.shared.palette }).wrappedValue = palette
             self.binding(\.mono, live: { model.monoEnabled }).wrappedValue = !model.monoEnabled
             report("changed while on")
-            guard !CommandLine.arguments.contains("--settings-preview-hold") else { return }
+            guard !Diagnostics.settingsPreviewHold else { return }
             later(1) {
                 self.setPreview(false)
                 report("off")
@@ -411,7 +411,7 @@ struct SettingsView: View {
         .background { WindowBackdrop() }
         .onAppear {
             draft.attach(model)
-            if CommandLine.arguments.contains("--test-settings-draft") { draft.checkRegression(model: model) }
+            if Diagnostics.testSettingsDraft { draft.checkRegression(model: model) }
             if let language = Diagnostics.settingsApply { draft.rehearse(language: language, model: model) }
             if Diagnostics.settingsPreview { draft.rehearsePreview(model: model) }
         }
