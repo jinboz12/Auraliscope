@@ -668,6 +668,13 @@ final class MeterModel: ObservableObject {
 
     private let capture = AudioCapture()
     private var worker: MeterWorker?
+
+    /// Tests only (`--test-model-worker`): capture stays off, and the given worker stands in for the analysis.
+    func setWorkerForTesting(_ worker: MeterWorker?) {
+        wantsCapture = false
+        stop()
+        self.worker = worker
+    }
     /// A DAW plugin source: where its results arrive (the plugin analyses; nothing is analysed here).
     private var resultInbox: ResultInbox?
     /// The newest command sent to the bound plugin, until its acknowledgement is logged.
@@ -827,6 +834,7 @@ final class MeterModel: ObservableObject {
         // from a shell).
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { if let self { BridgeSelfTest.runIfRequested(model: self) } }
+            MainActor.assumeIsolated { if let self { ModelWorkerSelfTest.runIfRequested(model: self) } }
         }
     }
 

@@ -12,7 +12,7 @@ enum Diagnostics {
     static let enabled = CommandLine.arguments.contains("--diagnostic")
     /// A native self-test (`--test-panel-drawing`, `--test-multifft-layout`) drives the model itself; the launch
     /// welcome would otherwise hold the demo until dismissed. Only a QA bundle identifier reaches these tests.
-    static let selfTestRequested = CommandLine.arguments.contains(where: { ["--test-panel-drawing", "--test-multifft-layout"].contains($0) })
+    static let selfTestRequested = CommandLine.arguments.contains(where: { ["--test-panel-drawing", "--test-multifft-layout", "--test-model-worker"].contains($0) })
     /// Synthetic programme instead of an audio device, for layout review and screenshots.
     /// Snapshots use it too, unless `--snapshot-live` asks for the selected source instead.
     static let demo = CommandLine.arguments.contains("--demo")
