@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1319,6 +1320,71 @@ int main() {
           "no thread is left once every instance is gone (the binary can be unloaded)");
     abr_server_stop(server);
     rmdir(folder);
+    // P0-3: a host reconfigures an instance between activations. configure can replace the capture ring while the
+    // instance's analysis thread reads it (under configLock_), and the audio thread runs process only while the instance
+    // is active. The host's ordering is made explicit here with a mutex, so ThreadSanitizer checks what that contract
+    // guarantees. It does not show what a host that breaks the contract would do.
+    std::printf("Reconfiguration between activations\n");
+    {
+        abr::BridgeCore core(ABR_FORMAT_TEST);
+        std::mutex mutex;
+        std::condition_variable wake;
+        uint32_t activeChannels = 2;
+        uint64_t requested = 0, taken = 0, finished = 0;
+        bool quit = false;
+        std::atomic<uint64_t> processedFrames{0};
+        const uint32_t layouts[4] = {2, 6, 8, 12};
+        std::vector<std::vector<float>> data(12, std::vector<float>(256));
+        for (auto &channel : data) for (size_t i = 0; i < channel.size(); ++i) channel[i] = signal(0, i, 48000);
+        std::thread audio([&] {
+            for (;;) {
+                uint32_t channels = 0;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    wake.wait(lock, [&] { return taken < requested || quit; });
+                    if (quit) return;
+                    ++taken;
+                    channels = activeChannels;
+                }
+                const float *planar[12];
+                for (uint32_t c = 0; c < 12; ++c) planar[c] = data[c].data();
+                core.process(planar, channels, 256, abr::HostTransport{});
+                processedFrames += 256;
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    ++finished;
+                }
+                wake.notify_all();
+            }
+        });
+        const int cycles = 200, blocksPerActivation = 16;
+        for (int cycle = 0; cycle < cycles; ++cycle) {
+            const uint32_t channels = layouts[cycle % 4];
+            core.configure(48000, channels, 256);  // inactive: the audio thread is idle, the ring may be replaced
+            core.setActive(true);
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                activeChannels = channels;
+                requested += blocksPerActivation;
+            }
+            wake.notify_all();
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                wake.wait(lock, [&] { return finished == requested; });
+            }
+            core.setActive(false);
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            quit = true;
+        }
+        wake.notify_all();
+        audio.join();
+        const uint64_t expected = uint64_t(cycles) * blocksPerActivation * 256;
+        CHECK(processedFrames.load() == expected, "%d reconfigurations between activations, %llu frames processed, none lost",
+              cycles, static_cast<unsigned long long>(processedFrames.load()));
+    }
+
     std::printf(failures ? "\n%d check(s) FAILED\n" : "\nAll transport checks passed\n", failures);
     return failures ? 1 : 0;
 }
