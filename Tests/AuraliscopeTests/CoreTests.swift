@@ -3316,6 +3316,7 @@ struct TestRunner {
         setbuf(stdout, nil)
         try MultiFFTChecks.run()
         try BaselineChecks.run()
+        try CaptureRecoveryChecks.run()
         try RoutingChecks.run()
         if CommandLine.arguments.contains("--benchmark-gate") {
             var gate = GatedIntegration()

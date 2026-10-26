@@ -1,16 +1,22 @@
 import AnalysisCore
 import AudioRing
 import Foundation
+import QuartzCore
 
-/// What the model needs of the capture of a device (`AudioCapture`): start it for a routing, stop it, and the ring it
-/// fills.
+/// What the model needs of the capture of a device (`AudioCapture`): start it for a routing, stop it, the ring it
+/// fills, and what its IO callback saw.
 protocol CaptureBackend: AnyObject {
     var ring: OpaquePointer { get }
     var sampleRate: Double { get }
     var channels: UInt32 { get }
     func start(device: InputDevice, sourceForRole: [Int32]) throws
+    /// Reopens the IO for the same ring without clearing it, with storage for slices of at least `minimumFrames`
+    /// (see `AudioCapture.restart`).
+    func restart(device: InputDevice, sourceForRole: [Int32], minimumFrames: UInt32) throws
     /// Returns drops from this capture after the last callback, before clearing its ring for reuse.
     @discardableResult func stop() -> UInt64
+    /// What the IO callback saw since the IO last opened (nothing while it is closed).
+    func health() -> CaptureHealthReading
 }
 
 extension AudioCapture: CaptureBackend {}
@@ -37,9 +43,10 @@ extension BridgeReceiving {
 extension BridgeReceiver: BridgeReceiving {}
 
 /// Everything `MeterModel` reaches outside the process through: the capture of a device, the DAW plugin receiver, the
-/// list of audio devices and its change notifications, and the analysis of a device's audio. The app uses the real ones
-/// (`live`); `--test-model-lifecycle` stands in for them, so source switching, capture, pause and resume and the DAW
-/// plugin states can be checked with no device and no DAW.
+/// list of audio devices and its change notifications, the analysis of a device's audio, and the clock its timing
+/// decisions read. The app uses the real ones (`live`); `--test-model-lifecycle` stands in for them, so source
+/// switching, capture, pause and resume, capture failures and the DAW plugin states can be checked with no device and
+/// no DAW, and without waiting.
 struct MeterModelDependencies {
     /// The capture of a device, created once; nil when its ring cannot be allocated.
     var makeCapture: @MainActor () -> CaptureBackend?
@@ -50,11 +57,14 @@ struct MeterModelDependencies {
     /// The analysis of a device's audio as it fills `ring`.
     var makeLocalWorker: @MainActor (_ ring: OpaquePointer, _ sampleRate: Double, _ streamID: UInt32, _ activeRoles: [Bool],
                                      _ detector: FormatDetector) -> MeterWorker?
+    /// Seconds on a monotonic clock, for decisions that wait (`CACurrentMediaTime`).
+    var clock: @MainActor () -> CFTimeInterval
 
     static let live = MeterModelDependencies(
         makeCapture: { AudioCapture() },
         startReceiver: { BridgeReceiver.start().map { $0 } },
         availableSources: { AudioDevices.availableSources() },
         observesHardware: true,
-        makeLocalWorker: { DSPWorker(ring: $0, sampleRate: $1, streamID: $2, activeRoles: $3, detector: $4) })
+        makeLocalWorker: { DSPWorker(ring: $0, sampleRate: $1, streamID: $2, activeRoles: $3, detector: $4) },
+        clock: { CACurrentMediaTime() })
 }

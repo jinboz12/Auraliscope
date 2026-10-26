@@ -175,6 +175,8 @@ enum AudioDevices {
 
 final class AudioCapture {
     let ring: OpaquePointer
+    /// What the IO callback saw since the IO last opened (`capture_health_read`).
+    private let healthRecord: OpaquePointer
     private var unit: AudioUnit?
     /// Read by the C input callback on the IO thread; written only while the unit is stopped.
     private let context: UnsafeMutablePointer<CaptureContext>
@@ -192,18 +194,28 @@ final class AudioCapture {
 
     init?() {
         guard let ring = channel_ring_create(32_768) else { return nil }
+        guard let health = capture_health_create() else {
+            channel_ring_destroy(ring)
+            return nil
+        }
         self.ring = ring
+        healthRecord = health
         context = .allocate(capacity: 1)
         context.initialize(to: CaptureContext())
         context.pointee.ring = ring
+        context.pointee.health = health
     }
 
     deinit {
         stop()
         context.deinitialize(count: 1)
         context.deallocate()
+        capture_health_destroy(healthRecord)
         channel_ring_destroy(ring)
     }
+
+    /// Storage never grows past this many frames per slice, whatever a recovery asks for (64 channels: 16 MiB).
+    static let largestStorage = 65_536
 
     /// Distinct routed device inputs in ascending order, and each role's index into them (−1 when off).
     /// The unit is asked for exactly these channels, so a 64-channel bridge with a stereo routing moves two
@@ -216,11 +228,31 @@ final class AudioCapture {
 
     func start(device: InputDevice, sourceForRole: [Int32]) throws {
         stop()
+        try open(device: device, sourceForRole: sourceForRole, minimumFrames: 0, keepingRing: false)
+    }
+
+    /// Reopens the device's IO for the same ring without clearing it: recovery of a capture that keeps failing. The
+    /// frames lost before stay counted, and the break they make is marked where the new IO writes first. The storage
+    /// holds slices of at least `minimumFrames` (up to `largestStorage`). If the IO cannot open again, it stays closed
+    /// and the ring is as it was.
+    func restart(device: InputDevice, sourceForRole: [Int32], minimumFrames: UInt32) throws {
+        closeIO()
+        try open(device: device, sourceForRole: sourceForRole, minimumFrames: minimumFrames, keepingRing: true)
+    }
+
+    func health() -> CaptureHealthReading {
+        var reading = CaptureHealthReading()
+        capture_health_read(healthRecord, &reading)
+        return reading
+    }
+
+    private func open(device: InputDevice, sourceForRole: [Int32], minimumFrames: UInt32, keepingRing: Bool) throws {
         guard device.channels > 0 else { throw AudioCaptureError.noInput }
         guard sourceForRole.count == Role.count else { throw AudioCaptureError.operation(LKey("Channel routing needs 16 roles"), -1) }
         if device.output {
             guard #available(macOS 14.2, *) else { throw AudioCaptureError.tapUnavailable }
-            return try startTap(device: device, sourceForRole: sourceForRole)
+            return try openTap(device: device, sourceForRole: sourceForRole, minimumFrames: minimumFrames,
+                               keepingRing: keepingRing)
         }
         channels = min(device.channels, 64)
         let captureDevice = device.device
@@ -248,14 +280,15 @@ final class AudioCapture {
                 deliveredChannels = channels
             }
             Diagnostics.log("Capture delivers \(deliveredChannels) of \(channels) device inputs")
-            prepareContext(device: captureDevice, unit: newUnit, roles: routing.roles)
+            prepareContext(device: captureDevice, unit: newUnit, roles: routing.roles, minimumFrames: minimumFrames)
             var callback = AURenderCallbackStruct(inputProc: capture_input_proc, inputProcRefCon: UnsafeMutableRawPointer(context))
             try check(AudioUnitSetProperty(newUnit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callback, UInt32(MemoryLayout<AURenderCallbackStruct>.size)), LKey("Set input callback"))
             try check(AudioUnitInitialize(newUnit), LKey("Initialize audio unit"))
-            channel_ring_clear(ring)
+            if !keepingRing { channel_ring_clear(ring) }
+            capture_health_reset(healthRecord)
             try check(AudioOutputUnitStart(newUnit), LKey("Start audio unit"))
         } catch {
-            stop()
+            if keepingRing { closeIO() } else { stop() }
             throw error
         }
     }
@@ -265,7 +298,7 @@ final class AudioCapture {
     /// the AUHAL input element, the tap counted as microphone use, so the orange microphone indicator stayed on and
     /// the microphone permission decided whether the tap read silence, whatever the source.
     @available(macOS 14.2, *)
-    private func startTap(device: InputDevice, sourceForRole: [Int32]) throws {
+    private func openTap(device: InputDevice, sourceForRole: [Int32], minimumFrames: UInt32, keepingRing: Bool) throws {
         do {
             let outputTap = try OutputTap(outputUID: device.uid)
             tap = outputTap
@@ -277,16 +310,17 @@ final class AudioCapture {
             deliveredChannels = channels
             Diagnostics.log("Capture delivers all \(channels) tap channels")
             prepareContext(device: aggregate, unit: nil,
-                           roles: sourceForRole.map { $0 >= 0 && $0 < Int32(channels) ? $0 : -1 })
+                           roles: sourceForRole.map { $0 >= 0 && $0 < Int32(channels) ? $0 : -1 }, minimumFrames: minimumFrames)
             var procID: AudioDeviceIOProcID?
             try check(AudioDeviceCreateIOProcID(aggregate, capture_tap_io_proc, UnsafeMutableRawPointer(context), &procID),
                       LKey("Create output tap"))
             tapProc = procID
             tapDevice = aggregate
-            channel_ring_clear(ring)
+            if !keepingRing { channel_ring_clear(ring) }
+            capture_health_reset(healthRecord)
             try check(AudioDeviceStart(aggregate, procID), LKey("Start output capture"))
         } catch {
-            stop()
+            if keepingRing { closeIO() } else { stop() }
             throw error
         }
     }
@@ -299,9 +333,10 @@ final class AudioCapture {
         return rate
     }
 
-    /// Storage and routing for the IO callback, sized from the device's IO buffer. The callback renders at the
-    /// device's own IO size; nothing here changes the buffer size that other clients of the device (a DAW) use.
-    private func prepareContext(device: AudioDeviceID, unit: AudioUnit?, roles: [Int32]) {
+    /// Storage and routing for the IO callback, sized from the device's IO buffer (and at least `minimumFrames`, up to
+    /// `largestStorage`). The callback renders at the device's own IO size; nothing here changes the buffer size that
+    /// other clients of the device (a DAW) use.
+    private func prepareContext(device: AudioDeviceID, unit: AudioUnit?, roles: [Int32], minimumFrames: UInt32) {
         var bufferAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
         var deviceFrames: UInt32 = 0
         var bufferSize = UInt32(MemoryLayout<UInt32>.size)
@@ -309,6 +344,7 @@ final class AudioCapture {
         if AudioObjectGetPropertyData(device, &bufferAddress, 0, nil, &bufferSize, &deviceFrames) == noErr {
             maximumFrames = max(4096, min(16_384, Int(deviceFrames) * 2))
         }
+        maximumFrames = max(maximumFrames, min(Int(minimumFrames), Self.largestStorage))
         allocatedSamples = maximumFrames * Int(deliveredChannels)
         let storage = UnsafeMutablePointer<Float>.allocate(capacity: allocatedSamples)
         storage.initialize(repeating: 0, count: allocatedSamples)
@@ -345,6 +381,14 @@ final class AudioCapture {
     /// Returns drops from this capture after the last callback, before clearing its ring for reuse.
     @discardableResult
     func stop() -> UInt64 {
+        closeIO()
+        let dropped = channel_ring_dropped(ring)
+        channel_ring_clear(ring)
+        return dropped
+    }
+
+    /// Stops and releases the device's IO and its storage. The ring keeps its frames, count and pending break.
+    private func closeIO() {
         if let unit {
             AudioOutputUnitStop(unit)
             AudioUnitUninitialize(unit)
@@ -368,9 +412,7 @@ final class AudioCapture {
         tap = nil
         allocatedSamples = 0
         deliveredChannels = 0
-        let dropped = channel_ring_dropped(ring)
-        channel_ring_clear(ring)
-        return dropped
+        capture_health_reset(healthRecord)
     }
 
     private func check(_ status: OSStatus, _ operation: String) throws {

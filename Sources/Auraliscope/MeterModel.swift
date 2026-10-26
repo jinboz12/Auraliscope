@@ -760,13 +760,7 @@ final class MeterModel: ObservableObject {
             hardwareObserver = HardwareObserver(devicesChanged: { [weak self] in
                 Task { @MainActor in self?.refreshDevices() }
             }, configurationChanged: { [weak self] in
-                Task { @MainActor in
-                    guard let self, self.wantsCapture else { return }
-                    let previousID = self.selectedID
-                    let wasRunning = self.running
-                    self.refreshDevices()
-                    if wasRunning && self.selectedID == previousID && self.selectedDevice != nil { self.restart() }
-                }
+                Task { @MainActor in self?.deviceConfigurationChanged() }
             }, speakersChanged: { [weak self] in
                 Task { @MainActor in self?.deviceSpeakersChanged() }
             })
@@ -996,6 +990,16 @@ final class MeterModel: ObservableObject {
 
     func refreshDevices() {
         refreshDevices(using: dependencies.availableSources() + bridgeDevices)
+    }
+
+    /// The captured device's sample rate changed, or it came or went (`HardwareObserver`): the device list is read
+    /// again, and the same source, still there, starts afresh with the device's new configuration.
+    func deviceConfigurationChanged() {
+        guard wantsCapture else { return }
+        let previousID = selectedID
+        let wasRunning = running
+        refreshDevices()
+        if wasRunning && selectedID == previousID && selectedDevice != nil { restart() }
     }
 
     /// Connected DAW plugin instances as sources, in connection order. One of another protocol version is left

@@ -28,14 +28,18 @@ enum ModelLifecycleSelfTest {
     }
 
     /// A capture that opens nothing: its ring stays empty, so the analysis reads silence. A start can be made to fail
-    /// or to find another sample rate, and a stop to report frames lost after the last callback.
+    /// or to find another sample rate, and a stop to report frames lost after the last callback. Its ring is kept as
+    /// the real capture keeps it: a start or stop clears it, a restart does not. What its IO callback saw (`reading`)
+    /// is set by the checks; opening or closing the IO clears it, as the real record is.
     final class Capture: CaptureBackend {
         let ring: OpaquePointer
         private(set) var sampleRate = 48_000.0
         private(set) var channels: UInt32 = 0
         var rateAtNextStart = 48_000.0
         var failNextStart = false
+        var failNextRestart = false
         var dropsAtNextStop: UInt64 = 0
+        var reading = CaptureHealthReading()
         private let journal: Journal
 
         init?(journal: Journal) {
@@ -46,6 +50,8 @@ enum ModelLifecycleSelfTest {
 
         func start(device: InputDevice, sourceForRole: [Int32]) throws {
             journal.note("capture.start \(device.uid) \(ModelLifecycleSelfTest.routing(sourceForRole))")
+            channel_ring_clear(ring)
+            reading = CaptureHealthReading()
             if failNextStart {
                 failNextStart = false
                 throw Refusal()
@@ -54,11 +60,27 @@ enum ModelLifecycleSelfTest {
             channels = device.channels
         }
 
+        func restart(device: InputDevice, sourceForRole: [Int32], minimumFrames: UInt32) throws {
+            journal.note("capture.restart \(device.uid) \(ModelLifecycleSelfTest.routing(sourceForRole)) \(minimumFrames)")
+            reading = CaptureHealthReading()
+            if failNextRestart {
+                failNextRestart = false
+                throw Refusal()
+            }
+            sampleRate = rateAtNextStart
+            channels = device.channels
+        }
+
         func stop() -> UInt64 {
             journal.note("capture.stop")
+            reading = CaptureHealthReading()
             defer { dropsAtNextStop = 0 }
-            return dropsAtNextStop
+            let dropped = channel_ring_dropped(ring) + dropsAtNextStop
+            channel_ring_clear(ring)
+            return dropped
         }
+
+        func health() -> CaptureHealthReading { reading }
     }
 
     struct Refusal: LocalizedError {
@@ -139,6 +161,8 @@ enum ModelLifecycleSelfTest {
     static let outputB = InputDevice(device: 0x7A00_0002, name: "QA Output B", channels: 8, uid: "qa.lifecycle.b", output: true)
     /// The devices Core Audio would list.
     static var deviceList = [outputA, outputB]
+    /// The model's clock: moved by the checks alone, so whatever waits on it is decided without waiting.
+    static var clock: CFTimeInterval = 1_000
     static var failNextWorker = false
     /// Every analysis the model made, in order.
     static var workers: [Worker] = []
@@ -227,7 +251,8 @@ enum ModelLifecycleSelfTest {
                 let worker = Worker(stream: stream, journal: journal)
                 workers.append(worker)
                 return worker
-            })
+            },
+            clock: { clock })
     }
 
     private static func restoreDomain() {
