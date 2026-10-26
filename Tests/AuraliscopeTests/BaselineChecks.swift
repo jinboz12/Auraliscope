@@ -29,6 +29,8 @@ enum BaselineChecks {
     static func run() throws {
         try snapshotLayout()
         print("PASS: baseline: snapshot slot groups tile METER_SNAPSHOT_FLOATS in order, with their producers' sizes")
+        try logFrequencyAxisMatchesLegacyExpressions()
+        print("PASS: baseline: LogFrequencyAxis equals, bit for bit, every expression it replaced, at 11 rates and 6 band counts")
         try goldenPipeline()
         try knownIssueCaptureRejectsSilently()
         try knownIssueTapTruncatesSilently()
@@ -71,6 +73,41 @@ enum BaselineChecks {
             try require(range(i).count == sizes[groups[i].name], "slot group \(groups[i].name) holds \(range(i).count) floats, its producer writes \(sizes[groups[i].name]!)")
         }
         try require(SnapshotSlots.peaks - SnapshotSlots.spectrum == MeterSnapshot.bandCount, "64 spectrum bands")
+    }
+
+    // MARK: - Frequency axis (refactoring batch 3.1)
+
+    /// `LogFrequencyAxis` replaced expressions that were written out in 31 places. Each function must equal, bit for
+    /// bit, the expression as those callers wrote it (literal 20, the same operation order), so moving a caller onto it
+    /// cannot change a band, a row, a drawn line or a reported frequency.
+    static func logFrequencyAxisMatchesLegacyExpressions() throws {
+        let rates: [Double] = [8_000, 11_025, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 384_000]
+        let counts = [7, 64, 96, 128, 512, MultiFFTAnalyzer.points]
+        func same(_ a: Double, _ b: Double, _ what: @autoclosure () -> String) throws {
+            try require(a.bitPattern == b.bitPattern, "LogFrequencyAxis.\(what()): \(a) != legacy \(b)")
+        }
+        for rate in rates {
+            let upper = min(20_000, rate / 2)
+            try same(LogFrequencyAxis.upper(sampleRate: rate), upper, "upper(\(rate))")
+            try same(LogFrequencyAxis.octaves(upper: upper), log2(upper / 20), "octaves(\(upper))")
+            for count in counts {
+                for index in 0...count {
+                    try same(LogFrequencyAxis.edge(index, of: count, upper: upper),
+                             20 * pow(upper / 20, Double(index) / Double(count)), "edge(\(index), \(count), \(upper))")
+                    guard index < count else { continue }
+                    try same(LogFrequencyAxis.centre(index, of: count, upper: upper),
+                             20 * pow(upper / 20, (Double(index) + 0.5) / Double(count)), "centre(\(index), \(count), \(upper))")
+                }
+            }
+            for step in 0...400 {
+                let position = Double(step) / 400 * 1.2 - 0.1
+                try same(LogFrequencyAxis.frequency(atPosition: position, upper: upper), 20 * pow(upper / 20, position),
+                         "frequency(atPosition: \(position), \(upper))")
+                let frequency = 5 * pow(2, Double(step) / 400 * 13)
+                try same(LogFrequencyAxis.position(of: frequency, upper: upper), log(frequency / 20) / log(upper / 20),
+                         "position(of: \(frequency), \(upper))")
+            }
+        }
     }
 
     // MARK: - Golden pipeline

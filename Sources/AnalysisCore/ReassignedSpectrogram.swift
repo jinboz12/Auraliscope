@@ -136,7 +136,7 @@ package final class ReassignedSpectrogram {
         self.rows = rows
         self.span = span
         hop = Int((sampleRate / SpectrogramAnalyzer.columnRate).rounded())
-        let upper = min(20_000, sampleRate / 2)
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
         rowScale = Float(Double(rows) / log(upper / 20))
         energy = [Float](repeating: 0, count: rows)
         let lengths = Self.lengths(span: span)

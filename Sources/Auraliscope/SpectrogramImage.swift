@@ -29,7 +29,7 @@ enum SpectrogramImage {
 
         // The plot, written pixel by pixel. CoreGraphics' origin is bottom-left, so row 0 (20 Hz) is at `bottom`.
         let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-        let tilt = (0..<rows).map { options.tilt.offset(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(rows))) }
+        let tilt = (0..<rows).map { options.tilt.offset(frequency: LogFrequencyAxis.centre($0, of: rows, upper: upper)) }
         var pixels = [UInt8](repeating: 255, count: plotWidth * rows * 4)
         // A small lookup of the ramp keeps this to one table read per pixel.
         let steps = 1024
@@ -71,7 +71,7 @@ enum SpectrogramImage {
         }
         context.setLineWidth(1)
         for (frequency, label) in SpectrogramLayout.frequencyMarks where frequency < upper {
-            let y = CGFloat(bottom) + CGFloat(log(frequency / 20) / log(upper / 20)) * CGFloat(rows)
+            let y = CGFloat(bottom) + CGFloat(LogFrequencyAxis.position(of: frequency, upper: upper)) * CGFloat(rows)
             context.setStrokeColor(faint.withAlphaComponent(0.25).cgColor)
             context.stroke(CGRect(x: CGFloat(left), y: y.rounded() + 0.5, width: CGFloat(plotWidth), height: 0).insetBy(dx: 0, dy: 0))
             text(label, at: CGPoint(x: CGFloat(left - 6), y: y), color: [100.0, 1_000, 10_000].contains(frequency) ? strong : faint, align: .right)

@@ -28,13 +28,13 @@ enum MeterScale {
 
     static func position(amplitude: Float) -> Float { position(decibels: decibels(amplitude)) }
 
-    static func upperFrequency(sampleRate: Double) -> Double { min(20_000, sampleRate / 2) }
+    static func upperFrequency(sampleRate: Double) -> Double { LogFrequencyAxis.upper(sampleRate: sampleRate) }
 
     /// Fraction of a frequency along an analyzer's axis: the shared 20 Hz – upper log axis, or 0 Hz – upper linear.
     static func frequencyFraction(_ frequency: Double, sampleRate: Double, scale: FrequencyScale = .log) -> CGFloat {
         let upper = upperFrequency(sampleRate: sampleRate)
         switch scale {
-        case .log: return CGFloat(log(max(frequency, 20) / 20) / log(upper / 20))
+        case .log: return CGFloat(LogFrequencyAxis.position(of: max(frequency, 20), upper: upper))
         case .linear: return CGFloat(max(0, frequency) / upper)
         }
     }
@@ -43,7 +43,7 @@ enum MeterScale {
     static func frequency(fraction: Double, sampleRate: Double, scale: FrequencyScale = .log) -> Double {
         let upper = upperFrequency(sampleRate: sampleRate)
         switch scale {
-        case .log: return 20 * pow(upper / 20, fraction)
+        case .log: return LogFrequencyAxis.frequency(atPosition: fraction, upper: upper)
         case .linear: return max(0, fraction) * upper
         }
     }
@@ -404,10 +404,10 @@ enum SpectrumSmoothing: String, CaseIterable {
     /// One kernel per point of a spectrum of `count` points spaced evenly in log frequency from 20 Hz to `upper`:
     /// the same everywhere for a fixed width, each point's own for Variable.
     func kernels(count: Int, upper: Double) -> [[Float]] {
-        let pointsPerOctave = Double(count) / log2(upper / 20)
+        let pointsPerOctave = Double(count) / LogFrequencyAxis.octaves(upper: upper)
         guard self == .variable else { return [[Float]](repeating: kernel(pointsPerOctave: pointsPerOctave), count: count) }
         return (0..<count).map { index in
-            let frequency = 20 * pow(upper / 20, (Double(index) + 0.5) / Double(count))
+            let frequency = LogFrequencyAxis.centre(index, of: count, upper: upper)
             return Self.kernel(octaves: octaves(at: frequency), pointsPerOctave: pointsPerOctave)
         }
     }

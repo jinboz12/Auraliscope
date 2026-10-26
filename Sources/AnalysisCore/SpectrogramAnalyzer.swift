@@ -202,9 +202,9 @@ package final class SpectrogramAnalyzer {
             configurations.append((length, window, configurations.isEmpty ? 0 : resolvingPower * window.mainLobe * sampleRate / Double(length)))
             length /= 2
         }
-        let upper = min(20_000, sampleRate / 2)
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
         return (0..<rows).map { row in
-            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
+            let centre = LogFrequencyAxis.centre(row, of: rows, upper: upper)
             let index = configurations.indices.last { configurations[$0].floor <= centre } ?? 0
             let current = configurations[index]
             let blend = index > 0 ? min(1, max(0, log2(centre / current.floor) / blendOctaves)) : 1

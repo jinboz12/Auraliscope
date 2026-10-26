@@ -621,7 +621,7 @@ private struct SpectrumCardInspector: View {
         let count = SpectrumScene.pointCount
         let band = max(0, min(count - 1, Int(layout.row(x: point.x, rows: count, sampleRate: sampleRate).rounded())))
         let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-        let frequency = 20 * pow(upper / 20, (Double(band) + 0.5) / Double(count))
+        let frequency = LogFrequencyAxis.centre(band, of: count, upper: upper)
         let level = scene.flatMap { $0.shown.indices.contains(band) ? $0.shown[band] : nil }
         let average = DisplayOptions.stored.averageSpectrum ? scene?.average.flatMap { $0.indices.contains(band) ? $0[band] : nil } : nil
         let x = layout.x(frequency: frequency, sampleRate: sampleRate)
@@ -740,7 +740,7 @@ private struct SpectrogramInspector: View {
             let rows = SpectrogramHistory.rows
             let row = max(0, min(rows - 1, Int(layout.row(y: point.y, rows: rows, sampleRate: sampleRate).rounded())))
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
+            let centre = LogFrequencyAxis.centre(row, of: rows, upper: upper)
             let shared = sharedSize
             let delay = Double(shared > 0 ? shared : SpectrumAnalyzer.historyLength(sampleRate: sampleRate)) / 2 / sampleRate
             let cell = scene?.level(atU: layout.timeFraction(x: point.x), row: Double(row))
@@ -755,8 +755,8 @@ private struct SpectrogramInspector: View {
             let count = SpectrumScene.pointCount
             let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count, sampleRate: sampleRate).rounded())))
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-            let low = 20 * pow(upper / 20, Double(band) / Double(count))
-            let high = 20 * pow(upper / 20, Double(band + 1) / Double(count))
+            let low = LogFrequencyAxis.edge(band, of: count, upper: upper)
+            let high = LogFrequencyAxis.edge(band + 1, of: count, upper: upper)
             let frequency = (low * high).squareRoot()
             let bandwidth = high < 1000 ? String(format: "%.1f–%.1f Hz", low, high)
                                        : String(format: "%.2f–%.2f kHz", low / 1000, high / 1000)
@@ -930,7 +930,7 @@ enum SpectrogramResolution {
         if sharedSize > 0 { return "FFT \(sharedSize) · Hann · " + String(format: "%.0f ms", Double(sharedSize) / sampleRate * 1000) }
         if analysis == .enhanced {
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
-            let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(SpectrogramHistory.rows))
+            let centre = LogFrequencyAxis.centre(row, of: SpectrogramHistory.rows, upper: upper)
             let length = ReassignedSpectrogram.length(frequency: centre, sampleRate: sampleRate,
                                                       span: SpectrumAnalyzer.historyLength(sampleRate: sampleRate))
             return "FFT \(length) · Hann · " + L("reassigned")

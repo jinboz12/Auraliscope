@@ -56,7 +56,7 @@ package enum StereoBands {
     /// Band of each FFT bin from 1 to `fftSize / 2 − 1`, or −1 outside 20 Hz…the display ceiling.
     package static func binBands(sampleRate: Double, fftSize: Int) -> [Int8] {
         let binWidth = sampleRate / Double(fftSize)
-        let upper = min(20_000, sampleRate / 2)
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
         return (0..<(fftSize / 2)).map { bin in
             let frequency = Double(bin) * binWidth
             guard bin > 0, frequency >= edges[0], frequency <= upper else { return -1 }
@@ -762,12 +762,12 @@ package final class SpectrumAnalyzer {
     }
 
     package static func bandMaps(count: Int, sampleRate: Double, fftSize: Int = SpectrumAnalyzer.fftSize) -> [BandMap] {
-        let upper = min(20_000, sampleRate / 2)
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
         let binWidth = sampleRate / Double(fftSize)
         let lastBin = fftSize / 2 - 1
         return (0..<count).map { index in
-            let low = 20 * pow(upper / 20, Double(index) / Double(count))
-            let high = 20 * pow(upper / 20, Double(index + 1) / Double(count))
+            let low = LogFrequencyAxis.edge(index, of: count, upper: upper)
+            let high = LogFrequencyAxis.edge(index + 1, of: count, upper: upper)
             if (high - low) / binWidth < 1.5 {
                 let position = min(Double(lastBin - 1), max(1, sqrt(low * high) / binWidth))
                 let first = Int(position)
@@ -903,7 +903,7 @@ package final class SpectrumAnalyzer {
     private func dominantPeak() -> (Float, Float) {
         let binWidth = sampleRate / Double(historyLength)
         let first = max(2, Int(20 / binWidth))
-        let last = min(historyLength / 2 - 2, Int(min(20_000, sampleRate / 2) / binWidth))
+        let last = min(historyLength / 2 - 2, Int(LogFrequencyAxis.upper(sampleRate: sampleRate) / binWidth))
         guard first < last else { return (0, -120) }
         var peakPower: Float = 0
         var index: vDSP_Length = 0

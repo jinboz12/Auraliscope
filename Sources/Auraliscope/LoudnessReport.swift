@@ -1,3 +1,4 @@
+import AnalysisCore
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -187,7 +188,7 @@ struct LoudnessReportData {
         if !check.spectrum.isEmpty {
             lines.append("# average_spectrum_hz_dbfs")
             for (band, level) in check.spectrum.enumerated() {
-                let frequency = 20 * pow(check.spectrumUpper / 20, (Double(band) + 0.5) / Double(check.spectrum.count))
+                let frequency = LogFrequencyAxis.centre(band, of: check.spectrum.count, upper: check.spectrumUpper)
                 lines.append("# spectrum,\(String(format: "%.1f", frequency)),\(String(format: "%.1f", level))")
             }
         }

@@ -32,7 +32,7 @@ neither used nor touched.
 | Target | What | Depends on |
 |---|---|---|
 | `Sources/AnalysisKernels` (C) | frame types and DSP kernels: true-peak scan, K-weighting, band filters, packed FFT powers | nothing |
-| `Sources/AnalysisCore` (Swift) | `LoudnessAnalyzer`, `SpectrumAnalyzer`, `WaveformEnvelope`, `FormatDetector`, `MeterPipeline` and its snapshot layout (shared with the app; build 66 fixes true-peak startup priming), plus `StreamAnalyzer` (pushed audio, audio-clocked ticks, result encoding), `ResultProtocol` (RESULT fields) and `ResultAssembler` (results back into snapshots) | Foundation, Accelerate, AnalysisKernels; **no AppKit, SwiftUI, Core Audio or views** |
+| `Sources/AnalysisCore` (Swift) | `LogFrequencyAxis` (the frequency axis every analysis and display shares), `LoudnessAnalyzer`, `SpectrumAnalyzer`, `WaveformEnvelope`, `FormatDetector`, `MeterPipeline` and its snapshot layout (shared with the app; build 66 fixes true-peak startup priming), plus `StreamAnalyzer` (pushed audio, audio-clocked ticks, result encoding), `ResultProtocol` (RESULT fields) and `ResultAssembler` (results back into snapshots) | Foundation, Accelerate, AnalysisKernels; **no AppKit, SwiftUI, Core Audio or views** |
 
 The app's `DSPWorker` runs `MeterPipeline` for devices and system audio, as before; the plugins run the same
 `MeterPipeline` through `StreamAnalyzer`. There is one analyser, compiled into three binaries. `package` access keeps

@@ -1,3 +1,4 @@
+import AnalysisCore
 import SwiftUI
 
 // MARK: - Print style
@@ -699,7 +700,7 @@ private struct ReportSpectrum: View {
         }
         let upper = check.spectrumUpper
         let top = ((check.spectrum.max() ?? 0) / 6).rounded(.up) * 6 + 6, bottom = top - 72
-        func x(_ f: Double) -> CGFloat { plot.minX + CGFloat(log(f / 20) / log(upper / 20)) * plot.width }
+        func x(_ f: Double) -> CGFloat { plot.minX + CGFloat(LogFrequencyAxis.position(of: f, upper: upper)) * plot.width }
         func y(_ db: Float) -> CGFloat { plot.maxY - CGFloat(max(0, min(1, (db - bottom) / (top - bottom)))) * plot.height }
         for f in [50.0, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000] where f < upper * 0.98 {
             context.fill(Path(CGRect(x: x(f), y: plot.minY, width: 0.4, height: plot.height)), with: .color(ReportInk.rule))
@@ -721,7 +722,7 @@ private struct ReportSpectrum: View {
         clipped.clip(to: Path(roundedRect: plot, cornerRadius: 6))
         var path = Path()
         for (band, level) in check.spectrum.enumerated() {
-            let f = 20 * pow(upper / 20, (Double(band) + 0.5) / Double(check.spectrum.count))
+            let f = LogFrequencyAxis.centre(band, of: check.spectrum.count, upper: upper)
             let point = CGPoint(x: x(f), y: y(level))
             if band == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
@@ -738,7 +739,7 @@ private struct ReportSpectrum: View {
         }
         for resonance in check.resonances.prefix(3) {
             let px = x(resonance.frequency)
-            let band = Int((log(resonance.frequency / 20) / log(upper / 20) * Double(check.spectrum.count) - 0.5).rounded())
+            let band = Int((LogFrequencyAxis.position(of: resonance.frequency, upper: upper) * Double(check.spectrum.count) - 0.5).rounded())
             let py = y(check.spectrum[max(0, min(check.spectrum.count - 1, band))]) - 6
             context.fill(Path(ellipseIn: CGRect(x: px - 2.5, y: py - 2.5, width: 5, height: 5)), with: .color(ReportInk.warn))
             context.draw(Text(verbatim: MasteringCheck.hertz(resonance.frequency)).font(.system(size: 6.5, weight: .semibold))

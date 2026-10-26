@@ -1,3 +1,4 @@
+import AnalysisCore
 import Foundation
 
 /// One 10 Hz reading of everything the master check gathers, taken from a snapshot by `Readouts`.
@@ -129,7 +130,7 @@ struct SessionStatistics {
     }
 
     /// Centre frequency of `band`.
-    func frequency(_ band: Int) -> Double { 20 * pow(upper / 20, (Double(band) + 0.5) / Double(Self.bands)) }
+    func frequency(_ band: Int) -> Double { LogFrequencyAxis.centre(band, of: Self.bands, upper: upper) }
 }
 
 /// The master check: every measurement the report states, each judged against a published rule or a stated
@@ -421,7 +422,7 @@ struct MasteringCheck {
     /// Bands more than 5 dB above the median of the surrounding half octave, 40 Hz to 12 kHz, local maxima only,
     /// strongest first.
     static func resonances(_ spectrum: [Float], statistics s: SessionStatistics) -> [Resonance] {
-        let perOctave = Double(spectrum.count) / log2(s.upper / 20)
+        let perOctave = Double(spectrum.count) / LogFrequencyAxis.octaves(upper: s.upper)
         let reach = max(2, Int((perOctave / 4).rounded()))
         var found: [Resonance] = []
         for band in reach..<(spectrum.count - reach) {

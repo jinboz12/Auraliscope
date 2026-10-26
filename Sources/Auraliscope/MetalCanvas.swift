@@ -1871,7 +1871,7 @@ struct SurfaceProjection {
 
     /// Depth of `frequency` on the 20 Hz…`upper` log axis, or the 0…`upper` linear one.
     static func depth(frequency: Double, upper: Double, scale: FrequencyScale = .log) -> Double {
-        scale == .linear ? frequency / upper : log(frequency / 20) / log(upper / 20)
+        scale == .linear ? frequency / upper : LogFrequencyAxis.position(of: frequency, upper: upper)
     }
 }
 
@@ -2465,9 +2465,9 @@ final class SpectrumScene: CanvasScene {
         let kernel = smoothingKernels(frame.options.spectrumSmoothing, count: count, upper: upper)
         let live = SpectrumSmoothing.apply(kernel, to: shown)
         // The display slope at each point's centre (`SpectrumTilt`); zero when flat.
-        let tilt = (0..<count).map { frame.options.tilt.offset(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count))) }
+        let tilt = (0..<count).map { frame.options.tilt.offset(frequency: LogFrequencyAxis.centre($0, of: count, upper: upper)) }
         // Each point at its band's centre on the well's axis: evenly spaced on the log one the bands are analysed on.
-        let centres = (0..<count).map { layout.y(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count)), sampleRate: frame.sampleRate) }
+        let centres = (0..<count).map { layout.y(frequency: LogFrequencyAxis.centre($0, of: count, upper: upper), sampleRate: frame.sampleRate) }
         func y(_ index: Int) -> CGFloat { centres[index] }
         func line(_ levels: [Float]) -> [CGPoint] {
             Self.spline((0..<count).map { CGPoint(x: layout.x(decibels: levels[$0] + tilt[$0]), y: y($0)) },
@@ -2674,7 +2674,7 @@ final class SpectrogramScene: CanvasScene {
                              span: Float(span), floor: options.spectrogramRange.floor,
                              range: options.spectrogramRange.ceiling - options.spectrogramRange.floor,
                              tilt: options.tilt.decibelsPerOctave, floorOctave: Float(log2(20 / SpectrumTilt.pivot)),
-                             octaves: Float(log2(upper / 20)), linear: options.frequencyScale == .linear ? 1 : 0)
+                             octaves: Float(LogFrequencyAxis.octaves(upper: upper)), linear: options.frequencyScale == .linear ? 1 : 0)
     }
 
     init(device: MTLDevice) throws {

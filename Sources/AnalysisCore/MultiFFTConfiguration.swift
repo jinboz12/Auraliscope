@@ -67,7 +67,7 @@ package struct MultiFFTConfiguration: Codable, Equatable, Sendable {
             c.bands[i].rate = finite(c.bands[i].rate, 30, 1...60)
             c.bands[i].overlap = finite(c.bands[i].overlap, 0.75, 0...0.96875)
         }
-        let upper = min(20000, sampleRate / 2)
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
         c.lowCrossover = finite(c.lowCrossover, 250, 40...max(40, upper / 4))
         c.highCrossover = finite(c.highCrossover, 2500, (c.lowCrossover * 2)...max(c.lowCrossover * 2, upper * 0.9))
         c.blendOctaves = finite(c.blendOctaves, 1, 0.125...2)

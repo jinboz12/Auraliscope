@@ -15,7 +15,7 @@ clang -std=c11 -O2 -I Sources/AnalysisKernels/include -I Sources/AudioRing/inclu
 a=Sources/Auraliscope
 swiftc -O -swift-version 5 -module-cache-path "$out/modules-$cache_key" -module-name AnalysisCore -package-name Auraliscope \
     -I Sources/AnalysisKernels/include -I Sources/AudioRing/include -framework AudioToolbox \
-    Sources/AnalysisCore/MultiFFTConfiguration.swift Sources/AnalysisCore/MultiFFTAnalyzer.swift Sources/AnalysisCore/SpectrumAnalyzer.swift Sources/AnalysisCore/SpectrogramAnalyzer.swift Sources/AnalysisCore/ReassignedSpectrogram.swift \
+    Sources/AnalysisCore/LogFrequencyAxis.swift Sources/AnalysisCore/MultiFFTConfiguration.swift Sources/AnalysisCore/MultiFFTAnalyzer.swift Sources/AnalysisCore/SpectrumAnalyzer.swift Sources/AnalysisCore/SpectrogramAnalyzer.swift Sources/AnalysisCore/ReassignedSpectrogram.swift \
     Sources/AnalysisCore/SpectralWindow.swift Sources/AnalysisCore/LoudnessAnalyzer.swift Sources/AnalysisCore/SignalHealth.swift \
     Sources/AnalysisCore/SpatialField.swift Sources/AnalysisCore/SpatialGeometry.swift Sources/AnalysisCore/SpatialObservations.swift \
     Sources/AnalysisCore/Role.swift Sources/AnalysisCore/FormatDetector.swift Sources/AnalysisCore/WaveformEnvelope.swift \

@@ -178,8 +178,8 @@ package final class MultiFFTAnalyzer {
         span = c.bands.map(\.size).max()!
         hop = c.hop(sampleRate: sampleRate); untilFrame = span
         left = .init(repeating: 0, count: span); right = left
-        let upper = min(20000, sampleRate / 2)
-        frequencies = (0..<Self.points).map { 20 * pow(upper / 20, (Double($0) + 0.5) / Double(Self.points)) }
+        let upper = LogFrequencyAxis.upper(sampleRate: sampleRate)
+        frequencies = (0..<Self.points).map { LogFrequencyAxis.centre($0, of: Self.points, upper: upper) }
         maps = c.bands.map { SpectrumAnalyzer.bandMaps(count: Self.points, sampleRate: sampleRate, fftSize: $0.size) }
         weights = frequencies.map { MultiFFTConfiguration.weights(frequency: $0, low: c.lowCrossover, high: c.highCrossover, octaves: c.blendOctaves) }
         fused = Array(repeating: Array(repeating: 0, count: Self.points), count: channels)
@@ -247,7 +247,7 @@ package final class MultiFFTAnalyzer {
                 }
             }
         }
-        let radius = Int(configuration.smoothingOctaves * Double(Self.points) / log2(min(20000, sampleRate / 2) / 20) / 2)
+        let radius = Int(configuration.smoothingOctaves * Double(Self.points) / LogFrequencyAxis.octaves(upper: LogFrequencyAxis.upper(sampleRate: sampleRate)) / 2)
         if radius > 0 {
             for channel in 0..<count {
                 prefix[0] = 0
