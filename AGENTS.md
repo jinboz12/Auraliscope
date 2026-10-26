@@ -31,9 +31,11 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
 ```
 
 - `scripts/test.sh` compiles an **explicit list** of sources into one module named `AnalysisCore`. A new file used
-  by tested code must be added there (and to `Bridge/scripts/test-analysis.sh` and `check-spatial.sh` if it is in
-  `AnalysisCore`). Because that build is one module, it hides a missing `import AnalysisCore` in app files: always
-  run `swift build` too.
+  by tested code must be added there. The plugin-side scripts (`Bridge/scripts/test-analysis.sh`, `check-spatial.sh`)
+  have their own lists: add a file to them when the plugin's tests or tools use it, which includes some app files
+  (`MeterScale.swift` and the files split from it). `Tests/Probes/analysis-sources.py` reads the `test.sh` list for
+  probes. Because that build is one module, it hides a missing `import AnalysisCore` in app files: always run
+  `swift build` too.
 - A passing build is not proof of behaviour. Analysis changes must keep the golden digests
   (`Tests/Fixtures/pipeline-golden.json`) bit-identical; re-record them (`AURALISCOPE_RECORD_GOLDEN=1
   scripts/test.sh`) only for an intended, explained numerical change, after the portable checks pass.
