@@ -100,6 +100,8 @@ enum ModelLifecycleSelfTest {
         var plugins: [AbrSourceInfo] = []
         private(set) var selected: [UInt8]?
         private(set) var commands: [Int32] = []
+        /// Every command with its target: "<code> <session>".
+        private(set) var sent: [String] = []
         private(set) var spectrogram: SpectrogramMode?
         private(set) var everyChannel: Bool?
         private(set) var coherence: Float?
@@ -123,6 +125,7 @@ enum ModelLifecycleSelfTest {
         func command(_ session: [UInt8], _ command: Int32, generation: UInt32) -> UInt32 {
             commandID += 1
             commands.append(command)
+            sent.append("\(command) \(BridgeSource.hex(session))")
             journal.note("bridge.command \(command)")
             return commandID
         }
@@ -522,6 +525,7 @@ enum ModelLifecycleSelfTest {
         check(model.running && stream() != stopped && capturing(outputB), "start after a stop makes a fresh analysis")
 
         await checkPlugins(model, check: check, until: until, settle: settle)
+        await checkPluginPause(model, check: check, until: until, settle: settle)
 
         restoreDomain()
         print("PASS: model lifecycle checks complete")
@@ -713,15 +717,13 @@ enum ModelLifecycleSelfTest {
         receiver.plugins = [returned, copyOfReturned, other]
         _ = await until(1) { device(other) != nil }
         model.toggleCapture()
-        let pausedAt = receiver.commands.count
-        check(receiver.commands.last == command(ABR_COMMAND_PAUSE), "the found insert's measurement is paused")
+        let pausedAt = receiver.sent.count
+        check(receiver.commands.last == command(ABR_COMMAND_PAUSE), "the chosen insert's measurement is paused")
         receiver.plugins = [returned, copyOfReturned, plugin(session: 0x16, persistent: 0xA4, name: "QA Other", focusRequests: 1)]
         check(await until(1) { model.selectedID.bridge == key(other) && model.running && condition() == .streaming },
               "a click in a plugin's window selects that insert and measures it, even from a pause")
-        // KNOWN ISSUE, kept as it is: `stop()` clears the paused session before testing it, so the resume it means to
-        // send a paused insert that is left never goes out, and that insert's measurement stays paused.
-        check(!receiver.commands[pausedAt...].contains(command(ABR_COMMAND_RESUME)),
-              "KNOWN ISSUE (current behaviour): leaving a paused insert for another sends it no resume")
+        check(Array(receiver.sent[pausedAt...]) == ["\(ABR_COMMAND_RESUME) \(key(returned))"],
+              "leaving the paused insert for another resumes its measurement, once")
 
         // A plugin of another protocol version, and an immersive bus.
         let old = plugin(session: 0x17, persistent: 0xA5, name: "QA Old", compatible: false)
@@ -776,5 +778,115 @@ enum ModelLifecycleSelfTest {
                                                               "worker.make \(model.captureGeneration)"],
               "Audio devices takes the device chosen last: the plugin is unsubscribed and the device captured")
         receiver.plugins = []
+    }
+
+    /// A DAW plugin's measurement paused from here is this display's to resume: on the same insert when its paused
+    /// analysis carries on, or once when that paused analysis is let go (another source, a fresh start, stop), and
+    /// only when the pause reached the plugin. Commands and their order are read from the receiver.
+    @MainActor
+    private static func checkPluginPause(_ model: MeterModel, check: (Bool, String) -> Void,
+                                         until: (Double, () -> Bool) async -> Bool, settle: (Double) async -> Void) async {
+        func key(_ info: AbrSourceInfo) -> String { BridgeSource(info).sessionKey }
+        func device(_ info: AbrSourceInfo) -> InputDevice? { model.devices.first { $0.bridgeSession == key(info) } }
+        func condition() -> BridgeCondition? {
+            if case let .bridge(_, condition, _, _) = model.status { return condition }
+            return nil
+        }
+        func pause(_ info: AbrSourceInfo) -> String { "\(ABR_COMMAND_PAUSE) \(key(info))" }
+        func resume(_ info: AbrSourceInfo) -> String { "\(ABR_COMMAND_RESUME) \(key(info))" }
+        /// Whether the journal has `first` before `then` since `mark`.
+        func ordered(since mark: Int, _ first: String, _ then: String) -> Bool {
+            let events = Array(journal.events[mark...])
+            guard let a = events.firstIndex(of: first), let b = events.firstIndex(of: then) else { return false }
+            return a < b
+        }
+
+        let first = plugin(session: 0x31, persistent: 0xC1, name: "QA Pause A")
+        let second = plugin(session: 0x32, persistent: 0xC2, name: "QA Pause B")
+        receiver.plugins = [first, second]
+        guard await until(1, { device(first) != nil && device(second) != nil }), let firstDevice = device(first),
+              let secondDevice = device(second) else { return check(false, "the inserts are listed") }
+        model.select(firstDevice.id)
+        check(model.running && condition() == .streaming, "an insert chosen for the pause checks is measured")
+
+        // The same insert: one pause, then one resume, on the same results stream.
+        var mark = receiver.sent.count
+        let stream = model.captureGeneration
+        model.toggleCapture()
+        model.toggleCapture()
+        check(Array(receiver.sent[mark...]) == [pause(first), resume(first)] && model.running
+              && model.captureGeneration == stream,
+              "pause and resume on one insert send it one pause and one resume, on the same results stream")
+
+        // Another insert chosen while paused: nothing is sent until capture starts there; then the paused insert is
+        // resumed once, before the receiver subscribes to the other one.
+        mark = receiver.sent.count
+        var events = journal.mark
+        model.toggleCapture()
+        model.select(secondDevice.id)
+        check(!model.running && Array(receiver.sent[mark...]) == [pause(first)],
+              "choosing another insert while paused sends nothing more until capture starts")
+        model.toggleCapture()
+        check(model.running && condition() == .streaming && model.selectedID == secondDevice.id
+              && Array(receiver.sent[mark...]) == [pause(first), resume(first)]
+              && ordered(since: events, "bridge.command \(ABR_COMMAND_RESUME)", "bridge.select \(key(second))"),
+              "starting on the other insert resumes the paused one once, before subscribing to the other")
+
+        // Stop while paused resumes the insert once; a second stop sends nothing; the next start is fresh.
+        mark = receiver.sent.count
+        model.toggleCapture()
+        model.stop()
+        check(Array(receiver.sent[mark...]) == [pause(second), resume(second)] && !model.running,
+              "stop while paused resumes the paused insert")
+        model.stop()
+        let fresh = model.captureGeneration
+        model.resume()
+        check(Array(receiver.sent[mark...]) == [pause(second), resume(second)] && model.running
+              && model.captureGeneration == fresh + 1,
+              "a second stop and the fresh start after it send no further resume")
+
+        // The plugin's format changed while paused: resume starts afresh on it, and its measurement is resumed first.
+        mark = receiver.sent.count
+        events = journal.mark
+        model.toggleCapture()
+        let changed = plugin(session: 0x32, persistent: 0xC2, name: "QA Pause B", epoch: 2)
+        receiver.plugins = [first, changed]
+        await settle(0.4)
+        let before = model.captureGeneration
+        model.toggleCapture()
+        check(model.running && condition() == .streaming && model.captureGeneration == before + 1
+              && Array(receiver.sent[mark...]) == [pause(second), resume(second)]
+              && ordered(since: events, "bridge.command \(ABR_COMMAND_RESUME)", "bridge.attach"),
+              "resume after the plugin's format changed resumes its measurement, then starts a new results stream")
+
+        // The paused insert's connection broke (the plugin resumes by itself): leaving it sends it nothing.
+        mark = receiver.sent.count
+        model.toggleCapture()
+        receiver.plugins = [first]
+        check(await until(1) { device(changed) == nil }, "the paused insert's connection is gone")
+        model.select(firstDevice.id)
+        model.toggleCapture()
+        check(model.running && condition() == .streaming && model.selectedID == firstDevice.id
+              && Array(receiver.sent[mark...]) == [pause(changed)],
+              "a paused insert whose connection broke is sent nothing when it is left; the next source starts")
+
+        // A pause that never reached the plugin (it was disconnected, its analysis held) is not undone by a resume
+        // when the insert is left after it returns.
+        receiver.plugins = []
+        _ = await until(1) { condition() == .disconnectedHeld }
+        mark = receiver.sent.count
+        model.toggleCapture()
+        check(!model.running && receiver.sent.count == mark, "pausing a disconnected insert sends it nothing")
+        receiver.plugins = [first, changed]
+        _ = await until(1) { device(first) != nil && device(changed) != nil }
+        guard let changedDevice = device(changed) else { return check(false, "the insert is listed again") }
+        model.select(changedDevice.id)
+        model.toggleCapture()
+        check(model.running && model.selectedID == changedDevice.id && receiver.sent.count == mark,
+              "an insert whose pause never reached it is not sent a resume when it is left")
+
+        model.select(outputB.id)
+        receiver.plugins = []
+        check(model.running && !model.showingBridgeResults, "back on the device after the pause checks")
     }
 }

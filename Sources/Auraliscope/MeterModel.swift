@@ -661,6 +661,9 @@ final class MeterModel: ObservableObject {
         let time: CFTimeInterval
         /// A DAW plugin source: the insert and format the paused analysis was measuring.
         var bridge: (session: String, epoch: UInt32, channels: Int)? = nil
+        /// Whether the pause reached that plugin: its measurement is then this display's to resume, here or when the
+        /// paused analysis is let go (`stop`).
+        var pluginPaused = false
     }
     private var paused: PausedSession?
 
@@ -1251,15 +1254,13 @@ final class MeterModel: ObservableObject {
         // A DAW plugin measures its own audio: its measurement pauses there (for every display), and this display
         // holds its picture. The subscription stays, so the plugin's state keeps arriving.
         let pausedBridge = attachedBridge
-        if let attached = attachedBridge {
-            link.send(ABR_COMMAND_PAUSE, name: "pause measurement", to: attached.session)
-        }
+        let pluginPaused = attachedBridge.map { link.send(ABR_COMMAND_PAUSE, name: "pause measurement", to: $0.session) } ?? false
         // Capture stops before its final counter is read and the ring is cleared. The 10 Hz readout can
         // lag behind the last callback, so carrying its displayed count would lose recent drops.
         droppedBefore += capture?.stop() ?? 0
         droppedFrames = droppedBefore
         paused = PausedSession(source: selectedID, sources: capturedSources, roles: routedRoles, time: CACurrentMediaTime(),
-                               bridge: pausedBridge)
+                               bridge: pausedBridge, pluginPaused: pluginPaused)
         running = false
         status = .paused
         frozen = true
@@ -1327,6 +1328,8 @@ final class MeterModel: ObservableObject {
     }
 
     func stop() {
+        // A DAW insert this display paused, left without resuming it here: read before the paused session goes.
+        let pausedPlugin = paused?.pluginPaused == true ? paused?.bridge?.session : nil
         frozen = false
         silentOutput = false
         droppedBefore = 0
@@ -1335,9 +1338,10 @@ final class MeterModel: ObservableObject {
         hardwareObserver?.watch(nil)
         // The ring's producer goes first (the bridge thread or the device), then its consumer.
         link.receiver?.detach()
-        if let attached = attachedBridge, paused != nil {
-            // Stopping a paused DAW source: its measurement must not stay paused for nobody.
-            link.send(ABR_COMMAND_RESUME, name: "resume measurement", to: attached.session)
+        if let pausedPlugin {
+            // Its measurement must not stay paused for nobody. Sent before any other insert is subscribed; if the
+            // connection is already gone, the plugin has resumed by itself.
+            link.send(ABR_COMMAND_RESUME, name: "resume measurement", to: pausedPlugin)
         }
         attachedBridge = nil
         resultInbox = nil
