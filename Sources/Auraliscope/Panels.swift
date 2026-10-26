@@ -248,7 +248,7 @@ struct SpectrumPanel: View {
     @ObservedObject private var l10n = Localizer.shared
     @Environment(\.panelContext) private var context
     /// Width of the live spectrum beside the waterfall, dragged by the divider between them; 0 is automatic.
-    @AppStorage("layout.spectrumStrip") private var strip: Double = 0
+    @AppStorage(MeterModel.spectrumStripKey) private var strip: Double = 0
     /// The spectrum's side, the spectrogram's analysis and its view, chosen in the panel's settings.
     @AppStorage(SpectrumSide.key) private var side = SpectrumSide.right.rawValue
     @AppStorage(SpectrogramAnalysis.key) private var analysis = SpectrogramAnalysis.classic.rawValue
@@ -1731,7 +1731,7 @@ struct SoundstagePanel: View {
     let format: ChannelFormat
     let layout: SpeakerLayout
     /// The stereometer's and the band map's resolution, chosen on the header.
-    @AppStorage("soundstage.bands") private var bands = StereoBands.Resolution.five.rawValue
+    @AppStorage(DisplayOptions.stageBandsKey) private var bands = StereoBands.Resolution.five.rawValue
     /// The room's band markers in Immersive; hidden with the BANDS menu's Off.
     @AppStorage(DisplayOptions.bandMarkersKey) private var markers = true
 
@@ -1890,7 +1890,7 @@ struct ChannelLevelsPanel: View {
     let layout: SpeakerLayout
     @ObservedObject private var l10n = Localizer.shared
     /// The correlation bar's resolution, chosen beside its title.
-    @AppStorage("levels.bands") private var bands = StereoBands.Resolution.five.rawValue
+    @AppStorage(DisplayOptions.levelsBandsKey) private var bands = StereoBands.Resolution.five.rawValue
 
     var body: some View {
         let resolution = StereoBands.Resolution(rawValue: bands) ?? .five
@@ -2121,6 +2121,7 @@ struct DisplayOptions: Equatable {
     /// Build 76's dome band (−1 full, −2 all five, 0…4 one band), read once when the new key is unset.
     static let legacyDomeBandKey = "soundstage.domeBand"
     static let stageBandsKey = "soundstage.bands"
+    static let levelsBandsKey = "levels.bands"
 
     static var storedDomeBands: BandChoice {
         let defaults = UserDefaults.standard

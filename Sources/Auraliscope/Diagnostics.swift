@@ -599,7 +599,7 @@ enum Diagnostics {
     static func testFramePacingIfRequested(model: MeterModel) {
         guard let index = CommandLine.arguments.firstIndex(of: "--test-frame-pacing") else { return }
         let scenario = index + 1 < CommandLine.arguments.count ? CommandLine.arguments[index + 1] : "idle"
-        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["formatMode"]
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[MeterModel.formatModeKey]
         // `--test-screen <n>`: the meter window moved to display n first (the canvases follow it to that display's rate).
         if let screenIndex = CommandLine.arguments.firstIndex(of: "--test-screen").flatMap({ $0 + 1 < CommandLine.arguments.count ? Int(CommandLine.arguments[$0 + 1]) : nil }) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -652,7 +652,7 @@ enum Diagnostics {
                     }
                     fflush(stdout)
                     if scenario == "switch" {
-                        if let saved { UserDefaults.standard.set(saved, forKey: "formatMode") } else { UserDefaults.standard.removeObject(forKey: "formatMode") }
+                        if let saved { UserDefaults.standard.set(saved, forKey: MeterModel.formatModeKey) } else { UserDefaults.standard.removeObject(forKey: MeterModel.formatModeKey) }
                         UserDefaults.standard.synchronize()
                     }
                     exit(0)
@@ -668,10 +668,10 @@ enum Diagnostics {
     @MainActor
     static func testModeSwitchIfRequested(model: MeterModel) {
         guard CommandLine.arguments.contains("--test-mode-switch") else { return }
-        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?["formatMode"]
+        let saved = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[MeterModel.formatModeKey]
         func step(_ index: Int) {
             guard index < 6 else {
-                if let saved { UserDefaults.standard.set(saved, forKey: "formatMode") } else { UserDefaults.standard.removeObject(forKey: "formatMode") }
+                if let saved { UserDefaults.standard.set(saved, forKey: MeterModel.formatModeKey) } else { UserDefaults.standard.removeObject(forKey: MeterModel.formatModeKey) }
                 UserDefaults.standard.synchronize()
                 exit(0)
             }
@@ -717,7 +717,7 @@ enum Diagnostics {
                 set(.s51, .dark, target: -14, style: .dots, hidden: "")
                 guard let preset = presets.saved.first(where: { $0.name == "QA preset" }),
                       let original = presets.saved.first(where: { $0.name == "QA original" }) else { exit(1) }
-                check(preset.values["inputDeviceUID"] == nil && !preset.values.keys.contains { $0.hasPrefix("NSWindow") },
+                check(preset.values[MeterModel.inputDeviceUIDKey] == nil && !preset.values.keys.contains { $0.hasPrefix("NSWindow") },
                       "the source and window frames stay out of a preset")
                 check(FileManager.default.fileExists(atPath: preset.url.path), "saved as a file: \(preset.url.lastPathComponent)")
                 if let copy = presets.duplicate(preset) {
@@ -892,8 +892,8 @@ enum Diagnostics {
         // `--snapshot-band-switch`: switches both band settings 0.25 s before the capture, to catch the morph.
         if CommandLine.arguments.contains("--snapshot-band-switch") {
             DispatchQueue.main.asyncAfter(deadline: .now() + (snapshotFullScreen ? 7.75 : 5.75)) {
-                UserDefaults.standard.set(StereoBands.Resolution.overall.rawValue, forKey: "soundstage.bands")
-                UserDefaults.standard.set(StereoBands.Resolution.three.rawValue, forKey: "levels.bands")
+                UserDefaults.standard.set(StereoBands.Resolution.overall.rawValue, forKey: DisplayOptions.stageBandsKey)
+                UserDefaults.standard.set(StereoBands.Resolution.three.rawValue, forKey: DisplayOptions.levelsBandsKey)
             }
         }
         if let transition = argument("--capture-transition") {
@@ -1239,9 +1239,9 @@ enum Diagnostics {
               index + 1 < CommandLine.arguments.count, let inputID = UInt32(CommandLine.arguments[index + 1]) else { return }
         sourceSwitchStarted = true
         let defaults = UserDefaults.standard
-        let saved = (defaults.object(forKey: "inputDeviceUID"), defaults.object(forKey: "inputDeviceIsOutput"))
+        let saved = (defaults.object(forKey: MeterModel.inputDeviceUIDKey), defaults.object(forKey: MeterModel.inputDeviceIsOutputKey))
         func restore() {
-            for (key, value) in [("inputDeviceUID", saved.0), ("inputDeviceIsOutput", saved.1)] {
+            for (key, value) in [(MeterModel.inputDeviceUIDKey, saved.0), (MeterModel.inputDeviceIsOutputKey, saved.1)] {
                 if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
             }
         }
@@ -1288,7 +1288,7 @@ enum Diagnostics {
         let defaults = UserDefaults.standard
         let domain = defaults.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "") ?? [:]
         func restore() {
-            for key in ["inputDeviceUID", "inputDeviceIsOutput"] {
+            for key in [MeterModel.inputDeviceUIDKey, MeterModel.inputDeviceIsOutputKey] {
                 if let value = domain[key] { defaults.set(value, forKey: key) }
                 else { defaults.removeObject(forKey: key) }
             }
@@ -1305,23 +1305,23 @@ enum Diagnostics {
             model.refreshDevices(using: [input, output])
             model.select(input.id)
             model.refreshDevices(using: [output])
-            check(model.selectedID == .none && defaults.string(forKey: "inputDeviceUID") == input.uid,
+            check(model.selectedID == .none && defaults.string(forKey: MeterModel.inputDeviceUIDKey) == input.uid,
                   "removed input waits at no input device")
             model.refreshDevices(using: [input, output])
             check(model.selectedID == input.id, "returned input is restored")
             model.select(.none)
             model.refreshDevices(using: [input, output])
-            check(model.selectedID == .none && defaults.string(forKey: "inputDeviceUID") == "",
+            check(model.selectedID == .none && defaults.string(forKey: MeterModel.inputDeviceUIDKey) == "",
                   "manual no input device remains selected")
             model.select(output.id)
             model.refreshDevices(using: [input])
-            check(model.selectedID == .noOutput && defaults.string(forKey: "inputDeviceUID") == output.uid,
+            check(model.selectedID == .noOutput && defaults.string(forKey: MeterModel.inputDeviceUIDKey) == output.uid,
                   "removed output waits at no output device")
             model.refreshDevices(using: [input, output])
             check(model.selectedID == output.id, "returned output is restored")
             model.select(.noOutput)
             model.refreshDevices(using: [input, output])
-            check(model.selectedID == .noOutput && defaults.string(forKey: "inputDeviceUID") == "",
+            check(model.selectedID == .noOutput && defaults.string(forKey: MeterModel.inputDeviceUIDKey) == "",
                   "manual no output device remains selected")
             restore()
             exit(0)

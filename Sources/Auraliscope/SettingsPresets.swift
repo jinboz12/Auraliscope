@@ -103,7 +103,7 @@ final class SettingsPresets: ObservableObject {
     /// stores of layouts and the old presets, and the app's own bookkeeping.
     private static let excludedKeys: Set<String> = [
         legacyKey, "layout.presets", SettingsBackup.key, "settingsPane", "welcomeSeenBuild",
-        "inputDeviceUID", "inputDeviceIsOutput", "lastAudioDeviceUID", "lastAudioDeviceIsOutput",
+        MeterModel.inputDeviceUIDKey, MeterModel.inputDeviceIsOutputKey, "lastAudioDeviceUID", "lastAudioDeviceIsOutput",
         "bridgeSelection", "bridgeSourceName", PanelPlacement.stripFrameName,
         SpeakerLayoutStore.revisionKey, "labsIndigoDefaultAdopted", "settings.migratedFromLabs",
     ]

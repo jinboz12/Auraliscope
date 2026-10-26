@@ -384,6 +384,15 @@ final class MeterModel: ObservableObject {
     /// Always on top: the meter window and its panel windows float above other apps' windows. Off until turned on
     /// (the toolbar's pin, Settings ▸ General), then kept. A key of its own: builds before 103 floated at every launch.
     nonisolated static let floatingKey = "window.alwaysOnTop"
+    /// Stored settings the model owns. The names are permanent: users' settings, presets and the LABS migration use them.
+    nonisolated static let inputDeviceUIDKey = "inputDeviceUID"
+    nonisolated static let inputDeviceIsOutputKey = "inputDeviceIsOutput"
+    nonisolated static let formatModeKey = "formatMode"
+    nonisolated static let speakerLayoutKey = "speakerLayout"
+    nonisolated static let showMonoModeKey = "showMonoMode"
+    nonisolated static let loudnessStandardKey = "loudnessStandard"
+    nonisolated static let spatialLoudnessStandardKey = "loudnessStandard.spatial"
+    nonisolated static let spectrumStripKey = "layout.spectrumStrip"
     @Published var floating = UserDefaults.standard.bool(forKey: MeterModel.floatingKey) {
         didSet {
             guard floating != oldValue else { return }
@@ -402,7 +411,7 @@ final class MeterModel: ObservableObject {
     @Published var speakerLayout: SpeakerLayout {
         didSet {
             guard speakerLayout != oldValue else { return }
-            UserDefaults.standard.set(speakerLayout.rawValue, forKey: "speakerLayout")
+            UserDefaults.standard.set(speakerLayout.rawValue, forKey: Self.speakerLayoutKey)
             DiagnosticLog.event("Speaker layout: \(speakerLayout.name)")
             loadAssignment()
             if demoStart != nil {
@@ -444,7 +453,7 @@ final class MeterModel: ObservableObject {
     /// Auto follows the routing and the DSP-side detector; Mono / Stereo / Spatial pin the display.
     @Published var formatMode: FormatMode {
         didSet {
-            UserDefaults.standard.set(formatMode.rawValue, forKey: "formatMode")
+            UserDefaults.standard.set(formatMode.rawValue, forKey: Self.formatModeKey)
             if formatMode != oldValue { DiagnosticLog.event("Monitoring mode: \(formatMode.rawValue)") }
             configureSpectrumArchitecture()
             // Mono measures a single input, so entering or leaving it restarts the stream (like a routing change).
@@ -460,7 +469,7 @@ final class MeterModel: ObservableObject {
     @Published var monoEnabled: Bool {
         didSet {
             guard monoEnabled != oldValue else { return }
-            UserDefaults.standard.set(monoEnabled, forKey: "showMonoMode")
+            UserDefaults.standard.set(monoEnabled, forKey: Self.showMonoModeKey)
             DiagnosticLog.event("Show Mono mode: \(monoEnabled ? "on" : "off")")
             if !monoEnabled && formatMode == .mono {
                 formatMode = .stereo
@@ -485,8 +494,8 @@ final class MeterModel: ObservableObject {
     var truePeakCeiling: Double { format == .spatial ? spatialCeiling : stereoCeiling }
     /// The standard chosen for each mode (`LoudnessStandard.id`). Settings from before standards had identities take
     /// the first standard with their target and ceiling.
-    @Published private(set) var stereoStandardID = UserDefaults.standard.string(forKey: "loudnessStandard")
-    @Published private(set) var spatialStandardID = UserDefaults.standard.string(forKey: "loudnessStandard.spatial")
+    @Published private(set) var stereoStandardID = UserDefaults.standard.string(forKey: MeterModel.loudnessStandardKey)
+    @Published private(set) var spatialStandardID = UserDefaults.standard.string(forKey: MeterModel.spatialLoudnessStandardKey)
 
     /// The standard in use for a mode, or nil when its target or ceiling was set by hand (Custom).
     func standard(spatial: Bool) -> LoudnessStandard? {
@@ -519,7 +528,7 @@ final class MeterModel: ObservableObject {
             stereoCeiling = standard.ceiling
             stereoStandardID = standard.id
         }
-        UserDefaults.standard.set(standard.id, forKey: spatial ? "loudnessStandard.spatial" : "loudnessStandard")
+        UserDefaults.standard.set(standard.id, forKey: spatial ? Self.spatialLoudnessStandardKey : Self.loudnessStandardKey)
         saveLoudness()
     }
 
@@ -532,9 +541,9 @@ final class MeterModel: ObservableObject {
     /// them (`SettingsPresets`): the format, Mono, the mode, Always on top and both modes' loudness standards.
     func reloadStoredSettings() {
         let defaults = UserDefaults.standard
-        speakerLayout = defaults.string(forKey: "speakerLayout").flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
-        monoEnabled = defaults.bool(forKey: "showMonoMode")
-        if let mode = defaults.string(forKey: "formatMode").flatMap(FormatMode.init(rawValue:)), availableModes.contains(mode) {
+        speakerLayout = defaults.string(forKey: Self.speakerLayoutKey).flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
+        monoEnabled = defaults.bool(forKey: Self.showMonoModeKey)
+        if let mode = defaults.string(forKey: Self.formatModeKey).flatMap(FormatMode.init(rawValue:)), availableModes.contains(mode) {
             formatMode = mode
         }
         floating = defaults.bool(forKey: Self.floatingKey)
@@ -542,9 +551,9 @@ final class MeterModel: ObservableObject {
         stereoCeiling = Self.stored("truePeakCeiling", -1)
         spatialTarget = Self.stored("loudnessTarget.spatial", -18)
         spatialCeiling = Self.stored("truePeakCeiling.spatial", -1)
-        stereoStandardID = defaults.string(forKey: "loudnessStandard")
-        spatialStandardID = defaults.string(forKey: "loudnessStandard.spatial")
-        spectrumStrip = CGFloat(defaults.double(forKey: "layout.spectrumStrip"))
+        stereoStandardID = defaults.string(forKey: Self.loudnessStandardKey)
+        spatialStandardID = defaults.string(forKey: Self.spatialLoudnessStandardKey)
+        spectrumStrip = CGFloat(defaults.double(forKey: Self.spectrumStripKey))
     }
 
     private func saveLoudness() {
@@ -570,11 +579,11 @@ final class MeterModel: ObservableObject {
     func toggleAuto() { formatMode = formatMode == .auto ? FormatMode(format) : .auto }
     /// Width of the Spectrum card's live spectrum, dragged by its divider; 0 is automatic. Plain (not published):
     /// the card's own `@AppStorage` redraws its labels, and the canvases read it every frame.
-    var spectrumStrip = CGFloat(UserDefaults.standard.double(forKey: "layout.spectrumStrip"))
+    var spectrumStrip = CGFloat(UserDefaults.standard.double(forKey: MeterModel.spectrumStripKey))
     /// Band resolution chosen on the Soundstage and Channel Levels panels (their switchers write it together with
     /// their own `@AppStorage`); plain, read by the canvases every frame.
-    var stageBands = MeterModel.storedBands("soundstage.bands")
-    var levelsBands = MeterModel.storedBands("levels.bands")
+    var stageBands = MeterModel.storedBands(DisplayOptions.stageBandsKey)
+    var levelsBands = MeterModel.storedBands(DisplayOptions.levelsBandsKey)
     /// The stereometer's style, chosen on the Soundstage header; plain, like the band resolutions.
     var stageStyle = StageStyle.stored
     /// The panels' display choices, made on each panel (`PanelSettingsButton`).
@@ -724,9 +733,9 @@ final class MeterModel: ObservableObject {
     static weak var diagnosticInstance: MeterModel?
 
     init() {
-        speakerLayout = UserDefaults.standard.string(forKey: "speakerLayout").flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
-        let savedMode = UserDefaults.standard.string(forKey: "formatMode")
-        let showMono = UserDefaults.standard.bool(forKey: "showMonoMode")
+        speakerLayout = UserDefaults.standard.string(forKey: Self.speakerLayoutKey).flatMap(SpeakerLayout.init(rawValue:)) ?? .standard
+        let savedMode = UserDefaults.standard.string(forKey: Self.formatModeKey)
+        let showMono = UserDefaults.standard.bool(forKey: Self.showMonoModeKey)
         monoEnabled = showMono
         // 2.0 stored the pinned multichannel mode as "surround". A pinned Mono needs Mono enabled.
         let mode = savedMode == "surround" ? .spatial : FormatMode(rawValue: savedMode ?? "") ?? .auto
@@ -736,8 +745,8 @@ final class MeterModel: ObservableObject {
         case let .failure(error): bridge = nil; bridgeError = error.reason
         }
         devices = AudioDevices.availableSources()
-        let savedUID = UserDefaults.standard.string(forKey: "inputDeviceUID")
-        let savedOutput = UserDefaults.standard.bool(forKey: "inputDeviceIsOutput")
+        let savedUID = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey)
+        let savedOutput = UserDefaults.standard.bool(forKey: Self.inputDeviceIsOutputKey)
         let requested = devices.first { !$0.output && $0.device == Diagnostics.requestedDeviceID }
         // Launch meters the current macOS default output, what the Mac is playing. Before macOS 14.2 (no output
         // capture) it takes the default input instead; the saved device is the fallback when there is no default.
@@ -777,7 +786,7 @@ final class MeterModel: ObservableObject {
                                                                queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let stage = Self.storedBands("soundstage.bands"), levels = Self.storedBands("levels.bands")
+                let stage = Self.storedBands(DisplayOptions.stageBandsKey), levels = Self.storedBands(DisplayOptions.levelsBandsKey)
                 if stage != self.stageBands { self.stageBands = stage }
                 if levels != self.levelsBands { self.levelsBands = levels }
                 let style = StageStyle.stored
@@ -1057,8 +1066,8 @@ final class MeterModel: ObservableObject {
             DiagnosticLog.event("Devices: \(available.filter { !$0.output }.count) inputs, \(available.filter(\.output).count) outputs")
         }
         devices = available
-        let savedUID = UserDefaults.standard.string(forKey: "inputDeviceUID")
-        let savedOutput = UserDefaults.standard.bool(forKey: "inputDeviceIsOutput")
+        let savedUID = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey)
+        let savedOutput = UserDefaults.standard.bool(forKey: Self.inputDeviceIsOutputKey)
         let restored = savedUID.flatMap { uid in
             uid.isEmpty ? nil : devices.first { !$0.uid.isEmpty && $0.uid == uid && $0.output == savedOutput }
         }
@@ -1078,8 +1087,8 @@ final class MeterModel: ObservableObject {
 
     func select(_ id: SourceID) {
         if id.isNone {
-            UserDefaults.standard.set("", forKey: "inputDeviceUID")
-            UserDefaults.standard.set(id.output, forKey: "inputDeviceIsOutput")
+            UserDefaults.standard.set("", forKey: Self.inputDeviceUIDKey)
+            UserDefaults.standard.set(id.output, forKey: Self.inputDeviceIsOutputKey)
         }
         if selectedID == id {
             if id.isNone { status = .noSelection }
@@ -1088,12 +1097,12 @@ final class MeterModel: ObservableObject {
         guard id.isNone || id == .anyPlugin || devices.contains(where: { $0.id == id }) else { return }
         selectedID = id
         if id == .anyPlugin {
-            UserDefaults.standard.set(bridgeUIDPrefix, forKey: "inputDeviceUID")
-            UserDefaults.standard.set(false, forKey: "inputDeviceIsOutput")
+            UserDefaults.standard.set(bridgeUIDPrefix, forKey: Self.inputDeviceUIDKey)
+            UserDefaults.standard.set(false, forKey: Self.inputDeviceIsOutputKey)
         }
         if let device = devices.first(where: { $0.id == id }), !device.uid.isEmpty {
-            UserDefaults.standard.set(device.uid, forKey: "inputDeviceUID")
-            UserDefaults.standard.set(device.output, forKey: "inputDeviceIsOutput")
+            UserDefaults.standard.set(device.uid, forKey: Self.inputDeviceUIDKey)
+            UserDefaults.standard.set(device.output, forKey: Self.inputDeviceIsOutputKey)
             if device.isBridge {
                 UserDefaults.standard.set(device.name, forKey: Self.bridgeNameKey)
             } else {
@@ -1442,7 +1451,7 @@ final class MeterModel: ObservableObject {
                 return
             }
             bridge?.select(nil)
-            status = UserDefaults.standard.string(forKey: "inputDeviceUID") == "" ? .noSelection : .noDevice
+            status = UserDefaults.standard.string(forKey: Self.inputDeviceUIDKey) == "" ? .noSelection : .noDevice
             return
         }
         // Core Audio taps ask for System Audio Recording when the output aggregate begins capture. A DAW plugin
@@ -1498,8 +1507,8 @@ final class MeterModel: ObservableObject {
             droppedFrames = 0
             running = true
             if !device.uid.isEmpty {
-                UserDefaults.standard.set(device.uid, forKey: "inputDeviceUID")
-                UserDefaults.standard.set(device.output, forKey: "inputDeviceIsOutput")
+                UserDefaults.standard.set(device.uid, forKey: Self.inputDeviceUIDKey)
+                UserDefaults.standard.set(device.output, forKey: Self.inputDeviceIsOutputKey)
             }
             hardwareObserver?.watch(device.device)
             DiagnosticLog.event(String(format: "Stream: %.0f Hz, %d ch", capture.sampleRate, Int(capture.channels)))
@@ -1540,8 +1549,8 @@ final class MeterModel: ObservableObject {
         guard selection != bridgeSaved else { return }
         bridgeSaved = selection
         selection.save()
-        UserDefaults.standard.set(bridgeUIDPrefix + source.persistentKey, forKey: "inputDeviceUID")
-        UserDefaults.standard.set(false, forKey: "inputDeviceIsOutput")
+        UserDefaults.standard.set(bridgeUIDPrefix + source.persistentKey, forKey: Self.inputDeviceUIDKey)
+        UserDefaults.standard.set(false, forKey: Self.inputDeviceIsOutputKey)
         UserDefaults.standard.set(source.displayName, forKey: Self.bridgeNameKey)
     }
 

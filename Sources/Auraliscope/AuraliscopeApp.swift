@@ -18,7 +18,7 @@ private final class WelcomeCoordinator: ObservableObject {
     /// missing. `-showWelcomeOnLaunch` on the command line still decides alone.
     static var firstLaunch: Bool {
         let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        return arguments["showWelcomeOnLaunch"] == nil && UserDefaults.standard.string(forKey: seenBuildKey) == nil
+        return arguments[WelcomeSheet.showOnLaunchKey] == nil && UserDefaults.standard.string(forKey: seenBuildKey) == nil
     }
 
     static func noteLaunch() { UserDefaults.standard.set(build, forKey: seenBuildKey) }
@@ -38,7 +38,7 @@ struct AuraliscopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var model = MeterModel()
     @ObservedObject private var l10n = Localizer.shared
-    @AppStorage("showWelcomeOnLaunch") private var showWelcomeOnLaunch = true
+    @AppStorage(WelcomeSheet.showOnLaunchKey) private var showWelcomeOnLaunch = true
     @StateObject private var welcome = WelcomeCoordinator()
 
     init() {
@@ -1284,7 +1284,7 @@ private struct MeterView: View {
     // Divider positions: row fractions of the analyzer panels, and the Soundstage width in points.
     // 1.1 merged Spectrum and Spectrogram into one card, so the share has a key of its own.
     @AppStorage("layout.analyzerShare") private var spectrumFraction: Double = Double(PanelLayout.defaultSpectrum)
-    @AppStorage("layout.multiFFTShare") private var multiFFTShare = MultiFFTStackLayout.defaultShare
+    @AppStorage(MultiFFTStackLayout.shareKey) private var multiFFTShare = MultiFFTStackLayout.defaultShare
     @AppStorage("layout.stageWidth") private var stageWidth: Double = Double(ColumnLayout.defaultStage)
     /// The Soundstage room's share of the right-hand column's height; Channel Levels takes the rest.
     @AppStorage("layout.roomShare") private var roomShare: Double = Double(ColumnLayout.defaultRoomShare)

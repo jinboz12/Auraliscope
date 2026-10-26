@@ -9,10 +9,12 @@ private final class WelcomeOutputSelection: ObservableObject {
 /// A short first-run tutorial in three pages: what the app does, the panels, then the access it needs. The
 /// preference is shared with Settings → General → Startup.
 struct WelcomeSheet: View {
+    /// Whether the welcome opens at every launch (Settings ▸ General ▸ Startup shares it).
+    static let showOnLaunchKey = "showWelcomeOnLaunch"
     @ObservedObject var model: MeterModel
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var l10n = Localizer.shared
-    @AppStorage("showWelcomeOnLaunch") private var showWelcomeOnLaunch = true
+    @AppStorage(Self.showOnLaunchKey) private var showWelcomeOnLaunch = true
     @ObservedObject private var permission = AudioPermission.shared
     @StateObject private var outputSelection = WelcomeOutputSelection()
     @State private var page = 0

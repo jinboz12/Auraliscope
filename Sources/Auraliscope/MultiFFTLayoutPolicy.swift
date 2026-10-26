@@ -36,6 +36,8 @@ enum DockSpectrumPolicy {
 /// window cannot contain them; the requested share survives temporary small sizes and hidden panels.
 struct MultiFFTStackLayout {
     static let defaultShare = 0.5
+    /// The Multi-FFT panel's stored share of the stack.
+    static let shareKey = "layout.multiFFTShare"
     let room: Double
     let top: Double
     let bottom: Double

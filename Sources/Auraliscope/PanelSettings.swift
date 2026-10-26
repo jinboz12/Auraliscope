@@ -134,7 +134,7 @@ private struct PanelSettingsForm: View {
     @AppStorage(DisplayOptions.waveSecondsKey) private var waveSeconds = 4
     @AppStorage(WaveScale.key) private var waveScale = WaveScale.linear.rawValue
     @AppStorage(StageStyle.key) private var stageStyle = StageStyle.dots.rawValue
-    @AppStorage("levels.bands") private var levelBands = StereoBands.Resolution.five.rawValue
+    @AppStorage(DisplayOptions.levelsBandsKey) private var levelBands = StereoBands.Resolution.five.rawValue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {

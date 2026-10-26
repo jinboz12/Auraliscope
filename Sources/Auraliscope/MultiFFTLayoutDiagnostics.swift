@@ -33,7 +33,7 @@ extension Diagnostics {
             check(model.running, "model runs the diagnostic demo (no launch sheet holds it)")
             model.floating = true
             model.formatMode = .stereo
-            UserDefaults.standard.set(0.5,forKey:"layout.multiFFTShare")
+            UserDefaults.standard.set(0.5,forKey:MultiFFTStackLayout.shareKey)
             placement.setShown(.multiFFT,true)
             placement.setHidden([])
             main.setContentSize(NSSize(width:1400,height:900))
@@ -72,11 +72,11 @@ extension Diagnostics {
                 divider.onResize(original+24)
                 await settle()
                 check((split(main)?.leading ?? 0) > original+10,"native grid divider resizes Multi-FFT height")
-                check(UserDefaults.standard.double(forKey:"layout.multiFFTShare") > 0.5,"grid resize share persists")
+                check(UserDefaults.standard.double(forKey:MultiFFTStackLayout.shareKey) > 0.5,"grid resize share persists")
                 check(model.multiFFTFrame()?.serial != serial,"analysis keeps advancing while resizing")
                 split(main)?.onReset()
                 await settle()
-                check(abs(UserDefaults.standard.double(forKey:"layout.multiFFTShare")-0.5) < 0.001,"grid divider double-click callback resets share")
+                check(abs(UserDefaults.standard.double(forKey:MultiFFTStackLayout.shareKey)-0.5) < 0.001,"grid divider double-click callback resets share")
             } else { check(false,"native grid divider missing") }
             placement.setShown(.spectrum,false); placement.setShown(.waveform,false)
             await settle()

@@ -112,8 +112,8 @@ final class SettingsDraft: ObservableObject {
         field(\.palette, { L("Color theme") }, live: { _ in ThemeSettings.shared.palette },
               write: { value, _ in ThemeSettings.shared.palette = value }),
         field(\.welcome, { L("Show welcome at launch") }, previewable: false,
-              live: { _ in UserDefaults.standard.object(forKey: "showWelcomeOnLaunch") as? Bool ?? true },
-              write: { value, _ in store(value, "showWelcomeOnLaunch") }),
+              live: { _ in UserDefaults.standard.object(forKey: WelcomeSheet.showOnLaunchKey) as? Bool ?? true },
+              write: { value, _ in store(value, WelcomeSheet.showOnLaunchKey) }),
         field(\.source, { L("Source") }, previewable: false, live: { $0.selectedID }, write: { value, model in model.select(value) }),
         field(\.layout, { L("Immersive format") }, live: { $0.speakerLayout }, write: { value, model in model.speakerLayout = value }),
         field(\.mono, { L("Show Mono mode") }, live: { $0.monoEnabled }, write: { value, model in model.monoEnabled = value }),
@@ -666,7 +666,7 @@ private struct GeneralPane: View {
         SettingsSection(title: L("STARTUP")) {
             SettingsRow(title: L("Show welcome at launch")) {
                 Toggle(L("Show welcome at launch"), isOn: draft.binding(\.welcome, live: {
-                    UserDefaults.standard.object(forKey: "showWelcomeOnLaunch") as? Bool ?? true
+                    UserDefaults.standard.object(forKey: WelcomeSheet.showOnLaunchKey) as? Bool ?? true
                 }))
                 .toggleStyle(.switch).controlSize(.small).labelsHidden()
             }
