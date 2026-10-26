@@ -6,6 +6,7 @@ import Foundation
 import AppKit
 import ImageIO
 import Metal
+import MetalKit
 
 enum Diagnostics {
     static let enabled = CommandLine.arguments.contains("--diagnostic")
@@ -1094,9 +1095,27 @@ enum Diagnostics {
         func later(_ delay: Double, _ body: @escaping @MainActor () -> Void) {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { body() } }
         }
+        /// A captured window: its pixels (RGBA, the toolbar cropped away), its width, and the rectangles of the meter
+        /// canvases in those pixels: the paused audio picture is compared inside them only.
+        struct Picture { let pixels: Data; let width: Int; let canvases: [CGRect] }
+        /// Whether two pictures match to within two levels per channel, inside the canvases of either.
+        func sameCanvases(_ a: Picture, _ b: Picture) -> Bool {
+            guard a.pixels.count == b.pixels.count, a.width > 0 else { return false }
+            let canvases = a.canvases + b.canvases, width = a.width
+            return a.pixels.withUnsafeBytes { pa -> Bool in b.pixels.withUnsafeBytes { pb -> Bool in
+                for pixel in 0..<(a.pixels.count / 4) {
+                    let point = CGPoint(x: pixel % width, y: pixel / width)
+                    guard canvases.contains(where: { $0.contains(point) }) else { continue }
+                    for channel in 0..<4 where abs(Int(pa[pixel * 4 + channel]) - Int(pb[pixel * 4 + channel])) > 2 {
+                        return false
+                    }
+                }
+                return true
+            } }
+        }
         /// The meter window's pixels below the toolbar (whose glass controls re-render on their own), saved beside
         /// the snapshot for a look.
-        func capture(_ name: String) -> Data? {
+        func capture(_ name: String) -> Picture? {
             guard let window = MainWindow.window,
                   let whole = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.windowNumber),
                                                       [.boundsIgnoreFraming, .bestResolution]) else { return nil }
@@ -1116,7 +1135,20 @@ enum Diagnostics {
                 CGImageDestinationAddImage(output, image, nil)
                 CGImageDestinationFinalize(output)
             }
-            return pixels
+            // The meter canvases are the audio picture. The status bar's live frame-rate readout and the other
+            // SwiftUI text lie outside them: the readout updates while paused, by design.
+            let scale = window.backingScaleFactor
+            var canvases: [CGRect] = []
+            func collect(_ view: NSView) {
+                if view is MTKView {
+                    let rect = view.convert(view.bounds, to: nil)   // window coordinates
+                    canvases.append(CGRect(x: rect.minX * scale, y: (window.frame.height - rect.maxY) * scale - CGFloat(toolbar),
+                                           width: rect.width * scale, height: rect.height * scale).integral)
+                }
+                view.subviews.forEach(collect)
+            }
+            collect(window.contentView ?? NSView())
+            return Picture(pixels: pixels, width: image.width, canvases: canvases)
         }
         later(2) {
             check(model.running && driver.running, "canvases draw while capturing")
@@ -1133,10 +1165,10 @@ enum Diagnostics {
                     check(!model.running && !driver.running, "paused canvases come to rest")
                     let second = capture("paused-later")
                     // Compositing can shift an antialiased edge by a level; anything that moves changes far more.
-                    let same = first.flatMap { a in second.map { b in
-                        a.count == b.count && zip(a, b).allSatisfy { abs(Int($0) - Int($1)) <= 2 }
-                    } } ?? false
-                    check(same, "the paused window keeps its picture unchanged")
+                    check(first?.canvases.isEmpty == false && second?.canvases.isEmpty == false,
+                          "the meter canvases are found in the window")
+                    let same = first.flatMap { a in second.map { b in sameCanvases(a, b) } } ?? false
+                    check(same, "the paused canvases keep their picture unchanged")
                     let paused = driver.ticks
                     model.toggleCapture()
                     later(1) {
