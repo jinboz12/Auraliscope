@@ -18,9 +18,10 @@ debt), `Bridge/ARCHITECTURE.md` and `Bridge/PROTOCOL.md` (DAW plugin side), `doc
 ## Build and verify
 
 ```sh
-scripts/check-all.sh             # everything below that needs no hardware or DAW (--quick: debug build + core checks)
+scripts/check-all.sh             # everything below that needs no hardware or DAW (--quick: debug build + core checks); CI runs it
 swift build                      # debug app
 swift build -c release           # release app
+scripts/check-shaders.sh         # Metal shader library and pipeline states, layout asserts; headless, draws no frame (skips without a Metal device)
 scripts/test.sh                  # 61 core checks, baseline checks (golden digests), kernel checks, localization
 scripts/check-app-features.sh    # update client, render policy, Dock layout
 scripts/check-file-analysis.sh   # file analysis against EBU reference tones (needs a debug build)
@@ -40,6 +41,9 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
   preferences are never touched; `--demo` supplies signal without opening an audio device. An idle loopback (a Pro
   Tools Audio Bridge nobody uses) serves `--capture-selftest <device id>`.
 - Plugin builds need the VST3 SDK (`Bridge/scripts/fetch-sdks.sh` downloads it).
+- Shader checks come in two levels. `check-shaders.sh` proves the shaders compile and that each shader struct matches its
+  Swift struct (`MeterGPU.layoutChecks`); it does not draw. Rendering is checked only by the self-tests that draw frames
+  (`--test-nebula-gpu`, `--render-preview`, the snapshots), which need a QA bundle or a window.
 
 ## Real-time rules
 

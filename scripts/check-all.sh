@@ -6,7 +6,8 @@
 #                                  plugin-side analysis, spatial report, plugin transport
 #   scripts/check-all.sh --quick   debug build and core checks only
 #
-# Logs: .build/check-all/<step>.log. Exit status: 0 when every step passed, 1 otherwise. Steps that need hardware,
+# Logs: .build/check-all/<step>.log. Exit status: 0 when every step passed or was skipped, 1 otherwise. A step is
+# skipped (not failed) when its environment is absent: no Metal device for the shader check. Steps that need hardware,
 # a window, the VST3 SDK or a DAW (capture self-tests, snapshots, plugin builds, REAPER) are not part of it.
 set -uo pipefail
 cd "${0:A:h:h}"
@@ -18,10 +19,15 @@ step() {
     local start=$SECONDS
     "$@" > "$logs/$name.log" 2>&1
     local rc=$?
-    (( rc == 0 )) || failed=1
-    printf '%-18s %-4s %4ds  %s\n' "$name" "$( (( rc == 0 )) && echo pass || echo FAIL)" $(( SECONDS - start )) "$logs/$name.log"
+    # 77: the step found its environment absent (scripts/check-shaders.sh: no Metal device). Not a failure.
+    (( rc == 0 || rc == 77 )) || failed=1
+    local result=FAIL
+    (( rc == 0 )) && result=pass
+    (( rc == 77 )) && result=skip
+    printf '%-18s %-4s %4ds  %s\n' "$name" "$result" $(( SECONDS - start )) "$logs/$name.log"
 }
 step build-debug swift build
+step shaders scripts/check-shaders.sh
 step core-checks scripts/test.sh
 if [[ "${1:-}" != "--quick" ]]; then
     step build-release swift build -c release

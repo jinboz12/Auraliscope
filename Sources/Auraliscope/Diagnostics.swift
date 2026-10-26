@@ -123,6 +123,9 @@ enum Diagnostics {
         if CommandLine.arguments.contains("--test-peak-reset") {
             exit(SoundstageScene.checkPeakReset() ? 0 : 1)
         }
+        if CommandLine.arguments.contains("--check-shaders") {
+            exit(ShaderCheck.run())
+        }
         if CommandLine.arguments.contains("--render-preview") {
             do {
                 let destination = previewOutput ?? FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-preview.png")

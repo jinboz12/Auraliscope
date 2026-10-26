@@ -1,0 +1,36 @@
+# macOS checks that need no audio hardware, no DAW and no VST3 SDK. The same script runs locally:
+# scripts/check-all.sh (see its header for what each step covers and what is skipped).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Build and checks (macOS)
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Checks (scripts/check-all.sh)
+        run: scripts/check-all.sh
+
+      - name: Upload step logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-logs
+          path: .build/check-all/
+          if-no-files-found: ignore
