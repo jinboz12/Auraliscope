@@ -29,6 +29,8 @@ enum BaselineChecks {
     static func run() throws {
         try snapshotLayout()
         print("PASS: baseline: snapshot slot groups tile METER_SNAPSHOT_FLOATS in order, with their producers' sizes")
+        try snapshotContractDocument()
+        print("PASS: baseline: \(contractDocument) lists every slot group at its offset and size")
         try logFrequencyAxisMatchesLegacyExpressions()
         print("PASS: baseline: LogFrequencyAxis equals, bit for bit, every expression it replaced, at 11 rates and 6 band counts")
         try goldenPipeline()
@@ -73,6 +75,19 @@ enum BaselineChecks {
             try require(range(i).count == sizes[groups[i].name], "slot group \(groups[i].name) holds \(range(i).count) floats, its producer writes \(sizes[groups[i].name]!)")
         }
         try require(SnapshotSlots.peaks - SnapshotSlots.spectrum == MeterSnapshot.bandCount, "64 spectrum bands")
+    }
+
+    /// The snapshot's layout is documented for people and agents changing it; the table there must match the code.
+    static let contractDocument = "docs/SNAPSHOT_CONTRACT.md"
+    static func snapshotContractDocument() throws {
+        let rows = groups.indices.map { "| `\(groups[$0].name)` | \(range($0).lowerBound) | \(range($0).count) |" }
+        if ProcessInfo.processInfo.environment["AURALISCOPE_PRINT_SNAPSHOT_TABLE"] == "1" { print(rows.joined(separator: "\n")) }
+        let text = (try? String(contentsOfFile: contractDocument, encoding: .utf8)) ?? ""
+        for row in rows {
+            try require(text.contains(row), "\(contractDocument) is out of date: no row starting \(row)")
+        }
+        try require(text.contains("`METER_SNAPSHOT_FLOATS` = \(SnapshotSlots.total)"),
+                    "\(contractDocument) does not state the total, \(SnapshotSlots.total) floats")
     }
 
     // MARK: - Frequency axis (refactoring batch 3.1)

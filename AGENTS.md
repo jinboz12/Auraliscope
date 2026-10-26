@@ -53,7 +53,8 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
 
 - **Snapshot layout:** `SnapshotSlots` (Swift), `METER_SNAPSHOT_FLOATS` (`Sources/AudioRing/include/AudioRing.h`),
   `DSPWorker.decode`, `ResultAssembler` and the RESULT tags must change together, with a plugin compatibility note.
-  `BaselineChecks.snapshotLayout` checks the sizes.
+  `BaselineChecks.snapshotLayout` checks the sizes; `docs/SNAPSHOT_CONTRACT.md` documents every group and the change
+  procedure (a test keeps its table in step with the code).
 - **Frequency axis:** use `LogFrequencyAxis` (`Sources/AnalysisCore/LogFrequencyAxis.swift`). Never write
   `20 * pow(upper / 20, …)`, `log(f / 20) / log(upper / 20)` or `min(20_000, sampleRate / 2)` again, and keep its
   helpers bit-identical to those expressions.
