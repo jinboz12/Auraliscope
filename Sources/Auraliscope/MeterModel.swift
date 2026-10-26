@@ -1130,8 +1130,7 @@ final class MeterModel: ObservableObject {
     }
 
     func assign(role: Int, source: Int32) {
-        guard speakerLayout.contains(role),
-              source == -1 || (source >= 0 && source < Int32(min(selectedDevice?.channels ?? 0, 64))) else { return }
+        guard RoutingStore.accepts(role: role, source: source, for: speakerLayout, channels: deviceChannels) else { return }
         sourceForRole[role] = source
         activeRoles[role] = source >= 0
         saveAssignment()
@@ -1141,7 +1140,10 @@ final class MeterModel: ObservableObject {
     var selectedDevice: InputDevice? { devices.first(where: { $0.id == selectedID }) }
 
     private var deviceKey: String { selectedDevice?.key ?? (selectedID.output ? "none.output" : "none.input") }
-    private func assignmentKey() -> String { "assign.\(deviceKey).\(speakerLayout.rawValue)" }
+    /// The selected device's inputs a routing may use (at most 64).
+    private var deviceChannels: Int { Int(min(selectedDevice?.channels ?? 0, 64)) }
+    /// Where routings are kept, and their rules.
+    private let routes = RoutingStore()
 
     /// The selected DAW plugin, while it is connected.
     var selectedBridgeSource: BridgeSource? {
@@ -1176,49 +1178,36 @@ final class MeterModel: ObservableObject {
     private func loadAssignment() {
         refreshPluginLayout()
         if pluginLayout != nil, let roles = selectedBridgeSource?.roles {
-            var routing = [Int32](repeating: -1, count: Role.count)
-            for (channel, role) in roles.enumerated() { routing[role] = Int32(channel) }
+            let routing = RoutingStore.routing(busRoles: roles)
             sourceForRole = routing
             activeRoles = routing.map { $0 >= 0 }
             return
         }
-        let count = Int(min(selectedDevice?.channels ?? 0, 64))
-        var routing = defaultAssignment
-        if let saved = savedAssignment {
-            for (role, source) in saved.enumerated() where role < Role.count {
-                routing[role] = source >= 0 && source < count ? Int32(source) : -1
-            }
-        }
-        for role in 0..<Role.count where !speakerLayout.contains(role) { routing[role] = -1 }
+        let routing = routes.routing(for: speakerLayout, device: deviceKey, channels: deviceChannels, speakers: deviceSpeakers)
         sourceForRole = routing
         activeRoles = routing.map { $0 >= 0 }
     }
 
-    private func saveAssignment() { UserDefaults.standard.set(sourceForRole.map(Int.init), forKey: assignmentKey()) }
+    private func saveAssignment() { routes.save(sourceForRole, for: speakerLayout, device: deviceKey) }
 
     /// The routing saved for this device and layout (5.1.2 also the eight-role routing saved by 1.0), if any.
-    private var savedAssignment: [Int]? {
-        let legacy = speakerLayout == .s512 ? UserDefaults.standard.array(forKey: "assign.\(deviceKey)") as? [Int] : nil
-        return UserDefaults.standard.array(forKey: assignmentKey()) as? [Int] ?? legacy
-    }
+    private var savedAssignment: [Int]? { routes.saved(for: speakerLayout, device: deviceKey) }
 
     /// The selected device's speaker configuration in Audio MIDI Setup (`AudioDevices.speakerMap`), read when asked.
     var deviceSpeakers: SpeakerMap? { selectedDevice.flatMap(AudioDevices.speakerMap) }
 
     /// The routing Settings' reset stages, and a device without a saved routing gets: the device's speaker
     /// configuration in Audio MIDI Setup, or input n to the n-th role in SMPTE order.
-    var defaultAssignment: [Int32] { deviceAssignment ?? smpteAssignment }
+    var defaultAssignment: [Int32] { RoutingStore.defaultRouting(for: speakerLayout, channels: deviceChannels, speakers: deviceSpeakers) }
     /// Each role from the channel the device's speaker configuration gives it (roles it does not describe stay
     /// unrouted); nil without a configuration.
-    var deviceAssignment: [Int32]? {
-        deviceSpeakers.map { $0.routing(for: speakerLayout, channels: Int(min(selectedDevice?.channels ?? 0, 64))) }
-    }
+    var deviceAssignment: [Int32]? { deviceSpeakers.map { $0.routing(for: speakerLayout, channels: deviceChannels) } }
     /// Input n to the n-th role in SMPTE / ITU order (`SpeakerLayout.roles`).
-    var smpteAssignment: [Int32] { assignment(in: speakerLayout.roles) }
+    var smpteAssignment: [Int32] { RoutingStore.routing(inOrder: speakerLayout.roles, channels: deviceChannels) }
     /// Input n to the n-th role in film order (`SpeakerLayout.filmRoles`), for Pro Tools and other film-order sources.
-    var filmAssignment: [Int32] { assignment(in: speakerLayout.filmRoles) }
+    var filmAssignment: [Int32] { RoutingStore.routing(inOrder: speakerLayout.filmRoles, channels: deviceChannels) }
     /// Input n to the n-th role in VST3 order (`SpeakerLayout.vst3Roles`), for Nuendo, Cubase and other VST3 hosts.
-    var vst3Assignment: [Int32] { assignment(in: speakerLayout.vst3Roles) }
+    var vst3Assignment: [Int32] { RoutingStore.routing(inOrder: speakerLayout.vst3Roles, channels: deviceChannels) }
 
     /// Where the current routing comes from, for the diagnostic log.
     private var routingSource: String {
@@ -1229,13 +1218,7 @@ final class MeterModel: ObservableObject {
     }
 
     /// Each routed role and its input (1-based), in the layout's display order: "L 1 · R 2 · C 3 …".
-    private var routingSummary: String {
-        let names = speakerLayout.speakers.compactMap { speaker -> String? in
-            let source = sourceForRole[speaker.role]
-            return source >= 0 ? "\(speaker.name) \(source + 1)" : nil
-        }
-        return names.isEmpty ? "nothing routed" : names.joined(separator: " · ")
-    }
+    private var routingSummary: String { RoutingStore.summary(sourceForRole, for: speakerLayout) }
 
     /// The device's speaker configuration changed in Audio MIDI Setup: a routing that follows it (none saved) follows
     /// the change at once.
@@ -1249,22 +1232,11 @@ final class MeterModel: ObservableObject {
         if wantsCapture { restart() }
     }
 
-    private func assignment(in order: [Int]) -> [Int32] {
-        let count = Int(min(selectedDevice?.channels ?? 0, 64))
-        var routing = [Int32](repeating: -1, count: Role.count)
-        for (index, role) in order.enumerated() where index < count { routing[role] = Int32(index) }
-        return routing
-    }
-
     /// Routes every role of the current layout at once (Settings ▸ Apply): one save and one capture restart,
     /// where `assign(role:source:)` restarts per role. Sources the device does not have, and roles outside the
     /// layout, are switched off.
     func assign(routing: [Int32]) {
-        let count = Int32(min(selectedDevice?.channels ?? 0, 64))
-        var next = [Int32](repeating: -1, count: Role.count)
-        for role in 0..<min(Role.count, routing.count) where speakerLayout.contains(role) {
-            next[role] = routing[role] >= 0 && routing[role] < count ? routing[role] : -1
-        }
+        let next = RoutingStore.validated(routing, for: speakerLayout, channels: deviceChannels)
         guard next != sourceForRole else { return }
         sourceForRole = next
         activeRoles = next.map { $0 >= 0 }

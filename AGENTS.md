@@ -22,7 +22,7 @@ scripts/check-all.sh             # everything below that needs no hardware or DA
 swift build                      # debug app
 swift build -c release           # release app
 scripts/check-shaders.sh         # Metal shader library and pipeline states, layout asserts; headless, draws no frame (skips without a Metal device)
-scripts/test.sh                  # 61 core checks, baseline checks (golden digests), kernel checks, localization
+scripts/test.sh                  # 61 core checks, baseline checks (golden digests), routing rules, kernel checks, localization
 scripts/check-app-features.sh    # update client, render policy, Dock layout
 scripts/check-model.sh           # MeterModel self-tests in a QA bundle: worker interface; capture and DAW plugin states with stand-ins (launches the app)
 scripts/check-file-analysis.sh   # file analysis against EBU reference tones (needs a debug build)

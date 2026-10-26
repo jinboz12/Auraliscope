@@ -358,6 +358,48 @@ enum ModelLifecycleSelfTest {
         model.select(outputB.id)
         check(model.sourceForRole == film && journal.events.last(where: { $0.hasPrefix("capture.start") }) == start(outputB),
               "the saved channel order is found again and captured")
+
+        // Routing by hand: a role outside the format and an input the device lacks are refused; a routing applied at
+        // once keeps only the format's roles and the device's inputs; an unchanged one restarts nothing.
+        let routedBefore = model.sourceForRole
+        mark = journal.mark
+        model.assign(role: Role.leftTopFront, source: 3)
+        model.assign(role: Role.center, source: Int32(outputB.channels))
+        check(model.sourceForRole == routedBefore && journal.lifecycle(since: mark).isEmpty,
+              "a role outside the format and an input the device lacks are refused, with no restart")
+        model.assign(role: Role.center, source: 7)
+        check(model.sourceForRole[Role.center] == 7 && journal.lifecycle(since: mark).last == "worker.make \(stream())"
+              && (UserDefaults.standard.array(forKey: "assign.\(outputB.key).5.1") as? [Int])?[Role.center] == 7,
+              "a role routed by hand is saved and restarts capture")
+        var applied = [Int32](repeating: -1, count: Role.count)
+        applied[Role.left] = 0; applied[Role.right] = Int32(outputB.channels); applied[Role.leftTopFront] = 2; applied[Role.center] = 1
+        model.assign(routing: applied)
+        check(model.sourceForRole[Role.left] == 0 && model.sourceForRole[Role.right] == -1
+              && model.sourceForRole[Role.leftTopFront] == -1 && model.sourceForRole[Role.center] == 1,
+              "a routing applied at once keeps the format's roles and the device's inputs only")
+        mark = journal.mark
+        model.assign(routing: model.sourceForRole)
+        check(journal.lifecycle(since: mark).isEmpty, "applying the routing already in use restarts nothing")
+        model.assign(routing: film)
+
+        // 5.1.2 also takes the eight-role routing 1.0 saved under the device alone, while nothing newer is saved; no
+        // other format does.
+        UserDefaults.standard.set([7, 6, 5, 4, 3, 2, 1, 0], forKey: "assign.\(outputB.key)")
+        model.speakerLayout = .s512
+        check(Array(model.sourceForRole[0..<8]) == [7, 6, 5, 4, 3, 2, 1, 0], "5.1.2 takes the routing 1.0 saved for the device")
+        model.speakerLayout = .s514
+        check(model.sourceForRole == model.smpteAssignment, "another format ignores 1.0's routing and takes SMPTE order")
+        UserDefaults.standard.removeObject(forKey: "assign.\(outputB.key)")
+
+        // VST3 order (Nuendo, Cubase), distinct from SMPTE and film order in 7.1.4, is captured as applied.
+        model.speakerLayout = .s714
+        let vst3 = model.vst3Assignment
+        check(vst3 != model.smpteAssignment && vst3 != model.filmAssignment, "7.1.4's VST3 order differs from SMPTE and film order")
+        model.assign(routing: vst3)
+        check(model.sourceForRole == vst3 && journal.events.last(where: { $0.hasPrefix("capture.start") }) == start(outputB),
+              "a routing applied in VST3 order is captured in that order")
+        model.speakerLayout = .s51
+        check(model.sourceForRole == film, "back in 5.1 the routing saved for 5.1 returns")
         model.monoEnabled = true
         mark = journal.mark
         model.pin(.mono)
