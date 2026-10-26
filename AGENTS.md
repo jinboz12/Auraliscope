@@ -1,0 +1,85 @@
+# Working on Auraliscope
+
+Instructions for coding agents (and people) changing this repository. They record invariants that are easy to
+break and hard to see from any one file. Background: `docs/maintenance/CODE_AUDIT_2026-10.md` (architecture and
+debt), `Bridge/ARCHITECTURE.md` and `Bridge/PROTOCOL.md` (DAW plugin side), `docs/MULTIFFT_ARCHITECTURE.md`.
+
+## Layout
+
+| Target | What | Rule |
+|---|---|---|
+| `Sources/AnalysisKernels` (C11) | Frame types and DSP kernels | No allocation in kernels |
+| `Sources/AnalysisCore` (Swift, `package` access) | Every measurement; also compiled into both plugins | No AppKit, SwiftUI, Core Audio or UI types |
+| `Sources/AudioRing` (C11) | Capture ring, snapshot triple buffer, Core Audio IO callbacks | Real-time code: see below |
+| `Sources/BridgeTransport` (C11) | The app's end of the plugin socket | Protocol in `Bridge/PROTOCOL.md` |
+| `Sources/Auraliscope` | The app: model, capture lifecycle, Metal canvases, panels, settings, reports, diagnostics | |
+| `Bridge/Plugin` (C++/ObjC++) | VST3 and AUv2 inserts | Audio thread: atomics only |
+
+## Build and verify
+
+```sh
+swift build                      # debug app
+swift build -c release           # release app
+scripts/test.sh                  # 61 core checks, baseline checks (golden digests), kernel checks, localization
+scripts/check-app-features.sh    # update client, render policy, Dock layout
+scripts/check-file-analysis.sh   # file analysis against EBU reference tones (needs a debug build)
+Bridge/scripts/test-analysis.sh  # plugin-side analysis equals the desktop pipeline; breaks; RESULT encoding
+Bridge/scripts/test-transport.sh # plugin core and receiver over a socket (ABR_SANITIZE=thread for TSan)
+Bridge/scripts/check-spatial.sh  # spatial reductions report
+```
+
+- `scripts/test.sh` compiles an **explicit list** of sources into one module named `AnalysisCore`. A new file used
+  by tested code must be added there (and to `Bridge/scripts/test-analysis.sh` and `check-spatial.sh` if it is in
+  `AnalysisCore`). Because that build is one module, it hides a missing `import AnalysisCore` in app files: always
+  run `swift build` too.
+- A passing build is not proof of behaviour. Analysis changes must keep the golden digests
+  (`Tests/Fixtures/pipeline-golden.json`) bit-identical; re-record them (`AURALISCOPE_RECORD_GOLDEN=1
+  scripts/test.sh`) only for an intended, explained numerical change, after the portable checks pass.
+- UI self-tests (`--test-*`, `--snapshot*`) run only in a bundle whose identifier ends in `.QA`, so the user's
+  preferences are never touched; `--demo` supplies signal without opening an audio device. An idle loopback (a Pro
+  Tools Audio Bridge nobody uses) serves `--capture-selftest <device id>`.
+- Plugin builds need the VST3 SDK (`Bridge/scripts/fetch-sdks.sh` downloads it).
+
+## Real-time rules
+
+- Core Audio IO callbacks (`Sources/AudioRing/CaptureCallback.c`) and the plugins' `process` stay C/C++ with no
+  locks, allocation, logging, Objective-C or Swift.
+- The DSP queue owns `MeterPipeline`; only the main thread reads `MeterExchange` (`DSPWorker.latest()`).
+- Every dropped or skipped audio frame should produce a ring mark (`channel_ring_mark`) so the analysis counts the
+  break. Known exceptions are pinned as `KNOWN ISSUE` checks in `Tests/AuraliscopeTests/BaselineChecks.swift`.
+
+## Contracts that span files
+
+- **Snapshot layout:** `SnapshotSlots` (Swift), `METER_SNAPSHOT_FLOATS` (`Sources/AudioRing/include/AudioRing.h`),
+  `DSPWorker.decode`, `ResultAssembler` and the RESULT tags must change together, with a plugin compatibility note.
+  `BaselineChecks.snapshotLayout` checks the sizes.
+- **Frequency axis:** use `LogFrequencyAxis` (`Sources/AnalysisCore/LogFrequencyAxis.swift`). Never write
+  `20 * pow(upper / 20, …)`, `log(f / 20) / log(upper / 20)` or `min(20_000, sampleRate / 2)` again, and keep its
+  helpers bit-identical to those expressions.
+- **Metal uniforms:** a struct passed to a shader is declared in Swift and again in the shader source; change both in
+  the same edit.
+- **Settings:** never rename a stored `UserDefaults` key or a preference domain (`com.jinboz.SoundMeterJBZ…`):
+  presets, the LABS migration and users' settings depend on them. Settings presets include every key except those
+  excluded in `SettingsPresets.excludedKeys`.
+- **Localization:** every `L("…")` key exists in all six `Resources/Localization/*.lproj/Localizable.strings`
+  tables; a SwiftUI view that calls `L(` observes `Localizer.shared`; `scripts/check-localization.py` enforces both
+  and the glossary.
+- **Names:** never name third-party analyzers or brands in code, UI, keys or docs.
+
+## Style
+
+- Match the surrounding code: its comment density, naming and idioms. Doc comments explain what and why; build
+  history belongs in `docs/UPDATE_LOG_since_1.2.2.md` and release notes, not in comments.
+- One feature per file; do not add unrelated types to `Panels.swift`, `MetalCanvas.swift`, `MeterScale.swift` or
+  `AuraliscopeApp.swift`.
+- Launch flags are declared in `Diagnostics` (diagnostic) or next to their feature (`--bridge-launch`); keep their
+  names stable: scripts and the user's workflows use them.
+
+## Process
+
+- Do not commit, push, tag, package or change build numbers unless asked. Packaging and naming conventions live
+  with the delivery scripts (`Bridge/scripts/package-dist.sh`, `scripts/package-app.sh`).
+- The README is edited on GitHub: fetch before committing to `main`.
+- On the external volume, macOS writes AppleDouble `._*` files; if git reports a non-monotonic index, delete the
+  `._*` files inside `.git`.
+- Maintenance work in progress: `docs/maintenance/` (audit, baseline, refactoring logs).
