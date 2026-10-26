@@ -3315,6 +3315,7 @@ struct TestRunner {
     static func main() throws {
         setbuf(stdout, nil)
         try MultiFFTChecks.run()
+        try BaselineChecks.run()
         if CommandLine.arguments.contains("--benchmark-gate") {
             var gate = GatedIntegration()
             var checksum: Float = 0
