@@ -2418,9 +2418,17 @@ final class CoreTests {
             }
         }
         checkEqual(SpectrumTilt.flat.offset(frequency: 8_000), 0)
-        checkEqual(SpectrumTilt.three.offset(frequency: 1_000), 0, accuracy: 0.0001)
-        checkEqual(SpectrumTilt.three.offset(frequency: 4_000), 6, accuracy: 0.0001)
-        checkEqual(SpectrumTilt.fourAndHalf.offset(frequency: 500), -4.5, accuracy: 0.0001)
+        checkEqual(SpectrumTilt(decibelsPerOctave: 3).offset(frequency: 1_000), 0, accuracy: 0.0001)
+        checkEqual(SpectrumTilt(decibelsPerOctave: 3).offset(frequency: 4_000), 6, accuracy: 0.0001)
+        checkEqual(SpectrumTilt(decibelsPerOctave: 4.5).offset(frequency: 500), -4.5, accuracy: 0.0001)
+        checkEqual(SpectrumTilt(stored: 2.3).decibelsPerOctave, 2.5)
+        checkEqual(SpectrumTilt(stored: 40).decibelsPerOctave, 6)
+        checkEqual(SpectrumTilt(stored: .nan).decibelsPerOctave, 0)
+        let legacy = UserDefaults(suiteName: "tilt-migration-\(UUID().uuidString)")!
+        legacy.set("fourAndHalf", forKey: SpectrumTilt.legacyKey)
+        SpectrumTilt.migrateLegacy(legacy)
+        checkEqual(legacy.double(forKey: SpectrumTilt.key), 4.5)
+        checkTrue(legacy.object(forKey: SpectrumTilt.legacyKey) == nil)
     }
 
     /// The waterfall's analysis (`SpectrogramAnalyzer`): the window lengths it chooses, sine calibration in every

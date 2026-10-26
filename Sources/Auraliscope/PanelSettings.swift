@@ -3,14 +3,14 @@ import SwiftUI
 
 /// The panels whose display choices live on the panel itself, behind a small button in its header.
 enum PanelKind {
-    case loudness, history, vu, spectrum, waveform, soundstage, levels
+    case loudness, history, vu, spectrum, waveform, soundstage, levels, multiFFT
 }
 
 /// A panel's own settings: a small button in its header opening a popover of that panel's display choices. Every
 /// choice takes effect at once and is kept (the model follows the stored values, as for every display option), so
 /// what a control does shows right beside it, on the panel it changes.
 struct PanelSettingsButton: View {
-    /// The nebula's Analysis and motion section, for scrolling to it.
+    /// The nebula's Analysis and motion section (the Spectrum's BOTH VIEWS, the Multi-FFT's bands), for scrolling to it.
     static let advancedID = "nebulaAdvanced"
     /// Every panel's popover is this wide, so their rows and notes line up alike (the nebula's scrolls, with a scroller
     /// that floats over its margin rather than narrowing it).
@@ -35,13 +35,13 @@ struct PanelSettingsButton: View {
         // A disc like the toolbar's buttons, lit while its popover is open.
         DiscButton(symbol: "slider.horizontal.3", help: L("Panel settings"), diameter: 22, on: open) { open.toggle() }
         .onAppear {
-            // `--snapshot-panel-settings <panel>` (loudness, history, vu, spectrum, waveform, soundstage, levels).
+            // `--snapshot-panel-settings <panel>` (loudness, history, vu, spectrum, waveform, soundstage, levels, multiFFT).
             let wanted = Diagnostics.snapshotPanelSettingsPanel.isEmpty ? "spectrum" : Diagnostics.snapshotPanelSettingsPanel
             guard Diagnostics.snapshotPanelSettings, "\(panel)" == wanted else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { open = true }
         }
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            if panel == .soundstage || panel == .spectrum {
+            if panel == .soundstage || panel == .spectrum || panel == .multiFFT {
                 // The nebula's settings are many: they scroll, so the popover fits a 720p screen.
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -123,7 +123,13 @@ private struct PanelSettingsForm: View {
     @AppStorage(SpectrumResponse.key) private var response = SpectrumResponse.medium.rawValue
     @AppStorage(DisplayOptions.peakHoldsKey) private var peakHolds = true
     @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
-    @AppStorage(SpectrumTilt.key) private var tilt = SpectrumTilt.flat.rawValue
+    @AppStorage(SpectrumTilt.key) private var tilt = 0.0
+    @AppStorage(FrequencyScale.key) private var frequencyScale = FrequencyScale.log.rawValue
+    @AppStorage(MultiFFTPreferences.legacyKey) private var sharedSTFT = 4096
+    @AppStorage(MultiFFTPreferences.key) private var multiFFTData: Data?
+    @AppStorage(SpectrumTilt.multiFFTKey) private var multiFFTTilt = 0.0
+    @AppStorage(FrequencyScale.multiFFTKey) private var multiFFTScale = FrequencyScale.log.rawValue
+    @State private var multiFFTBands = Diagnostics.snapshotPanelAdvanced
     @AppStorage(SpectrumSide.key) private var side = SpectrumSide.right.rawValue
     @AppStorage(DisplayOptions.waveSecondsKey) private var waveSeconds = 4
     @AppStorage(WaveScale.key) private var waveScale = WaveScale.linear.rawValue
@@ -184,7 +190,6 @@ private struct PanelSettingsForm: View {
                     }
                 }
             case .spectrum:
-                LegacySTFTSettings(model: model)
                 group(L("SPECTROGRAM")) {
                     row(L("View"), note: L("2D scrolls a flat image in time. 3D lifts it into a landscape: time across, frequency into the distance, level as height.")) {
                         segments(L("View"), SpectrogramView.allCases, $view) { $0.title }
@@ -201,6 +206,12 @@ private struct PanelSettingsForm: View {
                     line
                     row(L("Spectrogram span"), note: L("How many seconds the spectrogram shows. Auto fits 3 to 8 s to the panel's width; 15 s shows a whole phrase.")) {
                         segments(L("Spectrogram span"), SpectrogramSpan.allCases, $span) { $0.title }
+                    }
+                    line
+                    row(L("Shared STFT"), note: L("Shared Hann STFT serves both displays at the chosen size. Legacy keeps the multi-resolution analysis of build 113. Enhanced, Immersive and a plugin source keep their own analysis. Switching refills the FFT history.")) {
+                        GlassSegments(label: L("Shared STFT"), options: [(0, L("Legacy"), L("Legacy (Build 113)"))] + [2048, 4096, 8192].map { ($0, "\($0)", "\($0)") },
+                                      selection: [0, 2048, 4096, 8192].contains(sharedSTFT) ? sharedSTFT : 4096,
+                                      select: { sharedSTFT = $0 })
                     }
                 }
                 group(L("SPECTROGRAM COLORS")) {
@@ -230,14 +241,19 @@ private struct PanelSettingsForm: View {
                     }
                 }
                 group(L("BOTH VIEWS")) {
-                    row(L("Tilt"), note: L("A display slope around 1 kHz for the spectrum and the spectrogram. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true.")) {
-                        segments(L("Tilt"), SpectrumTilt.allCases, $tilt) { $0.title }
+                    row(L("Frequency scale"), note: L("Log gives every octave the same room from 20 Hz, as pitch is heard. Linear starts at 0 Hz and gives every hertz the same room, as an FFT spaces its bins: harmonics fall evenly apart and the treble opens out, while the bass narrows. The analysis is the same.")) {
+                        segments(L("Frequency scale"), FrequencyScale.allCases, $frequencyScale) { $0.title }
+                    }
+                    line
+                    row(L("Tilt"), note: L("A display slope around 1 kHz for the spectrum and the spectrogram, from 0 to 6 dB per octave. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. Readings stay true.")) {
+                        tiltSlider($tilt)
                     }
                     line
                     row(L("Orientation"), note: L("Standard: keyboard on the left, the spectrogram scrolling left from now, the spectrum on the right. Mirrored flips the panel: the spectrum on the left, the spectrogram scrolling right from now, the keyboard on the right.")) {
                         segments(L("Orientation"), SpectrumSide.allCases, $side) { $0.title }
                     }
                 }
+                .id(PanelSettingsButton.advancedID)
                 caption(L("Hover over the spectrogram or the spectrum to read its pitch, frequency and level; pause to read a moment at leisure."))
             case .waveform:
                 group(L("LANES")) {
@@ -255,6 +271,8 @@ private struct PanelSettingsForm: View {
                 if let model { WaveformKey(format: model.format, layout: model.shownLayout) }
             case .soundstage:
                 soundstage
+            case .multiFFT:
+                multiFFT
             case .levels:
                 group(L("PEAK HOLD")) {
                     row(L("Hold"), note: L("How long each channel's peak mark stays at its highest reading before it falls. ∞ holds it until Reset.")) {
@@ -466,6 +484,178 @@ private struct PanelSettingsForm: View {
         if let model, model.sourceIsBridge, model.lastSpatialFieldStatus == SpatialFieldWire.unsupported {
             caption(L("This plugin sends no spatial field, so the nebula shows each channel's band energy at its speaker only. Install the plugins of this build for coherent images."))
         }
+    }
+
+    /// A display slope in half-dB steps, its value beside it ("Flat", "3 dB/oct").
+    private func tiltSlider(_ value: Binding<Double>) -> some View {
+        slider(Binding(get: { value.wrappedValue }, set: { value.wrappedValue = Double(SpectrumTilt(stored: $0).decibelsPerOctave) }),
+               SpectrumTilt.range) { SpectrumTilt(stored: $0).title }
+    }
+
+    // MARK: Multi-FFT
+
+    private var multiFFTRate: Double { max(8_000, model?.sampleRate ?? 48_000) }
+    private var multiFFTConfiguration: MultiFFTConfiguration {
+        MultiFFTPreferences.decode(multiFFTData).validated(sampleRate: multiFFTRate)
+    }
+    private func saveMultiFFT(_ configuration: MultiFFTConfiguration) {
+        let valid = configuration.validated(sampleRate: multiFFTRate)
+        if valid != multiFFTConfiguration { MultiFFTPreferences.save(valid) }
+    }
+    /// An advanced value: changing it makes the configuration Custom.
+    private func multiFFT<T: Equatable>(_ key: WritableKeyPath<MultiFFTConfiguration, T>, custom: Bool = true) -> Binding<T> {
+        Binding(get: { multiFFTConfiguration[keyPath: key] }, set: {
+            var c = multiFFTConfiguration
+            guard $0 != c[keyPath: key] else { return }
+            c[keyPath: key] = $0
+            if custom { c.preset = .custom }
+            saveMultiFFT(c)
+        })
+    }
+    private func multiFFTBand<T: Equatable>(_ index: Int, _ key: WritableKeyPath<MultiFFTConfiguration.Band, T>) -> Binding<T> {
+        Binding(get: { multiFFTConfiguration.bands[index][keyPath: key] }, set: {
+            var c = multiFFTConfiguration
+            guard $0 != c.bands[index][keyPath: key] else { return }
+            c.bands[index][keyPath: key] = $0
+            c.preset = .custom
+            saveMultiFFT(c)
+        })
+    }
+
+    /// The Multi-FFT Spectrum's settings, grouped as the other panels' are: what the plot shows, how much analysis it
+    /// costs, the analysis itself, then the three bands folded away.
+    @ViewBuilder private var multiFFT: some View {
+        let c = multiFFTConfiguration
+        group(L("DISPLAY")) {
+            row(L("Frequency scale"), note: L("Log gives every octave the same room from 20 Hz, as pitch is heard. Linear starts at 0 Hz and gives every hertz the same room, as an FFT spaces its bins: harmonics fall evenly apart and the treble opens out, while the bass narrows. The analysis is the same.")) {
+                segments(L("Frequency scale"), FrequencyScale.allCases, $multiFFTScale) { $0.title }
+            }
+            line
+            row(L("Tilt"), note: L("A display slope around 1 kHz for every curve, from 0 to 6 dB per octave. Music falls by about 3 to 4.5 dB per octave, so a tilt shows a balanced mix as level and the treble as clearly as the bass. The hover reading stays true.")) {
+                tiltSlider($multiFFTTilt)
+            }
+            line
+            row(L("Mid and Side"), note: L("Adds the Mid and Side curves to Left and Right: M = (L+R)/2, S = (L−R)/2.")) {
+                toggle(L("Mid and Side"), multiFFT(\.midSide, custom: false))
+            }
+        }
+        group(L("PERFORMANCE")) {
+            row(L("Preset"), note: L("How much analysis the panel does: Economy is the lightest, Ultra resolves the most. Any change to the bands or the fusion below makes it Custom.")) {
+                choiceMenu(MultiFFTConfiguration.Preset.allCases.filter { $0 != .custom || c.preset == .custom }, selection: c.preset, title: \.title) {
+                    guard $0 != .custom else { return }
+                    saveMultiFFT(.make($0, priority: c.priority))
+                }
+            }
+            line
+            row(L("Priority"), note: L("Tunes the preset's window sizes and update rates: Precision favours frequency detail, Responsive favours time. All three bands use the slowest requested cadence to keep their analysis centres aligned.")) {
+                GlassSegments(label: L("Priority"), options: MultiFFTConfiguration.Priority.allCases.map { ($0, $0.title, $0.title) },
+                              selection: c.priority, select: { priority in
+                                  if c.preset == .custom { var next = c; next.priority = priority; saveMultiFFT(next) }
+                                  else { saveMultiFFT(.make(c.preset, priority: priority)) }
+                              })
+            }
+            line
+            row(L("Analysis rate"), note: L("How often a new frame is analysed, and the common delay of the three bands' centres behind the newest audio.")) {
+                Text(verbatim: String(format: "%.1f Hz · %.0f ms", multiFFTRate / Double(c.hop(sampleRate: multiFFTRate)),
+                                      Double(c.bands.map(\.size).max() ?? 0) / 2 / multiFFTRate * 1000))
+                    .font(.system(size: 11).monospacedDigit()).foregroundStyle(Theme.secondary)
+            }
+        }
+        group(L("ANALYSIS")) {
+            row(L("Window"), note: L("Hann resolves close tones best; Blackman–Harris keeps a loud tone's skirts out of quiet neighbours.")) {
+                GlassSegments(label: L("Window"), options: [(MultiFFTConfiguration.Window.hann, "Hann", "Hann"),
+                                                            (.blackmanHarris, "Blackman–Harris", "Blackman–Harris")],
+                              selection: c.window, select: { multiFFT(\.window).wrappedValue = $0 })
+            }
+            line
+            row(L("Calibration"), note: L("Tone keeps a sine's peak at its level in dBFS in every band. PSD reads noise as density (dBFS/Hz), comparable across window sizes.")) {
+                GlassSegments(label: L("Calibration"), options: [(MultiFFTConfiguration.Scale.amplitude, L("Tone"), L("Tone amplitude · dBFS")),
+                                                                 (.psd, "PSD", "PSD · dBFS/Hz")],
+                              selection: c.scale, select: { multiFFT(\.scale).wrappedValue = $0 })
+            }
+            line
+            row(L("Time smoothing"), note: L("How long each curve averages in time; 0 shows every frame.")) {
+                slider(multiFFT(\.smoothingSeconds), 0...2) { String(format: "%.2f s", $0) }
+            }
+            line
+            row(L("Frequency smoothing"), note: L("Averages each curve across frequency, in octaves; narrow peaks read lower as it widens.")) {
+                slider(multiFFT(\.smoothingOctaves), 0...1) { $0 == 0 ? L("Off") : String(format: "%.2f oct", $0) }
+            }
+        }
+        DisclosureGroup(isExpanded: $multiFFTBands) {
+            VStack(alignment: .leading, spacing: 14) {
+                group(L("FUSION")) {
+                    row(L("Low/Mid crossover"), note: L("Where the low band hands over to the mid band.")) {
+                        logSlider(multiFFT(\.lowCrossover), 40...max(41, MeterScale.upperFrequency(sampleRate: multiFFTRate) / 4)) { Self.hertz($0) }
+                    }
+                    line
+                    row(L("Mid/High crossover"), note: L("Where the mid band hands over to the high band.")) {
+                        logSlider(multiFFT(\.highCrossover), max(80, c.lowCrossover * 2)...max(c.lowCrossover * 2 + 1, MeterScale.upperFrequency(sampleRate: multiFFTRate) * 0.9)) { Self.hertz($0) }
+                    }
+                    line
+                    row(L("Fusion width"), note: L("How many octaves two neighbouring bands are blended across at each crossover.")) {
+                        slider(multiFFT(\.blendOctaves), 0.125...2) { String(format: "%.2f oct", $0) }
+                    }
+                }
+                ForEach(0..<3, id: \.self) { i in
+                    group([L("LOW BAND"), L("MID BAND"), L("HIGH BAND")][i]) {
+                        row(L("FFT size"), note: L("The band's window length in samples: longer resolves finer frequency detail, shorter follows time more closely.")) {
+                            choiceMenu(MultiFFTConfiguration.sizes, selection: c.bands[i].size, title: { "\($0)" }) { multiFFTBand(i, \.size).wrappedValue = $0 }
+                        }
+                        line
+                        row(L("Update ceiling"), note: L("The most frames a second this band asks for.")) {
+                            slider(multiFFTBand(i, \.rate), 1...60) { "\(Int($0.rounded())) Hz" }
+                        }
+                        line
+                        row(L("Overlap ceiling"), note: L("The most consecutive windows may overlap; more overlap allows a faster update.")) {
+                            choiceMenu([0.0, 0.5, 0.75, 0.875, 0.9375, 0.96875], selection: c.bands[i].overlap,
+                                       title: { String(format: "%.3g%%", $0 * 100) }) { multiFFTBand(i, \.overlap).wrappedValue = $0 }
+                        }
+                    }
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            Text(L("Bands and fusion")).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.secondary)
+        }
+        .id(PanelSettingsButton.advancedID)
+        Button { saveMultiFFT(MultiFFTConfiguration()); multiFFTTilt = 0; multiFFTScale = FrequencyScale.log.rawValue } label: {
+            Label(L("Restore defaults"), systemImage: "arrow.counterclockwise")
+        }
+        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+        .padding(.leading, PanelSettingsButton.inset)
+        if let model, model.sourceIsBridge {
+            caption(L("Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta."))
+        }
+        caption(L("Three FFTs of different lengths analyse the low, mid and high frequencies, centred on the same instant, and are fused into one curve per channel. Hover over the plot to read a frequency's pitch and each curve's level."))
+    }
+
+    /// A pop-up of `options`, its title the current choice, on the quiet capsule the summary's menus use
+    /// (`SummaryMenu`), so it sits with the panel's segments and switches.
+    private func choiceMenu<T: Hashable>(_ options: [T], selection: T, title: @escaping (T) -> String,
+                                         select: @escaping (T) -> Void) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.controlRadius, style: .continuous)
+        return Menu {
+            ForEach(options, id: \.self) { option in
+                Button { select(option) } label: {
+                    if option == selection { Label(title(option), systemImage: "checkmark") } else { Text(title(option)) }
+                }
+            }
+        } label: {
+            (Text(verbatim: title(selection)).font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundColor(Theme.ink)
+                + Text(verbatim: "  ")
+                + Text(Image(systemName: "chevron.up.chevron.down")).font(.system(size: 7, weight: .bold)).foregroundColor(Theme.tertiary))
+                .padding(.horizontal, 10)
+                .frame(height: 20)
+                .background {
+                    shape.fill(Theme.controlFill).overlay { shape.gradientBorder(Theme.controlRim, lineWidth: 0.5) }
+                }
+                .contentShape(shape)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     /// A titled group: its name in the heading voice, then its rows on one quiet card, set off from each other by

@@ -1320,7 +1320,7 @@ final class MeterGPU {
     // columns across the quad.
     struct WaterfallState {
         uint head; uint capacity; float phase; float span;
-        float floorDB; float rangeDB; float tilt; float floorOctave; float octaves;
+        float floorDB; float rangeDB; float tilt; float floorOctave; float octaves; float linear;
     };
 
     constant int waterfallRows = \(SpectrogramHistory.rows);
@@ -1328,6 +1328,15 @@ final class MeterGPU {
     float waterfallTexel(texture2d<float, access::read> history, uint capacity, int slot, int row) {
         int wrapped = ((slot % int(capacity)) + int(capacity)) % int(capacity);
         return history.read(uint2(uint(wrapped), uint(clamp(row, 0, waterfallRows - 1)))).r;
+    }
+
+    // The fractional row (0 the bottom row's lower edge, waterfallRows the top's upper edge) at `fraction` up the axis:
+    // the same on the log axis the rows are analysed on; on the linear one, the log position of that fraction's
+    // frequency (`octaves` above 20 Hz at the top), the 0–20 Hz sliver below the first row reading it.
+    float rowEdge(float fraction, float octaves, float linear) {
+        if (linear == 0.0) { return fraction * float(waterfallRows); }
+        float hz = max(fraction * 20.0 * exp2(octaves), 20.0);
+        return log2(hz / 20.0) / octaves * float(waterfallRows);
     }
 
     // SpectrogramTone: linear over the range, a power curve for a dark floor, part of an S-curve for contrast.
@@ -1397,7 +1406,7 @@ final class MeterGPU {
                                       constant WaterfallState &state [[buffer(0)]],
                                       constant float4 *ramp [[buffer(1)]]) {
         float2 uv = in.shape.zw;
-        float row = (1.0 - uv.y) * float(waterfallRows) - 0.5;
+        float row = rowEdge(1.0 - uv.y, state.octaves, state.linear) - 0.5;
         float age = (1.0 - uv.x) * state.span - state.phase;
         WaterfallAxis columns = waterfallAxis(age, fwidth(age), \(SpectrogramTone.columnSoftness));
         WaterfallAxis rows = waterfallAxis(row, fwidth(row), \(SpectrogramTone.rowSoftness));
@@ -1423,7 +1432,7 @@ final class MeterGPU {
         uint head; uint capacity; float phase; float span;
         float floorDB; float rangeDB; float tilt; float floorOctave; float octaves;
         float left; float bottom; float width; float height; float viewportWidth; float viewportHeight;
-        uint columns; uint strips; uint mirrored;
+        uint columns; uint strips; uint mirrored; float linear;
     };
     struct SurfaceRaster { float4 position [[position]]; float tone; float shade; float depth; };
 
@@ -1432,10 +1441,14 @@ final class MeterGPU {
     float surfaceTone(texture2d<float, access::read> history, constant SurfaceState &s, int i, int j) {
         float age = (1.0 - float(i) / float(s.columns)) * s.span - s.phase;
         int column = clamp(int(round(age)), 0, int(s.capacity) - 1);
-        int reach = max(1, waterfallRows / int(s.strips) / 2);
-        int centre = int(float(j) / float(s.strips) * float(waterfallRows));
+        // The rows half a strip either side of the point; on the linear axis a strip spans few rows in the treble and
+        // many in the bass, so its edges come from `rowEdge`.
+        float halfStrip = 0.5 / float(s.strips);
+        float d = float(j) / float(s.strips);
+        int first = int(floor(rowEdge(saturate(d - halfStrip), s.octaves, s.linear)));
+        int last = max(first, int(ceil(rowEdge(saturate(d + halfStrip), s.octaves, s.linear))) - 1);
         float loudest = -1000.0;
-        for (int row = max(0, centre - reach); row <= min(waterfallRows - 1, centre + reach - 1); row++) {
+        for (int row = max(0, first); row <= min(waterfallRows - 1, last); row++) {
             float level = waterfallTexel(history, s.capacity, int(s.head) - 1 - column, row);
             float octave = s.floorOctave + (float(row) + 0.5) / float(waterfallRows) * s.octaves;
             loudest = max(loudest, level + s.tilt * octave);
@@ -1801,6 +1814,9 @@ struct UnderlayState {
     var tilt: Float = 0
     var floorOctave: Float = 0
     var octaves: Float = 10
+    /// 1 when the well spaces frequency linearly from 0 Hz (`FrequencyScale.linear`): each pixel then reads the log
+    /// row of its frequency.
+    var linear: Float = 0
 }
 
 enum UnderlayKind { case waterfall, waveform }
@@ -1825,6 +1841,7 @@ struct SurfaceState {
     var columns: UInt32 = 1
     var strips: UInt32 = 1
     var mirrored: UInt32 = 0
+    var linear: Float = 0
 
     var vertexCount: Int { Int(columns) * Int(strips) * 6 }
 }
@@ -1847,8 +1864,15 @@ struct SurfaceProjection {
                        y: plot.maxY - Self.depth * plot.height * d - tone * Self.relief * plot.height * (0.75 + 0.25 * scale))
     }
 
-    /// Depth of `frequency` on the 20 Hz…`upper` log axis.
-    static func depth(frequency: Double, upper: Double) -> Double { log(frequency / 20) / log(upper / 20) }
+    /// The depth axis' marks: 100 Hz, 1 kHz and 10 kHz on the log axis; every 5 kHz on the linear one.
+    static func marks(_ scale: FrequencyScale) -> [(Double, String)] {
+        scale == .linear ? [(5_000, "5k"), (10_000, "10k"), (15_000, "15k")] : [(100, "100"), (1_000, "1k"), (10_000, "10k")]
+    }
+
+    /// Depth of `frequency` on the 20 Hz…`upper` log axis, or the 0…`upper` linear one.
+    static func depth(frequency: Double, upper: Double, scale: FrequencyScale = .log) -> Double {
+        scale == .linear ? frequency / upper : log(frequency / 20) / log(upper / 20)
+    }
 }
 
 extension CanvasScene {
@@ -2397,9 +2421,10 @@ final class SpectrumScene: CanvasScene {
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
         // In the horizontal strip the spectrum has a card of its own: the same drawing on its usual axes, turned a
         // quarter so frequency runs across (`SpectrumCardLayout`).
-        let card = frame.spectrumStrip == SpectrogramLayout.split ? SpectrumCardLayout(size: size) : nil
+        let scale = frame.options.frequencyScale
+        let card = frame.spectrumStrip == SpectrogramLayout.split ? SpectrumCardLayout(size: size, scale: scale) : nil
         let layout = card?.canonical
-            ?? SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left)
+            ?? SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left, scale: scale)
         func t(_ p: CGPoint) -> CGPoint { card?.point(p) ?? p }
         func t(_ r: CGRect) -> CGRect { card?.rect(r) ?? r }
         let strip = layout.spectrum
@@ -2419,7 +2444,7 @@ final class SpectrumScene: CanvasScene {
         for tick in card?.frequencyTicks(sampleRate: frame.sampleRate) ?? SpectrogramLayout.frequencyTicks(layout, sampleRate: frame.sampleRate) {
             let y = (layout.y(frequency: tick.0, sampleRate: frame.sampleRate) * 2).rounded() / 2
             guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
-            let decade = [100.0, 1_000, 10_000].contains(tick.0)
+            let decade = scale.isMajor(tick.0)
             b.rect(t(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5)), ink.simd(Float(decade ? ChartInk.major * 1.3 : ChartInk.minor)))
         }
 
@@ -2441,8 +2466,9 @@ final class SpectrumScene: CanvasScene {
         let live = SpectrumSmoothing.apply(kernel, to: shown)
         // The display slope at each point's centre (`SpectrumTilt`); zero when flat.
         let tilt = (0..<count).map { frame.options.tilt.offset(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count))) }
-        let step = strip.height / CGFloat(count)
-        func y(_ index: Int) -> CGFloat { strip.maxY - (CGFloat(index) + 0.5) * step }
+        // Each point at its band's centre on the well's axis: evenly spaced on the log one the bands are analysed on.
+        let centres = (0..<count).map { layout.y(frequency: 20 * pow(upper / 20, (Double($0) + 0.5) / Double(count)), sampleRate: frame.sampleRate) }
+        func y(_ index: Int) -> CGFloat { centres[index] }
         func line(_ levels: [Float]) -> [CGPoint] {
             Self.spline((0..<count).map { CGPoint(x: layout.x(decibels: levels[$0] + tilt[$0]), y: y($0)) },
                         clampX: strip.minX...strip.maxX, subdivisions: Self.subdivisions)
@@ -2459,10 +2485,13 @@ final class SpectrumScene: CanvasScene {
             b.triangle(t(p), t(q), t(qb), tint.simd(0.14), tint.simd(0.14), tint.simd(0.02))
             b.triangle(t(p), t(qb), t(pb), tint.simd(0.14), tint.simd(0.02), tint.simd(0.02))
         }
-        // The waterfall's octave lines at every C continue faintly across the spectrum.
+        // The waterfall's octave lines at every C continue faintly across the spectrum (where the linear axis crowds
+        // the low ones together, only those with room).
+        var lastOctaveY = CGFloat.infinity
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
-            guard y > strip.minY + 1, y < strip.maxY - 1 else { continue }
+            guard y > strip.minY + 1, y < strip.maxY - 1, lastOctaveY - y >= 6 else { continue }
+            lastOctaveY = y
             b.rect(t(CGRect(x: strip.minX, y: y, width: strip.width, height: 0.5)), ink.simd(octave == 4 ? 0.10 : 0.045))
         }
         // Peak holds: one faint line over the curve, each point held 1.2 s and then falling. Held while frozen,
@@ -2645,7 +2674,7 @@ final class SpectrogramScene: CanvasScene {
                              span: Float(span), floor: options.spectrogramRange.floor,
                              range: options.spectrogramRange.ceiling - options.spectrogramRange.floor,
                              tilt: options.tilt.decibelsPerOctave, floorOctave: Float(log2(20 / SpectrumTilt.pivot)),
-                             octaves: Float(log2(upper / 20)))
+                             octaves: Float(log2(upper / 20)), linear: options.frequencyScale == .linear ? 1 : 0)
     }
 
     init(device: MTLDevice) throws {
@@ -2717,7 +2746,7 @@ final class SpectrogramScene: CanvasScene {
 
     func build(_ b: inout ShapeBuilder, frame: CanvasFrame, display: MeterSnapshot, size: CGSize, dt: Float) {
         let layout = SpectrogramLayout(size: size, strip: frame.spectrumStrip, spectrumLeft: frame.options.spectrumSide == .left,
-                                       span: frame.options.spectrogramSpan.seconds)
+                                       span: frame.options.spectrogramSpan.seconds, scale: frame.options.frequencyScale)
         let plot = layout.plot
         span = Double(layout.visibleColumns)
         let ink = Theme.inkRGB
@@ -2727,10 +2756,13 @@ final class SpectrogramScene: CanvasScene {
         }
         surface = nil
         b.underlayQuad(plot, mirrored: layout.mirrored)
-        // Octave lines at every C, continuing the keyboard's C keys across the plot; middle C a little firmer.
+        // Octave lines at every C, continuing the keyboard's C keys across the plot; middle C a little firmer. The
+        // linear axis crowds the low ones together: only those with room are drawn.
+        var lastOctaveY = CGFloat.infinity
         for octave in 0...9 {
             let y = (layout.y(midi: Double(12 * (octave + 1)), sampleRate: frame.sampleRate) * 2).rounded() / 2
-            guard y > plot.minY + 1, y < plot.maxY - 1 else { continue }
+            guard y > plot.minY + 1, y < plot.maxY - 1, lastOctaveY - y >= 6 else { continue }
+            lastOctaveY = y
             b.rect(CGRect(x: plot.minX, y: y, width: plot.width, height: 0.5), ink.simd(Float(octave == 4 ? ChartInk.major * 1.3 : ChartInk.minor)))
         }
         // A hairline each second, and a short tick at the foot of each so the time labels have something to name.
@@ -2756,8 +2788,8 @@ final class SpectrogramScene: CanvasScene {
         floorLine((0, 1), (1, 1), 0.08)
         floorLine((0, 0), (0, 1), 0.10)
         floorLine((1, 0), (1, 1), 0.10)
-        for frequency in [100.0, 1_000, 10_000] where frequency < upper {
-            let d = SurfaceProjection.depth(frequency: frequency, upper: upper)
+        for frequency in SurfaceProjection.marks(layout.scale).map(\.0) where frequency < upper {
+            let d = SurfaceProjection.depth(frequency: frequency, upper: upper, scale: layout.scale)
             floorLine((0, d), (1, d), 0.10)
         }
         for seconds in stride(from: 1.0, to: layout.seconds, by: 1) {
@@ -2771,7 +2803,7 @@ final class SpectrogramScene: CanvasScene {
                                width: Float(plot.width), height: Float(plot.height),
                                viewportWidth: Float(max(1, size.width)), viewportHeight: Float(max(1, size.height)),
                                columns: UInt32(max(1, layout.visibleColumns)), strips: UInt32(Self.surfaceStrips),
-                               mirrored: layout.mirrored ? 1 : 0)
+                               mirrored: layout.mirrored ? 1 : 0, linear: flat.linear)
     }
 }
 

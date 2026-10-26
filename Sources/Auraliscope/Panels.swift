@@ -253,6 +253,12 @@ struct SpectrumPanel: View {
     @AppStorage(SpectrumSide.key) private var side = SpectrumSide.right.rawValue
     @AppStorage(SpectrogramAnalysis.key) private var analysis = SpectrogramAnalysis.classic.rawValue
     @AppStorage(SpectrogramView.key) private var view = SpectrogramView.flat.rawValue
+    @AppStorage(FrequencyScale.key) private var scaleKey = FrequencyScale.log.rawValue
+    private var scale: FrequencyScale { FrequencyScale(rawValue: scaleKey) ?? .log }
+    /// The peak badge's size, so the hover readout can keep clear of it, and whether the pointer or the readout is over
+    /// it (the badge then fades, so the cells and the readout under it can be read).
+    @State private var badgeSize = CGSize.zero
+    @State private var badgeCovered = false
 
     /// In the strip, the live spectrum card's share of the two cards' room, set by the gap between them; 0 is the
     /// automatic `stripSpectrumShare`. A share, so the split holds as the strip is resized.
@@ -309,7 +315,7 @@ struct SpectrumPanel: View {
                     if !split { PanelSettingsButton(panel: .spectrum, model: model) }
                 }
                 GeometryReader { proxy in
-                    let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left)
+                    let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left, scale: scale)
                     ZStack(alignment: .topLeading) {
                         MeterCanvas(kind: .spectrogram, model: model)
                         if !split { MeterCanvas(kind: .spectrum, model: model) }
@@ -317,22 +323,28 @@ struct SpectrumPanel: View {
                             // The keyboard, its notes and the hover readings follow the flat image's rows; the 3D view
                             // labels its own depth instead.
                             if flat {
-                                PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left)
-                                PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left)
+                                PianoKeyboard(sampleRate: sampleRate, strip: strip, left: left, scale: scale)
+                                PeakKey(readouts: model.readouts, sampleRate: sampleRate, strip: strip, left: left, scale: scale)
                             } else {
-                                SurfaceLabels(sampleRate: sampleRate, strip: strip, left: left)
+                                SurfaceLabels(sampleRate: sampleRate, strip: strip, left: left, scale: scale)
                             }
-                            SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left, notes: flat)
+                            SpectrogramLabels(sampleRate: sampleRate, strip: strip, left: left, scale: scale, notes: flat)
                             // In the waterfall's top corner, clear of the spectrum's frequency labels and of the keyboard,
                             // in either orientation; under the hover readout, which must never be hidden.
+                            let badge = layout.plot.width >= 250 && badgeSize.width > 0
+                                ? CGRect(x: layout.plot.maxX - 6 - badgeSize.width, y: layout.plot.minY + 6,
+                                         width: badgeSize.width, height: badgeSize.height) : nil
                             PeakBadge(readouts: model.readouts)
-                                .opacity(layout.plot.width >= 250 ? 1 : 0)
+                                .onGeometryChange(for: CGSize.self) { $0.size } action: { badgeSize = $0 }
+                                .opacity(layout.plot.width >= 250 ? (badgeCovered ? 0.12 : 1) : 0)
+                                .animation(.easeOut(duration: 0.15), value: badgeCovered)
                                 .padding(.top, 6)
                                 .padding(.trailing, 6)
                                 .frame(width: max(0, layout.plot.width), alignment: .topTrailing)
                                 .offset(x: layout.plot.minX, y: layout.plot.minY)
                                 .allowsHitTesting(false)
-                            SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, source: source, waterfall: flat,
+                            SpectrogramInspector(sampleRate: sampleRate, strip: strip, left: left, scale: scale, source: source, waterfall: flat,
+                            badge: badge, badgeCovered: $badgeCovered,
                             sharedSize: model.sourceIsBridge || model.format == .spatial || DisplayOptions.stored.spectrogramAnalysis == .enhanced ? 0 : MultiFFTPreferences.legacySTFT.rawValue)
                         }
                         // Between the waterfall's "now" edge and the spectrum, like the dividers in the summary.
@@ -361,8 +373,8 @@ struct SpectrumPanel: View {
                 }
                 ZStack(alignment: .topLeading) {
                     MeterCanvas(kind: .spectrum, model: model)
-                    SpectrumCardLabels(sampleRate: sampleRate)
-                    SpectrumCardInspector(sampleRate: sampleRate)
+                    SpectrumCardLabels(sampleRate: sampleRate, scale: scale)
+                    SpectrumCardInspector(sampleRate: sampleRate, scale: scale)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Theme.wellRadius, style: .continuous))
                 .background { PlotPlate() }
@@ -459,14 +471,14 @@ private struct SpectrogramLegend: View {
     var showsAverage = true
     @AppStorage(SpectrogramRange.key) private var rangeKey = SpectrogramRange.standard.rawValue
     @AppStorage(SpectrogramColors.key) private var colorsKey = SpectrogramColors.heat.rawValue
-    @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
+    @AppStorage(SpectrumTilt.key) private var tiltSlope = 0.0
     @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
     @ObservedObject private var theme = ThemeSettings.shared
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         let range = SpectrogramRange(rawValue: rangeKey) ?? .standard
-        let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(rawValue: tiltKey) ?? .flat)
+        let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(stored: tiltSlope))
         // Narrow headers drop the average's key, then the tilt, before the scale itself.
         ViewThatFits(in: .horizontal) {
             legend(range, tilt: tilt, average: average && showsAverage)
@@ -524,12 +536,12 @@ private struct SpectrogramLegend: View {
 /// The average spectrum's key, for the spectrum's own card.
 private struct AverageKey: View {
     @AppStorage(DisplayOptions.averageSpectrumKey) private var average = true
-    @AppStorage(SpectrumTilt.key) private var tiltKey = SpectrumTilt.flat.rawValue
+    @AppStorage(SpectrumTilt.key) private var tiltSlope = 0.0
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         HStack(spacing: 5) {
-            if let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(rawValue: tiltKey) ?? .flat) {
+            if let tilt = SpectrogramLegend.tiltLabel(SpectrumTilt(stored: tiltSlope)) {
                 Text(verbatim: tilt).font(.axis).foregroundStyle(Theme.secondary)
             }
             if average {
@@ -546,10 +558,11 @@ private struct AverageKey: View {
 /// The spectrum card's axes: levels at the left, frequencies under the plot (`SpectrumCardLayout`).
 private struct SpectrumCardLabels: View {
     let sampleRate: Double
+    let scale: FrequencyScale
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = SpectrumCardLayout(size: proxy.size)
+            let layout = SpectrumCardLayout(size: proxy.size, scale: scale)
             ZStack(alignment: .topLeading) {
                 ForEach(SpectrogramLayout.grid.filter { $0 > -96 && (layout.plot.height >= 110 || $0 != -24 && $0 != -72) }, id: \.self) { db in
                     Text(verbatim: db == 0 ? "0 dB" : "−\(Int(-db))").font(.axis)
@@ -558,7 +571,7 @@ private struct SpectrumCardLabels: View {
                                   y: db == 0 ? layout.y(decibels: db) + 7 : layout.y(decibels: db))
                 }
                 ForEach(layout.frequencyTicks(sampleRate: sampleRate), id: \.0) { tick in
-                    let decade = [100.0, 1_000, 10_000].contains(tick.0)
+                    let decade = scale.isMajor(tick.0)
                     // The top of the axis is named just inside the plot's right edge.
                     let edge = SpectrogramLayout.isTopEdge(tick.0, sampleRate: sampleRate)
                     Text(verbatim: tick.1).font(.axis)
@@ -576,12 +589,13 @@ private struct SpectrumCardLabels: View {
 /// long-term average while it is shown, as the Spectrum card's inspector reads the spectrum beside the waterfall.
 private struct SpectrumCardInspector: View {
     let sampleRate: Double
+    let scale: FrequencyScale
     @State private var location: CGPoint?
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
         GeometryReader { proxy in
-            let layout = SpectrumCardLayout(size: proxy.size)
+            let layout = SpectrumCardLayout(size: proxy.size, scale: scale)
             ZStack(alignment: .topLeading) {
                 Color.clear
                     .contentShape(Rectangle())
@@ -605,7 +619,7 @@ private struct SpectrumCardInspector: View {
     private func overlay(at point: CGPoint, layout: SpectrumCardLayout) -> some View {
         let scene = SceneStore.existing(.spectrum) as? SpectrumScene
         let count = SpectrumScene.pointCount
-        let band = max(0, min(count - 1, Int(layout.row(x: point.x, rows: count).rounded())))
+        let band = max(0, min(count - 1, Int(layout.row(x: point.x, rows: count, sampleRate: sampleRate).rounded())))
         let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
         let frequency = 20 * pow(upper / 20, (Double(band) + 0.5) / Double(count))
         let level = scene.flatMap { $0.shown.indices.contains(band) ? $0.shown[band] : nil }
@@ -652,10 +666,14 @@ private struct SpectrogramInspector: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    let scale: FrequencyScale
     /// What is analysed, for an exported image's caption.
     let source: String
     /// Whether the plot shows the flat waterfall, whose cells the pointer reads (the 3D view has no such cells).
     var waterfall = true
+    /// The peak badge's frame in the well, which the readout keeps clear of; nil while it is hidden.
+    var badge: CGRect? = nil
+    @Binding var badgeCovered: Bool
     var sharedSize = 0
     @State private var location: CGPoint? = Diagnostics.inspectPoint
     @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
@@ -664,7 +682,7 @@ private struct SpectrogramInspector: View {
     var body: some View {
         GeometryReader { proxy in
             let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
-                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds, scale: scale)
             ZStack(alignment: .topLeading) {
                 Color.clear
                     .contentShape(Rectangle())
@@ -675,7 +693,10 @@ private struct SpectrogramInspector: View {
                         case .active(let point): location = point
                         case .ended: location = nil
                         }
+                        noteBadge(layout: layout)
                     }
+                    .onAppear { noteBadge(layout: layout) }
+                    .onChange(of: badge) { _ in noteBadge(layout: layout) }
                     .contextMenu {
                         Button { if let image = image() { SpectrogramImage.copy(image) } } label: { Label(L("Copy Spectrogram Image"), systemImage: "doc.on.doc") }
                         Button { if let image = image() { SpectrogramImage.save(image) } } label: { Label(L("Save Spectrogram Image…"), systemImage: "square.and.arrow.down") }
@@ -717,7 +738,7 @@ private struct SpectrogramInspector: View {
             // column is centred on, which is half the analysis span (about 85 ms) before the column was made.
             let scene = SceneStore.existing(.spectrogram) as? SpectrogramScene
             let rows = SpectrogramHistory.rows
-            let row = max(0, min(rows - 1, Int(layout.row(y: point.y, rows: rows).rounded())))
+            let row = max(0, min(rows - 1, Int(layout.row(y: point.y, rows: rows, sampleRate: sampleRate).rounded())))
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
             let centre = 20 * pow(upper / 20, (Double(row) + 0.5) / Double(rows))
             let shared = sharedSize
@@ -732,7 +753,7 @@ private struct SpectrogramInspector: View {
             let scene = SceneStore.existing(.spectrum) as? SpectrumScene
             let bands = scene?.shown ?? []
             let count = SpectrumScene.pointCount
-            let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count).rounded())))
+            let band = max(0, min(count - 1, Int(layout.row(y: point.y, rows: count, sampleRate: sampleRate).rounded())))
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
             let low = 20 * pow(upper / 20, Double(band) / Double(count))
             let high = 20 * pow(upper / 20, Double(band + 1) / Double(count))
@@ -783,12 +804,49 @@ private struct SpectrogramInspector: View {
                 }
             }
             let tag = InspectorTag(reading: reading)
-            let width = InspectorTag.width(reading)
-            let flip = point.x + 14 + width > span.maxX
-            let x = flip ? point.x - 14 - width : point.x + 14
-            let y = min(max(span.minY + 2, point.y - (reading.resolution == nil ? 30 : 40)), span.maxY - (reading.resolution == nil ? 24 : 36))
-            tag.frame(width: width, alignment: .leading).offset(x: max(span.minX + 2, x), y: y)
+            let place = Self.tagOrigin(at: point, size: InspectorTag.size(reading), span: span, badge: badge)
+            tag.frame(width: InspectorTag.width(reading), alignment: .leading).offset(x: place.x, y: place.y)
         }
+    }
+
+    /// Fades the peak badge while the pointer is on it or the readout cannot keep clear of it (a short well), so
+    /// neither ever covers the other's text.
+    private func noteBadge(layout: SpectrogramLayout) {
+        var covered = false
+        if let badge, let point = location, let reading = reading(at: point, layout: layout) {
+            let size = InspectorTag.size(reading)
+            let origin = Self.tagOrigin(at: point, size: size, span: layout.plot.union(layout.spectrum), badge: badge)
+            covered = badge.contains(point) || CGRect(origin: origin, size: size).intersects(badge)
+        }
+        if covered != badgeCovered { badgeCovered = covered }
+    }
+
+    /// Where the readout goes: beside the pointer, above it, on whichever side has room; never over the pointer and,
+    /// where it can be helped, never over the peak badge: it moves under the badge, beside it, to the pointer's other
+    /// side, or below the pointer, the first of these that is clear.
+    static func tagOrigin(at point: CGPoint, size: CGSize, span: CGRect, badge: CGRect?) -> CGPoint {
+        func clamp(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: max(span.minX + 2, min(span.maxX - 2 - size.width, p.x)), y: max(span.minY + 2, min(span.maxY - 2 - size.height, p.y)))
+        }
+        let right = point.x + 14, left = point.x - 14 - size.width
+        let above = point.y - size.height - 8, below = point.y + 12
+        let preferred = point.x + 14 + size.width > span.maxX ? left : right
+        let other = preferred == right ? left : right
+        var candidates = [CGPoint(x: preferred, y: above), CGPoint(x: other, y: above)]
+        if let badge {
+            candidates.append(CGPoint(x: preferred, y: badge.maxY + 4))
+            for y in [above, below] {
+                candidates += [CGPoint(x: badge.minX - 4 - size.width, y: y), CGPoint(x: badge.maxX + 4, y: y)]
+            }
+        }
+        candidates += [CGPoint(x: preferred, y: below), CGPoint(x: other, y: below)]
+        let ring = CGRect(x: point.x - 6, y: point.y - 6, width: 12, height: 12)
+        let blocked = badge?.insetBy(dx: -3, dy: -3)
+        for candidate in candidates.map(clamp) {
+            let rect = CGRect(origin: candidate, size: size)
+            if !rect.intersects(ring) && !(blocked.map(rect.intersects) ?? false) { return candidate }
+        }
+        return clamp(candidates[0])
     }
 
     private struct InspectorTag: View {
@@ -797,6 +855,7 @@ private struct SpectrogramInspector: View {
 
         /// Fixed per kind, so the tag never changes size as the pointer moves.
         static func width(_ reading: Reading) -> CGFloat { reading.secondsAgo != nil ? 246 : (reading.average == nil ? 200 : 268) }
+        static func size(_ reading: Reading) -> CGSize { CGSize(width: width(reading), height: reading.resolution == nil ? 22 : 34) }
 
         var body: some View {
             let pitch = Pitch(frequency: reading.frequency)
@@ -896,6 +955,7 @@ private struct SpectrogramLabels: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    let scale: FrequencyScale
     /// The octave labels beside the keyboard (the flat view only).
     var notes = true
     @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
@@ -904,13 +964,12 @@ private struct SpectrogramLabels: View {
     var body: some View {
         GeometryReader { proxy in
             let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
-                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
-            let octave = abs(layout.y(midi: 60, sampleRate: sampleRate) - layout.y(midi: 72, sampleRate: sampleRate))
-            let labelStep = max(1, Int(ceil(18 / max(1, octave))))
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds, scale: scale)
+            let octaves = notes ? Self.octaveLabels(layout, sampleRate: sampleRate) : []
             let perSecond = layout.plot.width / CGFloat(layout.seconds)
             let timeStep = max(1, Int((36 / max(0.01, perSecond)).rounded(.up)))
             ZStack(alignment: .topLeading) {
-                ForEach((0...10).filter { notes && ($0 - 4) % labelStep == 0 }, id: \.self) { number in
+                ForEach(octaves, id: \.self) { number in
                     let y = layout.y(midi: Double(12 * (number + 1)), sampleRate: sampleRate)
                     if y > layout.plot.minY + 4 && y < layout.plot.maxY - 2 {
                         Text(verbatim: "C\(number)")
@@ -935,7 +994,7 @@ private struct SpectrogramLabels: View {
                                   y: strip.maxY + FrequencyAxis.labelHeight / 2)
                 }
                 ForEach(layout.showsSpectrum ? SpectrogramLayout.frequencyTicks(layout, sampleRate: sampleRate) : [], id: \.0) { tick in
-                    let decade = [100.0, 1_000, 10_000].contains(tick.0)
+                    let decade = scale.isMajor(tick.0)
                     Text(verbatim: tick.1).font(.axis)
                         .foregroundStyle(decade ? Theme.secondary : Theme.tertiary).fixedSize()
                         .position(x: layout.fullScaleX + (left ? 12 : -12),
@@ -946,6 +1005,25 @@ private struct SpectrogramLabels: View {
         }
         .allowsHitTesting(false)
     }
+
+    /// The octaves named beside the keyboard: on the log axis every octave or every few, counted from C4, as room
+    /// allows; on the linear one, from the top down, each where it keeps 18 pt from the one above.
+    static func octaveLabels(_ layout: SpectrogramLayout, sampleRate: Double) -> [Int] {
+        switch layout.scale {
+        case .log:
+            let octave = abs(layout.y(midi: 60, sampleRate: sampleRate) - layout.y(midi: 72, sampleRate: sampleRate))
+            let step = max(1, Int(ceil(18 / max(1, octave))))
+            return (0...10).filter { ($0 - 4) % step == 0 }
+        case .linear:
+            var kept: [Int] = [], last = -CGFloat.infinity
+            for number in (0...10).reversed() {
+                let y = layout.y(midi: Double(12 * (number + 1)), sampleRate: sampleRate)
+                guard y > layout.plot.minY + 4, y < layout.plot.maxY - 2, y - last >= 18 else { continue }
+                kept.append(number); last = y
+            }
+            return kept
+        }
+    }
 }
 
 /// The 3D view's depth axis: 100 Hz, 1 kHz and 10 kHz beside the floor's left edge (right, mirrored), where the floor
@@ -954,17 +1032,18 @@ private struct SurfaceLabels: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    let scale: FrequencyScale
     @AppStorage(SpectrogramSpan.key) private var spanKey = SpectrogramSpan.auto.rawValue
 
     var body: some View {
         GeometryReader { proxy in
             let layout = SpectrogramLayout(size: proxy.size, strip: strip, spectrumLeft: left,
-                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds)
+                                           span: (SpectrogramSpan(rawValue: spanKey) ?? .auto).seconds, scale: scale)
             let projection = SurfaceProjection(plot: layout.plot)
             let upper = MeterScale.upperFrequency(sampleRate: sampleRate)
             ZStack(alignment: .topLeading) {
-                ForEach([(100.0, "100"), (1_000, "1k"), (10_000, "10k")].filter { $0.0 < upper }, id: \.0) { frequency, label in
-                    let point = projection.point(u: layout.mirrored ? 1 : 0, d: SurfaceProjection.depth(frequency: frequency, upper: upper))
+                ForEach(SurfaceProjection.marks(scale).filter { $0.0 < upper }, id: \.0) { frequency, label in
+                    let point = projection.point(u: layout.mirrored ? 1 : 0, d: SurfaceProjection.depth(frequency: frequency, upper: upper, scale: scale))
                     Text(verbatim: label).font(.axis).foregroundStyle(Theme.tertiary).fixedSize()
                         .position(x: point.x + (layout.mirrored ? 14 : -14), y: point.y)
                 }
@@ -983,14 +1062,14 @@ private struct PeakKey: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    let scale: FrequencyScale
 
     var body: some View {
         Canvas { context, size in
-            let layout = SpectrogramLayout(size: size, strip: strip, spectrumLeft: left)
-            let semitone = layout.semitoneHeight(sampleRate: sampleRate)
+            let layout = SpectrogramLayout(size: size, strip: strip, spectrumLeft: left, scale: scale)
             let keys = layout.keyboard
-            let height = max(2, semitone)
             func light(_ midi: Int, opacity: Double) -> Bool {
+                let height = max(2, layout.semitoneHeight(sampleRate: sampleRate, midi: Double(midi)))
                 let y = layout.y(midi: Double(midi), sampleRate: sampleRate)
                 guard y > layout.plot.minY, y < layout.plot.maxY else { return false }
                 let black = SpectrogramLayout.isBlack(midi)
@@ -1030,23 +1109,21 @@ private struct PeakKey: View {
 }
 
 /// At small heights, show octave groups instead of squeezing ~120 keys into a strip.
-/// Individual black keys fade in only when each semitone has enough vertical space.
-/// The axis is affine in MIDI, so every edge comes from one origin and slope, and each layer is batched into a
-/// single path (four fills per redraw instead of one per key).
+/// Individual black keys fade in only where each semitone has enough vertical space: everywhere or nowhere on the log
+/// axis, where every semitone is as tall; from the treble down on the linear one, where they grow with the pitch.
+/// Each layer is batched into a single path (four fills per redraw instead of one per key).
 private struct PianoKeyboard: View {
     let sampleRate: Double
     let strip: CGFloat
     let left: Bool
+    let scale: FrequencyScale
 
     var body: some View {
         Canvas { context, size in
-            let layout = SpectrogramLayout(size: size, strip: strip, spectrumLeft: left)
+            let layout = SpectrogramLayout(size: size, strip: strip, spectrumLeft: left, scale: scale)
             let keys = layout.keyboard
-            let semitone = layout.semitoneHeight(sampleRate: sampleRate)
-            // Anchor at A4: y(midi:) clamps below 20 Hz, so MIDI 0 would not lie on the line.
-            let a4 = layout.y(midi: 69, sampleRate: sampleRate)
-            func y(_ midi: Double) -> CGFloat { a4 - CGFloat(midi - 69) * semitone }
-            // Visible MIDI range; the 20 Hz floor clamps the axis, so notes below it are skipped.
+            func y(_ midi: Double) -> CGFloat { layout.y(midi: midi, sampleRate: sampleRate) }
+            // Visible MIDI range; the 20 Hz floor clamps the log axis, so notes below it are skipped.
             let low = (69 + 12 * log2(20 / 440.0)).rounded(.up)
             let high = (69 + 12 * log2(MeterScale.upperFrequency(sampleRate: sampleRate) / 440)).rounded(.down)
             let shape = RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: keys)
@@ -1062,7 +1139,8 @@ private struct PianoKeyboard: View {
                 if octave.isMultiple(of: 2) {
                     bands.addRect(CGRect(x: keys.minX, y: top, width: keys.width, height: bottom - top))
                 }
-                // Ticks run in from the edge nearer the plot.
+                // Ticks run in from the edge nearer the plot; on the linear axis only where the octave has room.
+                guard bottom - top >= 3 || octave == 4 else { continue }
                 let inner = layout.keysInnerX
                 if octave == 4 {
                     middleC = CGRect(x: left ? inner : inner - 12, y: bottom - 0.5, width: 12, height: 1)
@@ -1073,17 +1151,21 @@ private struct PianoKeyboard: View {
             context.fill(bands, with: .color(Theme.ink.opacity(Theme.dark ? 0.065 : 0.05)))
             context.fill(ticks, with: .color(Theme.ink.opacity(Theme.dark ? 0.30 : 0.34)))
             if !middleC.isNull { context.fill(Path(middleC), with: .color(Theme.sage.opacity(0.9))) }
-            let keyDetail = min(1, max(0, (semitone - 3) / 2))
-            guard keyDetail > 0, low <= high else { return }
-            var black = Path()
-            let height = max(1, semitone - 1)
-            for midi in Int(low)...Int(high) where SpectrogramLayout.isBlack(midi) {
-                black.addRoundedRect(in: CGRect(x: layout.blackKeyX(width: keys.width * 0.6), y: y(Double(midi) + 0.5) + 0.5,
-                                                width: keys.width * 0.6, height: height),
-                                     cornerSize: CGSize(width: 1, height: 1))
+            guard low <= high else { return }
+            // Black keys are the darkest thing on the keyboard in either appearance; drawn in four steps of detail.
+            for level in 1...4 {
+                var black = Path()
+                for midi in Int(low)...Int(high) where SpectrogramLayout.isBlack(midi) {
+                    let semitone = layout.semitoneHeight(sampleRate: sampleRate, midi: Double(midi))
+                    let detail = min(1, max(0, (semitone - 3) / 2))
+                    guard detail > 0, Int((detail * 4).rounded(.up)) == level else { continue }
+                    black.addRoundedRect(in: CGRect(x: layout.blackKeyX(width: keys.width * 0.6), y: y(Double(midi) + 0.5) + 0.5,
+                                                    width: keys.width * 0.6, height: max(1, semitone - 1)),
+                                         cornerSize: CGSize(width: 1, height: 1))
+                }
+                let keyDetail = Double(level) / 4
+                context.fill(black, with: .color(Theme.dark ? Color.black.opacity(0.6 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
             }
-            // Black keys are the darkest thing on the keyboard in either appearance.
-            context.fill(black, with: .color(Theme.dark ? Color.black.opacity(0.6 * keyDetail) : Theme.ink.opacity(0.34 * keyDetail)))
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
@@ -2001,6 +2083,8 @@ struct DisplayOptions: Equatable {
     var spectrogramRange = SpectrogramRange.standard
     var spectrogramColors = SpectrogramColors.heat
     var tilt = SpectrumTilt.flat
+    /// How the Spectrum panel spaces frequency (`FrequencyScale`).
+    var frequencyScale = FrequencyScale.log
     /// The live spectrum's long-term average since the last reset.
     var averageSpectrum = true
     /// How quickly the live spectrum follows the sound.
@@ -2064,7 +2148,7 @@ struct DisplayOptions: Equatable {
                               waveSeconds: waveChoices.contains(seconds) ? seconds : 4,
                               waveScale: .stored,
                               bandMarkers: defaults.object(forKey: bandMarkersKey) == nil ? true : defaults.bool(forKey: bandMarkersKey),
-                              spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored,
+                              spectrogramRange: .stored, spectrogramColors: .stored, tilt: .stored, frequencyScale: .stored,
                               averageSpectrum: defaults.object(forKey: averageSpectrumKey) == nil ? true : defaults.bool(forKey: averageSpectrumKey),
                               spectrumResponse: .stored, spectrogramSpan: .stored, spectrumSmoothing: .stored,
                               spectrogramAnalysis: .stored, spectrogramView: .stored,

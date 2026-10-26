@@ -30,10 +30,22 @@ enum MeterScale {
 
     static func upperFrequency(sampleRate: Double) -> Double { min(20_000, sampleRate / 2) }
 
-    /// Horizontal fraction of a frequency on the shared 20 Hz – upper log axis used by both analyzers.
-    static func frequencyFraction(_ frequency: Double, sampleRate: Double) -> CGFloat {
+    /// Fraction of a frequency along an analyzer's axis: the shared 20 Hz – upper log axis, or 0 Hz – upper linear.
+    static func frequencyFraction(_ frequency: Double, sampleRate: Double, scale: FrequencyScale = .log) -> CGFloat {
         let upper = upperFrequency(sampleRate: sampleRate)
-        return CGFloat(log(max(frequency, 20) / 20) / log(upper / 20))
+        switch scale {
+        case .log: return CGFloat(log(max(frequency, 20) / 20) / log(upper / 20))
+        case .linear: return CGFloat(max(0, frequency) / upper)
+        }
+    }
+
+    /// Inverse of `frequencyFraction`.
+    static func frequency(fraction: Double, sampleRate: Double, scale: FrequencyScale = .log) -> Double {
+        let upper = upperFrequency(sampleRate: sampleRate)
+        switch scale {
+        case .log: return 20 * pow(upper / 20, fraction)
+        case .linear: return max(0, fraction) * upper
+        }
     }
 
     static func spectrumFraction(_ db: Float) -> CGFloat {
@@ -229,6 +241,43 @@ struct NoteHolds: Equatable {
     }
 
     mutating func reset() { notes = [] }
+}
+
+/// How an analyzer spaces frequency, chosen in each panel's settings: Log gives every octave the same room from
+/// 20 Hz, as the ear hears pitch; Linear gives every hertz the same room from 0 Hz, as an FFT's bins are spaced,
+/// so harmonic series fall evenly apart and the treble opens out. The analysis is the same; only the axis changes.
+enum FrequencyScale: String, CaseIterable {
+    case log, linear
+
+    /// The Spectrum panel's (spectrogram and spectrum together) and the Multi-FFT Spectrum's.
+    static let key = "spectrum.frequencyScale"
+    static let multiFFTKey = "spectrum.multiFFT.frequencyScale"
+    static var stored: FrequencyScale { FrequencyScale(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .log }
+    static var storedMultiFFT: FrequencyScale { FrequencyScale(rawValue: UserDefaults.standard.string(forKey: multiFFTKey) ?? "") ?? .log }
+
+    var title: String {
+        switch self {
+        case .log: return L("Log")
+        case .linear: return L("Linear")
+        }
+    }
+
+    /// Frequency marks along an axis, before thinning to the room there is: the log axis names 20, 50, 100 Hz…;
+    /// the linear one starts at 0 and steps through the kilohertz.
+    var marks: [(Double, String)] {
+        switch self {
+        case .log: return SpectrogramLayout.frequencyMarks
+        case .linear: return [(0, "0"), (1_000, "1k"), (2_000, "2k"), (3_000, "3k"), (4_000, "4k"), (5_000, "5k"),
+                              (10_000, "10k"), (15_000, "15k")]
+        }
+    }
+    /// The marks drawn a little stronger.
+    func isMajor(_ frequency: Double) -> Bool {
+        switch self {
+        case .log: return [100.0, 1_000, 10_000].contains(frequency)
+        case .linear: return [0.0, 5_000, 10_000, 15_000].contains(frequency)
+        }
+    }
 }
 
 /// Margins shared by the analyzer wells.
@@ -453,26 +502,40 @@ enum SpectrogramSpan: String, CaseIterable {
 /// A display slope for the spectrum and the spectrogram, pivoting at 1 kHz. Music falls by roughly 3 to 4.5 dB per
 /// octave, so a tilt of that much shows a balanced mix as level across the axis and makes the treble's detail as
 /// readable as the bass's. Readouts (the peak badge, the inspector) always give the true level.
-enum SpectrumTilt: String, CaseIterable {
-    case flat, three, fourAndHalf
+/// A display slope around 1 kHz, in dB per octave, set with a slider in the panel's settings: the Spectrum panel's
+/// (spectrum and spectrogram) under `key`, the Multi-FFT Spectrum's under `multiFFTKey`. Readings stay true.
+struct SpectrumTilt: Equatable {
+    var decibelsPerOctave: Float
 
-    static let key = "spectrum.tilt"
-    static var stored: SpectrumTilt { SpectrumTilt(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .flat }
+    static let key = "spectrum.tiltSlope"
+    static let multiFFTKey = "spectrum.multiFFT.tiltSlope"
+    /// Builds before 119 offered three fixed slopes, stored by name; read once into `key` (`migrateLegacy`).
+    static let legacyKey = "spectrum.tilt"
+    static let range: ClosedRange<Double> = 0...6
+    static let step = 0.5
     static let pivot = 1_000.0
+    static let flat = SpectrumTilt(decibelsPerOctave: 0)
 
-    var decibelsPerOctave: Float {
-        switch self {
-        case .flat: return 0
-        case .three: return 3
-        case .fourAndHalf: return 4.5
-        }
+    init(decibelsPerOctave: Float) { self.decibelsPerOctave = decibelsPerOctave }
+    init(stored value: Double) {
+        let clamped = min(Self.range.upperBound, max(Self.range.lowerBound, value.isFinite ? value : 0))
+        decibelsPerOctave = Float((clamped / Self.step).rounded() * Self.step)
     }
+
+    static var stored: SpectrumTilt { SpectrumTilt(stored: UserDefaults.standard.double(forKey: key)) }
+    static var storedMultiFFT: SpectrumTilt { SpectrumTilt(stored: UserDefaults.standard.double(forKey: multiFFTKey)) }
+
+    /// The old named slope, carried into the slider's key once.
+    static func migrateLegacy(_ defaults: UserDefaults = .standard) {
+        guard defaults.object(forKey: key) == nil, let name = defaults.string(forKey: legacyKey) else { return }
+        defaults.set(name == "three" ? 3.0 : name == "fourAndHalf" ? 4.5 : 0, forKey: key)
+        defaults.removeObject(forKey: legacyKey)
+    }
+
+    /// "3 dB/oct", "4.5 dB/oct".
     var title: String {
-        switch self {
-        case .flat: return L("Flat")
-        case .three: return L("%@ dB/oct", "3")
-        case .fourAndHalf: return L("%@ dB/oct", "4.5")
-        }
+        decibelsPerOctave == 0 ? L("Flat")
+            : L("%@ dB/oct", decibelsPerOctave.rounded() == decibelsPerOctave ? "\(Int(decibelsPerOctave))" : String(format: "%.1f", decibelsPerOctave))
     }
     /// What the slope adds at `frequency`.
     func offset(frequency: Double) -> Float { decibelsPerOctave * Float(log2(max(frequency, 1) / Self.pivot)) }
@@ -509,11 +572,11 @@ struct SpectrumCardLayout {
     let plot: CGRect
     let canonical: SpectrogramLayout
 
-    init(size: CGSize) {
+    init(size: CGSize, scale: FrequencyScale = .log) {
         let top: CGFloat = 8, margin: CGFloat = 12
         plot = CGRect(x: Self.levelLabels, y: top, width: max(1, size.width - Self.levelLabels - margin),
                       height: max(1, size.height - top - FrequencyAxis.labelHeight))
-        canonical = SpectrogramLayout(spectrumOnly: CGRect(x: 0, y: 0, width: plot.height, height: plot.width))
+        canonical = SpectrogramLayout(spectrumOnly: CGRect(x: 0, y: 0, width: plot.height, height: plot.width), scale: scale)
     }
 
     /// A point on the canonical axes, turned onto the plot.
@@ -530,8 +593,10 @@ struct SpectrumCardLayout {
     func frequency(x: CGFloat, sampleRate: Double) -> Double {
         canonical.frequency(y: plot.width - (x - plot.minX), sampleRate: sampleRate)
     }
-    /// The fine band (of `rows`) under `x`, as `SpectrogramLayout.row(y:rows:)`.
-    func row(x: CGFloat, rows: Int) -> Double { canonical.row(y: plot.width - (x - plot.minX), rows: rows) }
+    /// The fine band (of `rows`) under `x`, as `SpectrogramLayout.row(y:rows:sampleRate:)`.
+    func row(x: CGFloat, rows: Int, sampleRate: Double) -> Double {
+        canonical.row(y: plot.width - (x - plot.minX), rows: rows, sampleRate: sampleRate)
+    }
 
     func frequencyTicks(sampleRate: Double) -> [(Double, String)] {
         SpectrogramLayout.frequencyTicks(canonical, sampleRate: sampleRate, spacing: Self.labelSpacing)
@@ -577,12 +642,15 @@ struct SpectrogramLayout {
     /// The spectrum sits left of the waterfall, and the pair mirrors: "now" is the waterfall's left edge, and the
     /// spectrum's 0 dBFS is its left edge, so the newest column still meets the spectrum's floor.
     let mirrored: Bool
+    /// How frequency is spaced up the well (`FrequencyScale`).
+    let scale: FrequencyScale
     var visibleColumns: Int { Int(seconds * Self.analysisRate) }
 
     /// `strip` is the requested spectrum width in points, `0` for automatic; `spectrumLeft` mirrors the pair;
     /// `span` fixes the seconds shown (`SpectrogramSpan`), `0` fits them to the width.
-    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false, span: Double = 0) {
+    init(size: CGSize, strip requested: CGFloat = 0, spectrumLeft: Bool = false, span: Double = 0, scale: FrequencyScale = .log) {
         mirrored = spectrumLeft
+        self.scale = scale
         let top: CGFloat = 8, margin: CGFloat = 12
         let height = max(1, size.height - top - FrequencyAxis.labelHeight)
         // Mirrored, the keyboard and its octave labels move to the right edge, beside the waterfall's oldest
@@ -616,8 +684,9 @@ struct SpectrogramLayout {
 
     /// The live spectrum alone in `rect`, on its usual axes (level across from the floor at the left, frequency up),
     /// for `SpectrumCardLayout`, which turns it a quarter so frequency runs across.
-    init(spectrumOnly rect: CGRect) {
+    init(spectrumOnly rect: CGRect, scale: FrequencyScale = .log) {
         mirrored = false
+        self.scale = scale
         keyboard = .zero
         plot = rect
         spectrum = rect
@@ -643,7 +712,7 @@ struct SpectrogramLayout {
     var dividerLeading: CGFloat { mirrored ? spectrum.width : plot.width }
 
     func y(frequency: Double, sampleRate: Double) -> CGFloat {
-        plot.maxY - MeterScale.frequencyFraction(frequency, sampleRate: sampleRate) * plot.height
+        plot.maxY - MeterScale.frequencyFraction(frequency, sampleRate: sampleRate, scale: scale) * plot.height
     }
     /// Centre of a MIDI note, and its semitone band edges at ±50 cents.
     func y(midi: Double, sampleRate: Double) -> CGFloat { y(frequency: 440 * pow(2, (midi - 69) / 12), sampleRate: sampleRate) }
@@ -659,11 +728,14 @@ struct SpectrogramLayout {
 
     /// Inverse of `y(frequency:)`: the frequency at `y` on the shared axis.
     func frequency(y: CGFloat, sampleRate: Double) -> Double {
-        let fraction = Double((plot.maxY - y) / max(1, plot.height))
-        return 20 * pow(MeterScale.upperFrequency(sampleRate: sampleRate) / 20, fraction)
+        MeterScale.frequency(fraction: Double((plot.maxY - y) / max(1, plot.height)), sampleRate: sampleRate, scale: scale)
     }
-    /// The fractional waterfall row (and spectrum band, with `rows` 64) at `y`, row 0 centred on the bottom one.
-    func row(y: CGFloat, rows: Int) -> Double { Double((plot.maxY - y) / max(1, plot.height)) * Double(rows) - 0.5 }
+    /// The fractional waterfall row (and spectrum band, with `rows` the fine bands) at `y`, row 0 centred on the bottom
+    /// one. The analysis' rows always run up the 20 Hz log axis, whatever the well's scale.
+    func row(y: CGFloat, rows: Int, sampleRate: Double) -> Double {
+        let frequency = self.frequency(y: y, sampleRate: sampleRate)
+        return Double(MeterScale.frequencyFraction(frequency, sampleRate: sampleRate)) * Double(rows) - 0.5
+    }
     /// Across the waterfall at `x`: 0 at its oldest edge, 1 at "now", whichever side "now" is on.
     func timeFraction(x: CGFloat) -> Double {
         let fraction = Double((x - plot.minX) / max(1, plot.width))
@@ -682,7 +754,8 @@ struct SpectrogramLayout {
         let top = (upper, upper >= 1_000 ? "\(Int((upper / 1_000).rounded()))k" : "\(Int(upper))")
         var kept: [(Double, String)] = [top]
         // Decades first so 100, 1k and 10k survive wherever there is room, then the rest where they fit.
-        let order = frequencyMarks.filter { [100, 1_000, 10_000].contains($0.0) } + frequencyMarks.filter { ![100, 1_000, 10_000].contains($0.0) }
+        let marks = layout.scale.marks
+        let order = marks.filter { layout.scale.isMajor($0.0) } + marks.filter { !layout.scale.isMajor($0.0) }
         for mark in order where mark.0 < upper {
             let y = layout.y(frequency: mark.0, sampleRate: sampleRate)
             guard y - spacing + 1 > layout.spectrum.minY, y < layout.spectrum.maxY + 1 else { continue }
@@ -708,9 +781,13 @@ struct SpectrogramLayout {
     /// spectrum's own when it leads.
     func strip(forDivider leading: CGFloat) -> CGFloat { mirrored ? leading : strip(forWaterfall: leading) }
 
-    /// Height of one semitone. The axis is logarithmic, so this is constant and `y(midi:)` is affine in MIDI.
-    func semitoneHeight(sampleRate: Double) -> CGFloat {
-        plot.height * CGFloat(log(2.0) / 12 / log(MeterScale.upperFrequency(sampleRate: sampleRate) / 20))
+    /// Height of one semitone at `midi`. On the log axis this is the same everywhere and `y(midi:)` is affine in
+    /// MIDI; on the linear axis it grows with the pitch.
+    func semitoneHeight(sampleRate: Double, midi: Double = 69) -> CGFloat {
+        switch scale {
+        case .log: return plot.height * CGFloat(log(2.0) / 12 / log(MeterScale.upperFrequency(sampleRate: sampleRate) / 20))
+        case .linear: return abs(y(midi: midi - 0.5, sampleRate: sampleRate) - y(midi: midi + 0.5, sampleRate: sampleRate))
+        }
     }
 
     /// Bit n set for each black pitch class n (C#, D#, F#, G#, A#).

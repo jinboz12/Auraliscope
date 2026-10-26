@@ -760,6 +760,7 @@ extension PanelKind {
         case .waveform: return .waveform
         case .soundstage: return .soundstage
         case .levels: return .levels
+        case .multiFFT: return .multiFFT
         }
     }
 }

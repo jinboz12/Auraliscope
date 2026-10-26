@@ -93,6 +93,11 @@ enum Diagnostics {
         let parts = argument("--snapshot-dome-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
         return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
     }
+    /// `--snapshot-multifft-probe x,y` holds the Multi-FFT Spectrum's hover readout at that point of its plot (points).
+    static var multiFFTProbePoint: CGPoint? {
+        let parts = argument("--snapshot-multifft-probe")?.split(separator: ",").compactMap { Double($0) } ?? []
+        return parts.count == 2 ? CGPoint(x: parts[0], y: parts[1]) : nil
+    }
     /// `--snapshot-wave-probe x,y` holds the Waveform's pointer cursor and readout at that point of the well.
     static var waveProbePoint: CGPoint? {
         let parts = argument("--snapshot-wave-probe")?.split(separator: ",").compactMap { Double($0) } ?? []

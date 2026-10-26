@@ -12,12 +12,13 @@ private final class WelcomeCoordinator: ObservableObject {
     private static let seenBuildKey = "welcomeSeenBuild"
     private static var build: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
 
-    /// The first launch of each build shows the welcome, even where an earlier build was told not to: that choice
-    /// is kept in the sandbox container, which outlives reinstalling the app. `-showWelcomeOnLaunch` on the
-    /// command line still decides alone.
-    static var firstLaunchOfBuild: Bool {
+    /// The very first launch shows the welcome, even where the choice not to show it came along with older settings
+    /// (they are kept in the sandbox container, which outlives reinstalling the app). An update does not: once the
+    /// app has been launched before, the welcome returns only when asked for at launch or when audio access is
+    /// missing. `-showWelcomeOnLaunch` on the command line still decides alone.
+    static var firstLaunch: Bool {
         let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        return arguments["showWelcomeOnLaunch"] == nil && UserDefaults.standard.string(forKey: seenBuildKey) != build
+        return arguments["showWelcomeOnLaunch"] == nil && UserDefaults.standard.string(forKey: seenBuildKey) == nil
     }
 
     static func noteLaunch() { UserDefaults.standard.set(build, forKey: seenBuildKey) }
@@ -28,6 +29,7 @@ private final class WelcomeCoordinator: ObservableObject {
 enum Launcher {
     static func main() {
         SettingsMigration.run()
+        SpectrumTilt.migrateLegacy()
         AuraliscopeApp.main()
     }
 }
@@ -61,10 +63,11 @@ struct AuraliscopeApp: App {
                         && model.selectedDevice?.isBridge != true && model.selectedID.bridge == nil
                         && AVCaptureDevice.authorizationStatus(for: .audio) != .authorized
                     if Diagnostics.showWelcome || (!Diagnostics.snapshotRequested && !Diagnostics.selfTestRequested && !launchedByBridge
-                                                   && (showWelcomeOnLaunch || WelcomeCoordinator.firstLaunchOfBuild || inputNeedsPermission)) {
+                                                   && (showWelcomeOnLaunch || WelcomeCoordinator.firstLaunch || inputNeedsPermission)) {
                         if !Diagnostics.snapshotRequested { WelcomeCoordinator.noteLaunch() }
                         welcome.presented = true
                     } else {
+                        if !Diagnostics.snapshotRequested && !Diagnostics.selfTestRequested { WelcomeCoordinator.noteLaunch() }
                         model.resume()
                     }
                     if Diagnostics.showSettings {
