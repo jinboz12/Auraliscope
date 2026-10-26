@@ -1,0 +1,34 @@
+#!/bin/zsh
+# Runs the repository's checks in one go and prints one line per step: what ran, its exit status and time, and the
+# log to read when it fails. Nothing here replaces the individual scripts; it only calls them in a fixed order.
+#
+#   scripts/check-all.sh           builds (debug, release), core checks, app feature checks, file analysis,
+#                                  plugin-side analysis, spatial report, plugin transport
+#   scripts/check-all.sh --quick   debug build and core checks only
+#
+# Logs: .build/check-all/<step>.log. Exit status: 0 when every step passed, 1 otherwise. Steps that need hardware,
+# a window, the VST3 SDK or a DAW (capture self-tests, snapshots, plugin builds, REAPER) are not part of it.
+set -uo pipefail
+cd "${0:A:h:h}"
+logs=.build/check-all
+mkdir -p "$logs"
+failed=0
+step() {
+    local name=$1; shift
+    local start=$SECONDS
+    "$@" > "$logs/$name.log" 2>&1
+    local rc=$?
+    (( rc == 0 )) || failed=1
+    printf '%-18s %-4s %4ds  %s\n' "$name" "$( (( rc == 0 )) && echo pass || echo FAIL)" $(( SECONDS - start )) "$logs/$name.log"
+}
+step build-debug swift build
+step core-checks scripts/test.sh
+if [[ "${1:-}" != "--quick" ]]; then
+    step build-release swift build -c release
+    step app-features scripts/check-app-features.sh
+    step file-analysis scripts/check-file-analysis.sh
+    step bridge-analysis Bridge/scripts/test-analysis.sh
+    step spatial-report Bridge/scripts/check-spatial.sh
+    step bridge-transport Bridge/scripts/test-transport.sh
+fi
+exit $failed

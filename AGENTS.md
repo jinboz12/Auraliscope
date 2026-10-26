@@ -18,6 +18,7 @@ debt), `Bridge/ARCHITECTURE.md` and `Bridge/PROTOCOL.md` (DAW plugin side), `doc
 ## Build and verify
 
 ```sh
+scripts/check-all.sh             # everything below that needs no hardware or DAW (--quick: debug build + core checks)
 swift build                      # debug app
 swift build -c release           # release app
 scripts/test.sh                  # 61 core checks, baseline checks (golden digests), kernel checks, localization
