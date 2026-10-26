@@ -1,11 +1,5 @@
 import AnalysisCore
-import AppKit
-import AudioRing
-import AudioToolbox
-import Combine
-import ImageIO
 import MetalKit
-import SwiftUI
 
 // MARK: - Spectrum: live curve of the monitored channels with per-band peak holds, beside the waterfall
 

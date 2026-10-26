@@ -1,11 +1,5 @@
 import AnalysisCore
-import AppKit
-import AudioRing
-import AudioToolbox
-import Combine
-import ImageIO
 import MetalKit
-import SwiftUI
 
 /// A scroll fed in bursts and drawn at an even speed: `lag` is how many columns the drawn edge trails the newest one.
 /// Each arrival adds its columns; each refresh drains them at the column rate, sped up or slowed a little by how far the

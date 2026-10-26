@@ -1,11 +1,5 @@
 import AnalysisCore
-import AppKit
-import AudioRing
-import AudioToolbox
-import Combine
-import ImageIO
 import MetalKit
-import SwiftUI
 
 // MARK: - Waveform: one phosphor lane per channel, drawn from the min/max pyramid
 
