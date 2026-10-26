@@ -6,7 +6,11 @@ OSStatus capture_input_proc(void *_Nonnull context, AudioUnitRenderActionFlags *
     (void)bus;
     (void)unused;
     CaptureContext *capture = context;
-    if (frames > capture->max_frames) return kAudioUnitErr_TooManyFramesToProcess;
+    if (frames > capture->max_frames) {
+        // Too long for the storage: nothing is written, so these frames are a break in the audio.
+        channel_ring_lose(capture->ring, frames);
+        return kAudioUnitErr_TooManyFramesToProcess;
+    }
     AudioBufferList buffers;
     buffers.mNumberBuffers = 1;
     buffers.mBuffers[0].mNumberChannels = capture->channels;
@@ -14,6 +18,7 @@ OSStatus capture_input_proc(void *_Nonnull context, AudioUnitRenderActionFlags *
     buffers.mBuffers[0].mData = capture->storage;
     OSStatus status = AudioUnitRender(capture->unit, flags, timestamp, 1, frames, &buffers);
     if (status == noErr) channel_ring_write(capture->ring, capture->storage, frames, capture->channels, capture->source_for_role);
+    else channel_ring_lose(capture->ring, frames);  // refused (during a device rate change, for one): a break, counted
     return status;
 }
 
@@ -46,8 +51,13 @@ OSStatus capture_tap_io_proc(AudioObjectID device, const AudioTimeStamp *_Nonnul
             break;
         }
     }
+    // Frames beyond the storage are cut off, after the frames kept: a break, marked at the next write.
+    uint32_t lost = frames > capture->max_frames ? frames - capture->max_frames : 0;
     if (frames > capture->max_frames) frames = capture->max_frames;
-    if (frames == 0) return noErr;
+    if (frames == 0) {
+        channel_ring_lose(capture->ring, lost);
+        return noErr;
+    }
     uint32_t base = 0;
     for (uint32_t index = 0; index < input->mNumberBuffers && base < capture->channels; index++) {
         const AudioBuffer *buffer = &input->mBuffers[index];
@@ -68,5 +78,6 @@ OSStatus capture_tap_io_proc(AudioObjectID device, const AudioTimeStamp *_Nonnul
         for (uint32_t channel = 0; channel < capture->channels - base; channel++) destination[channel] = 0;
     }
     channel_ring_write(capture->ring, capture->storage, frames, capture->channels, capture->source_for_role);
+    channel_ring_lose(capture->ring, lost);
     return noErr;
 }

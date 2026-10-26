@@ -34,8 +34,17 @@ enum BaselineChecks {
         try logFrequencyAxisMatchesLegacyExpressions()
         print("PASS: baseline: LogFrequencyAxis equals, bit for bit, every expression it replaced, at 11 rates and 6 band counts")
         try goldenPipeline()
-        try knownIssueCaptureRejectsSilently()
-        try knownIssueTapTruncatesSilently()
+        try captureRefusalsAreCountedAsBreaks()
+        print("PASS: baseline: P0-1 a refused or oversize capture slice is counted as dropped and marked as one break")
+        try tapTruncationIsCountedAsBreak()
+        try tapDeliveryWithinStorageHasNoBreak()
+        print("PASS: baseline: P0-2 an output-tap delivery longer than its storage is marked and counted; channel order kept")
+        try ringLossesCoalesceAndKeepOrder()
+        try ringLossIsClearedWithTheRing()
+        try ringOverflowIsMarkedAtNextWrite()
+        print("PASS: baseline: producer losses and ring overflow mark breaks in order, and a restart clears them")
+        try captureLossReachesTheAnalysis()
+        print("PASS: baseline: a capture loss reaches the analysis as one break with its lost seconds")
     }
 
     // MARK: - Snapshot layout
@@ -389,31 +398,89 @@ enum BaselineChecks {
         return text.split(separator: "\n").first.map(String.init) ?? "unknown"
     }
 
-    // MARK: - Known issues (Phase 2 P0 validation)
+    // MARK: - Capture losses (P0-1, P0-2)
 
-    static func knownIssue(_ id: String, _ text: String) { print("KNOWN ISSUE \(id): \(text)") }
+    /// What the analysis sees from a ring, in order: runs of frames, and the breaks between them.
+    enum RingEvent: Equatable {
+        case frames(UInt32)
+        case mark(lost: UInt64, reasons: UInt32)
+    }
 
-    static func emptyRing(_ ring: OpaquePointer) -> (frames: UInt32, marks: Int) {
+    /// Reads a ring to empty, as the DSP queue does (`channel_ring_read_marked`): the events in order, and the frames.
+    static func readRing(_ ring: OpaquePointer) -> (events: [RingEvent], frames: [ChannelFrame]) {
         var out = [ChannelFrame](repeating: ChannelFrame(), count: 64)
         var mark = ChannelRingMark()
         var has: Int32 = 0
-        var frames: UInt32 = 0, marks = 0
+        var events: [RingEvent] = []
+        var frames: [ChannelFrame] = []
         while true {
             let n = channel_ring_read_marked(ring, &out, 64, &mark, &has)
-            if has != 0 { marks += 1; continue }
-            if n == 0 { return (frames, marks) }
-            frames += n
+            if has != 0 {
+                events.append(.mark(lost: mark.lost_frames, reasons: mark.reasons))
+                continue
+            }
+            if n == 0 { return (events, frames) }
+            frames += out[0..<Int(n)]
+            if case .frames(let run)? = events.last {
+                events[events.count - 1] = .frames(run + n)
+            } else {
+                events.append(.frames(n))
+            }
         }
     }
 
-    /// P0-1 (confirmed). A slice the input callback cannot take, too long for its storage or one that
-    /// `AudioUnitRender` refuses (as every slice is while the device's rate differs from the capture format's, the
-    /// moment after a device rate change), is dropped with no break mark and no dropped-frame count: the analysis
-    /// sees a stall, not a break, and the status bar shows nothing. Intended: each lost slice marks the ring and counts.
-    static func knownIssueCaptureRejectsSilently() throws {
+    /// Channel `i` of a delivery goes to role `i`, for the first `count` channels; the other roles have no source.
+    static func identityMap(_ count: Int) -> [Int32] {
+        (0..<Role.count).map { $0 < count ? Int32($0) : -1 }
+    }
+
+    /// The value of one role in a frame.
+    static func sample(_ frame: ChannelFrame, role: Int) -> Float {
+        var copy = frame
+        return withUnsafeBytes(of: &copy) { $0.load(fromByteOffset: role * MemoryLayout<Float>.size, as: Float.self) }
+    }
+
+    /// A capture context with storage for `maxFrames` frames of `channels` channels, routing channel i to role i.
+    static func captureContext(ring: OpaquePointer, storage: UnsafeMutablePointer<Float>, maxFrames: UInt32, channels: UInt32) -> CaptureContext {
+        var context = CaptureContext()
+        context.ring = ring
+        context.storage = storage
+        context.max_frames = maxFrames
+        context.channels = channels
+        withUnsafeMutableBytes(of: &context.source_for_role) { raw in
+            let roles = raw.bindMemory(to: Int32.self)
+            for role in 0..<Role.count { roles[role] = role < Int(channels) ? Int32(role) : -1 }
+        }
+        return context
+    }
+
+    /// One output-tap delivery of `frames` frames in two 2-channel streams: roles 0–1 read 0.25, roles 2–3 read 0.5.
+    static func tapDelivery(frames: Int, context: inout CaptureContext) throws {
+        let count = frames * 2
+        var a = [Float](repeating: 0.25, count: count), b = [Float](repeating: 0.5, count: count)
+        let list = AudioBufferList.allocate(maximumBuffers: 2)
+        defer { free(list.unsafeMutablePointer) }
+        try a.withUnsafeMutableBytes { ra in try b.withUnsafeMutableBytes { rb in
+            list[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(count * 4), mData: ra.baseAddress)
+            list[1] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(count * 4), mData: rb.baseAddress)
+            var time = AudioTimeStamp()
+            var output = AudioBufferList()
+            let status = withUnsafeMutablePointer(to: &context) {
+                capture_tap_io_proc(0, &time, list.unsafePointer, &time, &output, &time, UnsafeMutableRawPointer($0))
+            }
+            try require(status == noErr, "tap delivery of \(frames) frames: status \(status)")
+        } }
+    }
+
+    /// P0-1: a slice the input callback cannot take, either longer than its storage or refused by `AudioUnitRender`
+    /// (every slice is, while the device's rate differs from the capture format's), writes nothing. Its frames are
+    /// counted as dropped at once, and the break is marked where the next written frames start. Consecutive losses
+    /// are one break with their total.
+    static func captureRefusalsAreCountedAsBreaks() throws {
         guard let ring = channel_ring_create(1_024) else { throw Failure(description: "ring") }
         defer { channel_ring_destroy(ring) }
         let storage = UnsafeMutablePointer<Float>.allocate(capacity: 2 * 256)
+        storage.initialize(repeating: 0, count: 2 * 256)
         defer { storage.deallocate() }
         var description = AudioComponentDescription(componentType: kAudioUnitType_Output, componentSubType: kAudioUnitSubType_HALOutput,
                                                     componentManufacturer: kAudioUnitManufacturer_Apple, componentFlags: 0, componentFlagsMask: 0)
@@ -424,67 +491,135 @@ enum BaselineChecks {
         }
         // Never initialised and never started: no audio device is opened, and AudioUnitRender refuses every slice.
         defer { AudioComponentInstanceDispose(unit) }
-        var context = CaptureContext()
+        var context = captureContext(ring: ring, storage: storage, maxFrames: 256, channels: 2)
         context.unit = unit
-        context.ring = ring
-        context.storage = storage
-        context.max_frames = 256
-        context.channels = 2
-        withUnsafeMutableBytes(of: &context.source_for_role) { raw in
-            let roles = raw.bindMemory(to: Int32.self)
-            for role in 0..<Role.count { roles[role] = role < 2 ? Int32(role) : -1 }
-        }
         var flags = AudioUnitRenderActionFlags()
         var time = AudioTimeStamp()
-        // Too long for the storage.
+        // Too long for the storage: 512 frames, nothing rendered.
         let oversize = withUnsafeMutablePointer(to: &context) { capture_input_proc($0, &flags, &time, 1, 512, nil) }
         try require(oversize == kAudioUnitErr_TooManyFramesToProcess, "P0-1: oversize slice status \(oversize)")
-        var after = emptyRing(ring)
-        try require(after.frames == 0 && after.marks == 0 && channel_ring_dropped(ring) == 0,
-                    "P0-1 behaviour changed (oversize): \(after.frames) frames, \(after.marks) marks, \(channel_ring_dropped(ring)) dropped. If this is the fix, assert a mark and a count here and update the maintenance notes.")
-        // Refused by AudioUnitRender.
+        try require(channel_ring_dropped(ring) == 512, "P0-1: 512 frames refused as too long, \(channel_ring_dropped(ring)) counted")
+        // Refused by AudioUnitRender: 128 more frames.
         let refused = withUnsafeMutablePointer(to: &context) { capture_input_proc($0, &flags, &time, 1, 128, nil) }
         try require(refused != noErr, "P0-1: an uninitialised unit rendered")
-        after = emptyRing(ring)
-        try require(after.frames == 0 && after.marks == 0 && channel_ring_dropped(ring) == 0,
-                    "P0-1 behaviour changed (render refused): \(after.frames) frames, \(after.marks) marks, \(channel_ring_dropped(ring)) dropped. If this is the fix, assert a mark and a count here and update the maintenance notes.")
-        knownIssue("P0-1", "a capture slice that is too long or that AudioUnitRender refuses (OSStatus \(refused)) is lost with no break mark and no dropped count")
+        try require(channel_ring_dropped(ring) == 640, "P0-1: 640 frames lost, \(channel_ring_dropped(ring)) counted")
+        try require(readRing(ring).events.isEmpty, "P0-1: a break was marked before any frame followed it")
+        // The next slice that renders is written after the break, with every lost frame in it.
+        channel_ring_write(ring, storage, 4, 2, identityMap(2))
+        let events = readRing(ring).events
+        try require(events == [.mark(lost: 640, reasons: CHANNEL_RING_LOST), .frames(4)], "P0-1: events after the losses: \(events)")
     }
 
-    /// P0-2 (confirmed at unit level; not reachable with this machine's devices, whose IO buffers stop at 4096 frames,
-    /// the storage's minimum). In the output tap's multi-stream path, frames beyond the storage are cut off with no
-    /// break mark and no count. Intended: the cut is marked and counted, or the storage is sized so it cannot happen.
-    static func knownIssueTapTruncatesSilently() throws {
+    /// P0-2: an output-tap delivery longer than the storage keeps its first `max_frames` frames, in channel order, and
+    /// the tail it cuts off is counted as dropped and marked as a break where the next written frames start.
+    static func tapTruncationIsCountedAsBreak() throws {
         guard let ring = channel_ring_create(64) else { throw Failure(description: "ring") }
         defer { channel_ring_destroy(ring) }
         let storage = UnsafeMutablePointer<Float>.allocate(capacity: 8 * 4)
+        storage.initialize(repeating: 0, count: 8 * 4)
         defer { storage.deallocate() }
-        var context = CaptureContext()
-        context.ring = ring
-        context.storage = storage
-        context.max_frames = 8
-        context.channels = 4
-        withUnsafeMutableBytes(of: &context.source_for_role) { raw in
-            let roles = raw.bindMemory(to: Int32.self)
-            for role in 0..<Role.count { roles[role] = role < 4 ? Int32(role) : -1 }
+        var context = captureContext(ring: ring, storage: storage, maxFrames: 8, channels: 4)
+        // 12 frames against storage for 8: the multi-stream path, 4 frames more than the storage holds.
+        try tapDelivery(frames: 12, context: &context)
+        // The next frames the ring writes come after the break.
+        let next = [Float](repeating: 0.75, count: 2 * 4)
+        channel_ring_write(ring, next, 2, 4, identityMap(4))
+        let (events, frames) = readRing(ring)
+        try require(events == [.frames(8), .mark(lost: 4, reasons: CHANNEL_RING_LOST), .frames(2)], "P0-2: events \(events)")
+        try require(channel_ring_dropped(ring) == 4, "P0-2: 4 frames cut off, \(channel_ring_dropped(ring)) counted")
+        try require(sample(frames[0], role: 0) == 0.25 && sample(frames[0], role: 1) == 0.25
+                    && sample(frames[0], role: 2) == 0.5 && sample(frames[0], role: 3) == 0.5,
+                    "P0-2: channel order of the kept frames changed")
+    }
+
+    /// A tap delivery that fits its storage keeps every frame and marks nothing.
+    static func tapDeliveryWithinStorageHasNoBreak() throws {
+        guard let ring = channel_ring_create(64) else { throw Failure(description: "ring") }
+        defer { channel_ring_destroy(ring) }
+        let storage = UnsafeMutablePointer<Float>.allocate(capacity: 8 * 4)
+        storage.initialize(repeating: 0, count: 8 * 4)
+        defer { storage.deallocate() }
+        var context = captureContext(ring: ring, storage: storage, maxFrames: 8, channels: 4)
+        try tapDelivery(frames: 8, context: &context)
+        let events = readRing(ring).events
+        try require(events == [.frames(8)] && channel_ring_dropped(ring) == 0, "P0-2: a delivery within storage gave \(events)")
+    }
+
+    /// Ring semantics of producer losses, without capture hardware: lost frames are counted at once, and the break is
+    /// marked where the next written frames start. Consecutive losses are one break with their total, and breaks keep
+    /// their place between the frames around them.
+    static func ringLossesCoalesceAndKeepOrder() throws {
+        guard let ring = channel_ring_create(64) else { throw Failure(description: "ring") }
+        defer { channel_ring_destroy(ring) }
+        let samples = [Float](repeating: 0.5, count: 2 * 8)
+        let map = identityMap(2)
+        channel_ring_write(ring, samples, 2, 2, map)
+        channel_ring_lose(ring, 5)
+        channel_ring_lose(ring, 3)
+        try require(channel_ring_dropped(ring) == 8, "ring: 8 frames lost, \(channel_ring_dropped(ring)) counted")
+        channel_ring_write(ring, samples, 2, 2, map)
+        channel_ring_lose(ring, 1)
+        channel_ring_write(ring, samples, 1, 2, map)
+        let events = readRing(ring).events
+        try require(events == [.frames(2), .mark(lost: 8, reasons: CHANNEL_RING_LOST), .frames(2),
+                               .mark(lost: 1, reasons: CHANNEL_RING_LOST), .frames(1)],
+                    "ring: losses gave \(events)")
+        try require(channel_ring_dropped(ring) == 9, "ring: 9 frames lost, \(channel_ring_dropped(ring)) counted")
+    }
+
+    /// A restart clears the ring. A loss not yet marked belongs to the capture that ended, so it goes with the ring.
+    static func ringLossIsClearedWithTheRing() throws {
+        guard let ring = channel_ring_create(64) else { throw Failure(description: "ring") }
+        defer { channel_ring_destroy(ring) }
+        let samples = [Float](repeating: 0.5, count: 2 * 2)
+        channel_ring_lose(ring, 100)
+        channel_ring_clear(ring)
+        channel_ring_write(ring, samples, 2, 2, identityMap(2))
+        let events = readRing(ring).events
+        try require(events == [.frames(2)] && channel_ring_dropped(ring) == 0, "ring: after a clear, \(events) and \(channel_ring_dropped(ring)) dropped")
+    }
+
+    /// A write that does not fit keeps what fits, and the cut-off frames are marked as an overflow at the next write.
+    static func ringOverflowIsMarkedAtNextWrite() throws {
+        guard let ring = channel_ring_create(8) else { throw Failure(description: "ring") }
+        defer { channel_ring_destroy(ring) }
+        let samples = [Float](repeating: 0.5, count: 2 * 10)
+        let map = identityMap(2)
+        try require(channel_ring_write(ring, samples, 10, 2, map) == 8, "ring: a 10-frame write into 8 frames of room")
+        var consumed = [ChannelFrame](repeating: ChannelFrame(), count: 8)
+        try require(channel_ring_read(ring, &consumed, 8) == 8, "ring: reading back the 8 frames that fit")
+        channel_ring_write(ring, samples, 1, 2, map)
+        let events = readRing(ring).events
+        try require(events == [.mark(lost: 2, reasons: CHANNEL_RING_OVERFLOW), .frames(1)], "ring: overflow gave \(events)")
+    }
+
+    /// The analysis end: a break marked by the ring reaches the pipeline with its lost frames, which is what the status
+    /// bar shows as breaks and missing seconds.
+    static func captureLossReachesTheAnalysis() throws {
+        guard let ring = channel_ring_create(1 << 14) else { throw Failure(description: "ring") }
+        defer { channel_ring_destroy(ring) }
+        let active = (0..<Role.count).map { $0 == Role.left || $0 == Role.right }
+        guard let pipeline = MeterPipeline(sampleRate: 48_000, activeRoles: active, detector: FormatDetector(), streamID: 7) else {
+            throw Failure(description: "P0-1 analysis: no pipeline")
         }
-        // Two 2-channel streams of 12 frames each: the multi-stream path, 4 frames more than the storage holds.
-        let list = AudioBufferList.allocate(maximumBuffers: 2)
-        defer { free(list.unsafeMutablePointer) }
-        var a = [Float](repeating: 0.25, count: 24), b = [Float](repeating: 0.5, count: 24)
-        try a.withUnsafeMutableBytes { ra in try b.withUnsafeMutableBytes { rb in
-            list[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: 96, mData: ra.baseAddress)
-            list[1] = AudioBuffer(mNumberChannels: 2, mDataByteSize: 96, mData: rb.baseAddress)
-            var time = AudioTimeStamp()
-            var output = AudioBufferList()
-            let status = withUnsafeMutablePointer(to: &context) {
-                capture_tap_io_proc(0, &time, list.unsafePointer, &time, &output, &time, UnsafeMutableRawPointer($0))
+        let samples = [Float](repeating: 0, count: 2 * 480)
+        let map = identityMap(2)
+        channel_ring_write(ring, samples, 480, 2, map)
+        channel_ring_lose(ring, 48_000)
+        channel_ring_write(ring, samples, 480, 2, map)
+        // The consumer's loop, reduced to breaks: a mark is an interrupt, as in `MeterModel`.
+        var out = [ChannelFrame](repeating: ChannelFrame(), count: 1_024)
+        var mark = ChannelRingMark()
+        var has: Int32 = 0
+        while true {
+            let n = channel_ring_read_marked(ring, &out, 1_024, &mark, &has)
+            if has != 0 {
+                pipeline.interrupt(lostFrames: mark.lost_frames, idleMilliseconds: mark.idle_ms)
+                continue
             }
-            try require(status == noErr, "P0-2: tap status \(status)")
-        } }
-        let after = emptyRing(ring)
-        try require(after.frames == 8 && after.marks == 0 && channel_ring_dropped(ring) == 0,
-                    "P0-2 behaviour changed: \(after.frames) frames, \(after.marks) marks, \(channel_ring_dropped(ring)) dropped of 12 delivered. If this is the fix, assert a mark and a count here and update the maintenance notes.")
-        knownIssue("P0-2", "an output-tap delivery longer than the storage keeps 8 of 12 frames with no break mark and no dropped count")
+            if n == 0 { break }
+        }
+        try require(pipeline.breaks == 1, "P0-1 analysis: \(pipeline.breaks) breaks, expected 1")
+        try require(abs(pipeline.missingSeconds - 1.0) < 1e-9, "P0-1 analysis: \(pipeline.missingSeconds) s missing, expected 1 s")
     }
 }

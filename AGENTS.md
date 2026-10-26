@@ -46,8 +46,10 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
 - Core Audio IO callbacks (`Sources/AudioRing/CaptureCallback.c`) and the plugins' `process` stay C/C++ with no
   locks, allocation, logging, Objective-C or Swift.
 - The DSP queue owns `MeterPipeline`; only the main thread reads `MeterExchange` (`DSPWorker.latest()`).
-- Every dropped or skipped audio frame should produce a ring mark (`channel_ring_mark`) so the analysis counts the
-  break. Known exceptions are pinned as `KNOWN ISSUE` checks in `Tests/AuraliscopeTests/BaselineChecks.swift`.
+- Every audio frame the capture does not deliver is a break. A producer that cannot write frames (refused by its device,
+  or longer than its storage) calls `channel_ring_lose`: the frames count as dropped at once, and the break is marked
+  where its next write starts. A ring that is full marks its own overflow. `BaselineChecks.swift` pins both
+  (`captureRefusalsAreCountedAsBreaks`, `tapTruncationIsCountedAsBreak`).
 
 ## Contracts that span files
 

@@ -29,6 +29,8 @@ uint64_t channel_ring_dropped(const ChannelRing *ring);
 // it happens (channel_ring_mark, before writing the frames after it); the ring marks one itself where it had to
 // drop frames because it was full (CHANNEL_RING_OVERFLOW). `reasons` is the producer's own set of bits.
 #define CHANNEL_RING_OVERFLOW (1u << 31)
+// Frames the producer had and could not write: its device refused them, or they were longer than its storage.
+#define CHANNEL_RING_LOST (1u << 30)
 typedef struct {
     uint32_t reasons;
     uint32_t idle_ms;       // how long the source did not deliver, when the producer knows
@@ -36,6 +38,9 @@ typedef struct {
 } ChannelRingMark;
 // Producer only; no allocation, no lock. Marks beyond a small queue merge into one (the consumer is stalled).
 void channel_ring_mark(ChannelRing *ring, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms);
+// Producer only; no allocation, no lock. Frames the producer could not write (CHANNEL_RING_LOST): they count as dropped
+// at once, and the break is marked where the producer's next write starts, so a run of losses is one break.
+void channel_ring_lose(ChannelRing *ring, uint64_t frames);
 // Consumer: as channel_ring_read, but stops at the next break. When the read position has reached one, returns 0
 // with *has_mark set and the break in *mark; reading again continues after it.
 uint32_t channel_ring_read_marked(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames,

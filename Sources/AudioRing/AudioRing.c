@@ -142,7 +142,8 @@ struct ChannelRing {
     _Atomic uint64_t mark_write;
     _Atomic uint64_t mark_read;
     _Atomic uint32_t mark_overflow;   // reasons of marks that found the queue full, reported at the read position
-    uint64_t overflow_frames;         // producer: frames the ring dropped since its last write, marked at the next
+    uint64_t unmarked_frames;         // producer: frames lost since its last write, marked at the next write
+    uint32_t unmarked_reasons;        // producer: the reasons of those frames
 };
 
 ChannelRing *channel_ring_create(uint32_t capacity) {
@@ -176,7 +177,8 @@ void channel_ring_clear(ChannelRing *ring) {
     uint64_t marks = atomic_load_explicit(&ring->mark_write, memory_order_acquire);
     atomic_store_explicit(&ring->mark_read, marks, memory_order_release);
     atomic_store_explicit(&ring->mark_overflow, 0, memory_order_relaxed);
-    ring->overflow_frames = 0;
+    ring->unmarked_frames = 0;
+    ring->unmarked_reasons = 0;
 }
 
 void channel_ring_mark(ChannelRing *ring, uint32_t reasons, uint64_t lost_frames, uint32_t idle_ms) {
@@ -205,10 +207,11 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *input, uint32_t fram
     uint64_t read = atomic_load_explicit(&ring->read_index, memory_order_acquire);
     uint32_t available = ring->capacity - (uint32_t)(write - read);
     uint32_t count = frames < available ? frames : available;
-    if (count > 0 && ring->overflow_frames > 0) {
-        // Frames were dropped after the last ones written: these do not continue them.
-        channel_ring_mark(ring, CHANNEL_RING_OVERFLOW, ring->overflow_frames, 0);
-        ring->overflow_frames = 0;
+    if (count > 0 && ring->unmarked_frames > 0) {
+        // Frames were lost after the last ones written: these do not continue them.
+        channel_ring_mark(ring, ring->unmarked_reasons, ring->unmarked_frames, 0);
+        ring->unmarked_frames = 0;
+        ring->unmarked_reasons = 0;
     }
     uint32_t roles[CHANNEL_ROLE_COUNT], sources[CHANNEL_ROLE_COUNT], routed = 0;
     for (uint32_t role = 0; role < CHANNEL_ROLE_COUNT; ++role) {
@@ -235,9 +238,17 @@ uint32_t channel_ring_write(ChannelRing *ring, const float *input, uint32_t fram
     atomic_store_explicit(&ring->write_index, write + count, memory_order_release);
     if (count < frames) {
         atomic_fetch_add_explicit(&ring->dropped, frames - count, memory_order_relaxed);
-        ring->overflow_frames += frames - count;
+        ring->unmarked_frames += frames - count;
+        ring->unmarked_reasons |= CHANNEL_RING_OVERFLOW;
     }
     return count;
+}
+
+void channel_ring_lose(ChannelRing *ring, uint64_t frames) {
+    if (!ring || frames == 0) return;
+    atomic_fetch_add_explicit(&ring->dropped, frames, memory_order_relaxed);
+    ring->unmarked_frames += frames;
+    ring->unmarked_reasons |= CHANNEL_RING_LOST;
 }
 
 uint32_t channel_ring_read(ChannelRing *ring, ChannelFrame *destination, uint32_t max_frames) {
