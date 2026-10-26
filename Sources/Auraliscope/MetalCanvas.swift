@@ -626,7 +626,7 @@ final class MeterGPU {
         }
         self.device = device
         self.queue = queue
-        let library = try device.makeLibrary(source: Self.shaderSource, options: nil)
+        let library = try device.makeLibrary(source: Self.shaderSource + Self.layoutChecks, options: nil)
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = library.makeFunction(name: "shapeVertex")
         descriptor.fragmentFunction = library.makeFunction(name: "shapeFragment")
@@ -710,6 +710,23 @@ final class MeterGPU {
 
     // Shape kinds: 0 solid, 1 rounded rect, 2 disk, 3 glow, 4 ring/arc/dashes, 5 antialiased line,
     // 6 rounded-rect hairline outline.
+    /// Every struct a shader reads from a Swift buffer is declared twice, in Swift and in `shaderSource`, and nothing
+    /// links the two: a field added on one side only shifts every field after it, silently. These checks make the
+    /// library fail to compile instead (in the build that changed it, on first launch) unless each shader struct is
+    /// exactly as large as its Swift counterpart's stride. `ScopeState` reads only the start of `UnderlayState`.
+    private static var layoutChecks: String {
+        let pairs: [(shader: String, swift: Int)] = [
+            ("Vertex", MemoryLayout<ShapeVertex>.stride), ("WaterfallState", MemoryLayout<UnderlayState>.stride),
+            ("SurfaceState", MemoryLayout<SurfaceState>.stride), ("BodyUniforms", MemoryLayout<BodyUniforms>.stride),
+            ("RadiantParticle", MemoryLayout<RadiantParticles.Particle>.stride),
+            ("RadiantCamera", MemoryLayout<RadiantCamera>.stride), ("RadiantLook", MemoryLayout<RadiantLook>.stride),
+            ("VolumeSplat", MemoryLayout<VolumeSplat>.stride), ("VolumeBlur", MemoryLayout<VolumeBlur>.stride),
+            ("RadiantBodyLook", MemoryLayout<RadiantBodyLook>.stride),
+        ]
+        return "\n" + pairs.map { "static_assert(sizeof(\($0.shader)) == \($0.swift), \"\($0.shader) is not laid out like its Swift declaration\");" }
+            .joined(separator: "\n") + "\nstatic_assert(sizeof(ScopeState) <= \(MemoryLayout<UnderlayState>.stride), \"ScopeState reads past UnderlayState\");\n"
+    }
+
     private static var shaderSource: String { """
     #include <metal_stdlib>
     using namespace metal;
@@ -1800,8 +1817,8 @@ struct ShapeBuilder {
 
 }
 
-/// Laid out like both Metal underlay states: `WaterfallState` (all eight fields) and `ScopeState` (the first four:
-/// newest, capacity, phase, span), which ignores the rest.
+/// Laid out like both Metal underlay states: `WaterfallState` (every field) and `ScopeState` (the first six: newest,
+/// capacity, phase, span, an unused slot and the range), which ignores the rest. `MeterGPU.layoutChecks` checks both.
 struct UnderlayState {
     var head: UInt32 = 0
     var rows: UInt32 = 1
