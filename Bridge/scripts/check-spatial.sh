@@ -20,6 +20,6 @@ swiftc -O -swift-version 5 -module-cache-path "$out/modules-$cache_key" -module-
     Sources/AnalysisCore/SpatialField.swift Sources/AnalysisCore/SpatialGeometry.swift Sources/AnalysisCore/SpatialObservations.swift \
     Sources/AnalysisCore/Role.swift Sources/AnalysisCore/FormatDetector.swift Sources/AnalysisCore/WaveformEnvelope.swift \
     Sources/AnalysisCore/MeterPipeline.swift $a/StereoBandLabels.swift $a/FormatMode.swift $a/Localizer.swift $a/SystemMenus.swift \
-    $a/SpectrogramHistory.swift $a/DampedDisplayState.swift $a/MeterScale.swift $a/SpeakerLayout.swift $a/VUScale.swift $a/MinMaxPyramid.swift \
+    $a/SpectrogramHistory.swift $a/DampedDisplayState.swift $a/MeterScale.swift $a/AnalyzerDisplaySettings.swift $a/AnalyzerLayouts.swift $a/PanelLayouts.swift $a/SpeakerLayout.swift $a/VUScale.swift $a/MinMaxPyramid.swift \
     Bridge/Tools/SpatialCheck/main.swift "$out/AnalysisKernels.o" "$out/AudioRing.o" -o "$out/SpatialCheck"
 "$out/SpatialCheck" "$@"
