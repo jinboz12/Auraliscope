@@ -57,7 +57,7 @@ General to also get betas and release candidates.
 
 ## Install
 
-1. Download `Auraliscope 2.0 rc 2 build 118.pkg` from [Releases](https://github.com/jinboz12/Auraliscope/releases).
+1. Download `.pkg` file from [Releases](https://github.com/jinboz12/Auraliscope/releases).
 2. Quit Auraliscope and your DAW. Open the package and choose the app, VST3 and/or Audio Unit.
 3. Open Auraliscope from Applications, allow audio access when asked, and pick a source.
 
