@@ -11,6 +11,9 @@
 # a window, the VST3 SDK or a DAW (capture self-tests, snapshots, plugin builds, REAPER) are not part of it.
 set -uo pipefail
 cd "${0:A:h:h}"
+# Every app launch below uses a QA identity and a private plugin socket (scripts/qa-env.sh).
+source scripts/qa-env.sh
+trap 'rm -rf "$QA_PRIVATE"' EXIT
 logs=.build/check-all
 mkdir -p "$logs"
 failed=0

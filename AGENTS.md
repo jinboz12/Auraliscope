@@ -25,7 +25,9 @@ scripts/check-shaders.sh         # Metal shader library and pipeline states, lay
 scripts/test.sh                  # 61 core checks, baseline checks (golden digests), routing rules, kernel checks, localization
 scripts/check-app-features.sh    # update client, render policy, Dock layout
 scripts/check-model.sh           # MeterModel self-tests in a QA bundle: worker interface; capture and DAW plugin states with stand-ins (launches the app)
-scripts/check-file-analysis.sh   # file analysis against EBU reference tones (needs a debug build)
+scripts/check-file-analysis.sh   # file analysis against EBU reference tones (QA bundle, --demo)
+scripts/check-selftests.sh       # the app's --test-* self-tests in a QA bundle on the demo signal (needs a window server)
+Bridge/scripts/test-network.sh   # Bridge network carrier: dev VST3 in the test host ↔ a network display probe, loopback
 Bridge/scripts/test-analysis.sh  # plugin-side analysis equals the desktop pipeline; breaks; RESULT encoding
 Bridge/scripts/test-transport.sh # plugin core and receiver over a socket (ABR_SANITIZE=thread for TSan)
 Bridge/scripts/check-spatial.sh  # spatial reductions report
@@ -41,7 +43,8 @@ Bridge/scripts/check-spatial.sh  # spatial reductions report
   (`Tests/Fixtures/pipeline-golden.json`) bit-identical; re-record them (`AURALISCOPE_RECORD_GOLDEN=1
   scripts/test.sh`) only for an intended, explained numerical change, after the portable checks pass.
 - UI self-tests (`--test-*`, `--snapshot*`) run only in a bundle whose identifier ends in `.QA`, so the user's
-  preferences are never touched; `--demo` supplies signal without opening an audio device. An idle loopback (a Pro
+  preferences, logs and settings presets are never touched (`scripts/qa-env.sh` stages one, with a private
+  `AURALISCOPE_BRIDGE_SOCKET`; a QA bundle and any flagged launch also skip the launch update check); `--demo` supplies signal without opening an audio device. An idle loopback (a Pro
   Tools Audio Bridge nobody uses) serves `--capture-selftest <device id>`.
 - Plugin builds need the VST3 SDK (`Bridge/scripts/fetch-sdks.sh` downloads it).
 - Shader checks come in two levels. `check-shaders.sh` proves the shaders compile and that each shader struct matches its

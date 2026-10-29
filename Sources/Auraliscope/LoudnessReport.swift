@@ -1,5 +1,6 @@
 import AnalysisCore
 import AppKit
+import QuartzCore
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -200,6 +201,14 @@ struct LoudnessReportData {
     }
 }
 
+/// Whether a report is being written, and the last one written this launch, for the file analysis panel.
+@MainActor
+final class ReportExportState: ObservableObject {
+    static let shared = ReportExportState()
+    @Published var saving = false
+    @Published var saved: URL?
+}
+
 /// Meter ▸ Export Loudness Report…: a save panel, then the PDF page or the CSV readings.
 @MainActor
 enum LoudnessReportExport {
@@ -211,38 +220,67 @@ enum LoudnessReportExport {
     }
 
     static func save(_ data: LoudnessReportData, csv: Bool, baseName: String) {
+        guard !ReportExportState.shared.saving else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = baseName + (csv ? ".csv" : ".pdf")
         panel.allowedContentTypes = [csv ? .commaSeparatedText : .pdf]
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            if csv {
-                try data.csv.write(to: url, atomically: true, encoding: .utf8)
-            } else {
-                try writePDF(data, to: url)
+        let state = ReportExportState.shared
+        state.saving = true
+        state.saved = nil
+        Task { @MainActor in
+            defer { state.saving = false }
+            do {
+                if csv {
+                    try data.csv.write(to: url, atomically: true, encoding: .utf8)
+                } else {
+                    let start = CACurrentMediaTime()
+                    try await writePDF(data, to: url, yielding: true)
+                    DiagnosticLog.event(String(format: "Report: PDF rendered in %.2f s", CACurrentMediaTime() - start))
+                }
+                DiagnosticLog.event(csv ? "Report: CSV exported" : "Report: PDF exported")
+                state.saved = url
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                DiagnosticLog.event("Report: export failed: \(error)")
+                let alert = NSAlert()
+                alert.messageText = csv ? L("The CSV file could not be saved.") : L("The PDF report could not be saved.")
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
             }
-            DiagnosticLog.event(csv ? "Report: CSV exported" : "Report: PDF exported")
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        } catch {
-            let alert = NSAlert(error: error)
-            alert.runModal()
         }
     }
 
-    static func writePDF(_ data: LoudnessReportData, to url: URL) throws {
+    /// Renders every page into a file beside the destination and moves it into place only when complete, so a
+    /// failure never leaves a partial report or replaces an existing one. The pages are drawn on the main thread
+    /// (SwiftUI's renderer requires it); `yielding` pauses between them, so the window keeps drawing its progress.
+    static func writePDF(_ data: LoudnessReportData, to url: URL, yielding: Bool) async throws {
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: temporary) }
         let size = ReportPageFrame<EmptyView>.size
         var box = CGRect(origin: .zero, size: size)
         var info: [CFString: Any] = [kCGPDFContextTitle: "\(data.title) – \(data.source)", kCGPDFContextCreator: data.version]
         info[kCGPDFContextSubject] = data.format
-        guard let context = CGContext(url as CFURL, mediaBox: &box, info as CFDictionary) else { throw CocoaError(.fileWriteUnknown) }
+        guard let context = CGContext(temporary as CFURL, mediaBox: &box, info as CFDictionary) else { throw CocoaError(.fileWriteUnknown) }
         for page in ReportPages.pages(data) {
             let renderer = ImageRenderer(content: page)
             renderer.proposedSize = ProposedViewSize(size)
             context.beginPDFPage(nil)
             renderer.render { _, draw in draw(context) }
             context.endPDFPage()
+            if yielding { try? await Task.sleep(nanoseconds: 2_000_000) }
         }
         context.closePDF()
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: url)
+        }
+    }
+
+    /// The same, in one go (the command line's `--analyze-report`).
+    static func writePDF(_ data: LoudnessReportData, to url: URL) async throws {
+        try await writePDF(data, to: url, yielding: false)
     }
 }

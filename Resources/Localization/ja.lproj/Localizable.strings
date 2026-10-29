@@ -954,12 +954,10 @@
 "Tone amplitude · dBFS" = "音調振幅 · dBFS";
 "Ultra" = "最高";
 "Waiting for a full local audio window…" = "ローカル音声の完全な窓を待機中…";
-"Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta." = "Bridge は従来の解析を維持します。この Beta の Multi-FFT にはローカル PCM が必要です。";
 
 /* GitHub release checks. */
 "Check for Updates…" = "アップデートを確認…";
 "Checking GitHub…" = "GitHub を確認中…";
-"Checks public GitHub releases. Opens the release page or installer download when an update is available." = "GitHub の公開リリースを確認します。更新があればリリースページやインストーラのダウンロードを開けます。";
 "Could not check GitHub for updates. Check your connection and try again." = "GitHub の更新を確認できません。接続を確認して再試行してください。";
 "Download Installer" = "インストーラをダウンロード";
 "GitHub rate limit reached. Try again later." = "GitHub のリクエスト上限に達しました。後で再試行してください。";
@@ -1014,3 +1012,28 @@
 "Update ceiling" = "更新レート上限";
 "Where the low band hands over to the mid band." = "低域から中域に切り替わる位置です。";
 "Where the mid band hands over to the high band." = "中域から高域に切り替わる位置です。";
+"Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to." = "Auraliscope を開くたびと、手動で確認したときに GitHub の公開リリースを確認します。選択するまで何もダウンロード・インストールされません。";
+"Later" = "後で";
+"Hides this until Auraliscope opens again." = "次に Auraliscope を開くまで非表示にします。";
+"Resume" = "再開";
+"Choose Source…" = "ソースを選択…";
+"Choose Insert…" = "インサートを選択…";
+"Open Privacy Settings" = "プライバシー設定を開く";
+"Try Again" = "再試行";
+"Status: %@" = "状態：%@";
+"Replace the layout “%@”?" = "レイアウト「%@」を置き換えますか？";
+"A layout with this name already exists. Replacing it keeps only the current arrangement." = "同じ名前のレイアウトがすでにあります。置き換えると現在の配置だけが残ります。";
+"Replace" = "置き換える";
+"The CSV file could not be saved." = "CSV ファイルを保存できませんでした。";
+"The PDF report could not be saved." = "PDF レポートを保存できませんでした。";
+"Analysis failed" = "解析に失敗しました";
+"Check that the file plays in another app, or choose another file." = "ファイルが他のアプリで再生できるか確認するか、別のファイルを選んでください。";
+"Analysis cancelled" = "解析をキャンセルしました";
+"Nothing was measured. Choose the file again to start over." = "何も測定されていません。もう一度ファイルを選ぶと最初から解析します。";
+"Saving…" = "保存中…";
+"Replace the preset “%@”?" = "プリセット「%@」を置き換えますか？";
+"A preset with this name already exists. Replacing it keeps only the current settings." = "同じ名前のプリセットがすでにあります。置き換えると現在の設定だけが残ります。";
+"The preset “%@” could not be saved." = "プリセット「%@」を保存できませんでした。";
+"Check that the presets folder can be written to (Show Presets in Finder), then try again." = "プリセットフォルダに書き込めるか確認してから（Finder でプリセットを表示）、もう一度お試しください。";
+"Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged." = "ファイルを読み込めないため表示していません（破損しているか、設定プリセットではありません）：%@。現在の設定は変わりません。";
+"Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis." = "このベータでは DAW プラグインをソースにすると使えません。Multi-FFT にはこの Mac で取り込んだオーディオが必要です。プラグインの解析は「スペクトログラムとスペクトラム」に表示されます。";

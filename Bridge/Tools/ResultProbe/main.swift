@@ -280,6 +280,8 @@ if controls, let target = selected {
         return nil
     }
     let generation = latest()?.generation ?? 0
+    // The test host's tones are steady: their held true peaks are reached long before the pause.
+    let heldBefore = latest()?.heldTruePeak ?? []
     let paused = send(Int32(ABR_COMMAND_PAUSE), "pause")
     Thread.sleep(forTimeInterval: 0.2)
     let frozen = latest()?.framesAnalysed ?? 0
@@ -289,6 +291,13 @@ if controls, let target = selected {
     _ = send(Int32(ABR_COMMAND_RESUME), "resume")
     Thread.sleep(forTimeInterval: 0.5)
     check((latest()?.framesAnalysed ?? 0) > frozen && latest()?.generation == generation, "resumed in the same generation")
+    // The host played on while paused, so the audio after the resume does not continue the audio before it: a true
+    // peak interpolated across the join would overshoot the tones' own (a click). Each channel's held true peak stays.
+    let heldAfter = latest()?.heldTruePeak ?? []
+    let rises = zip(heldBefore, heldAfter).map { before, after in after / max(before, 1e-9) }
+    check(!heldBefore.isEmpty && heldAfter.count == heldBefore.count && rises.allSatisfy { $0 <= 1.001 },
+          String(format: "resumed: no channel's held true peak rose across the resume (largest change %+.3f dB)",
+                 20 * log10(Double(rises.max() ?? 1))))
     _ = send(Int32(ABR_COMMAND_RESET_TRUE_PEAK), "reset true peak")
     let reset = send(Int32(ABR_COMMAND_RESET), "reset", generation: generation)
     Thread.sleep(forTimeInterval: 0.5)

@@ -954,12 +954,10 @@
 "Tone amplitude · dBFS" = "Tone amplitude · dBFS";
 "Ultra" = "Ultra";
 "Waiting for a full local audio window…" = "Waiting for a full local audio window…";
-"Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta." = "Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta.";
 
 /* GitHub release checks. */
 "Check for Updates…" = "Check for Updates…";
 "Checking GitHub…" = "Checking GitHub…";
-"Checks public GitHub releases. Opens the release page or installer download when an update is available." = "Checks public GitHub releases. Opens the release page or installer download when an update is available.";
 "Could not check GitHub for updates. Check your connection and try again." = "Could not check GitHub for updates. Check your connection and try again.";
 "Download Installer" = "Download Installer";
 "GitHub rate limit reached. Try again later." = "GitHub rate limit reached. Try again later.";
@@ -1014,3 +1012,28 @@
 "Update ceiling" = "Update ceiling";
 "Where the low band hands over to the mid band." = "Where the low band hands over to the mid band.";
 "Where the mid band hands over to the high band." = "Where the mid band hands over to the high band.";
+"Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to." = "Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to.";
+"Later" = "Later";
+"Hides this until Auraliscope opens again." = "Hides this until Auraliscope opens again.";
+"Resume" = "Resume";
+"Choose Source…" = "Choose Source…";
+"Choose Insert…" = "Choose Insert…";
+"Open Privacy Settings" = "Open Privacy Settings";
+"Try Again" = "Try Again";
+"Status: %@" = "Status: %@";
+"Replace the layout “%@”?" = "Replace the layout “%@”?";
+"A layout with this name already exists. Replacing it keeps only the current arrangement." = "A layout with this name already exists. Replacing it keeps only the current arrangement.";
+"Replace" = "Replace";
+"The CSV file could not be saved." = "The CSV file could not be saved.";
+"The PDF report could not be saved." = "The PDF report could not be saved.";
+"Analysis failed" = "Analysis failed";
+"Check that the file plays in another app, or choose another file." = "Check that the file plays in another app, or choose another file.";
+"Analysis cancelled" = "Analysis cancelled";
+"Nothing was measured. Choose the file again to start over." = "Nothing was measured. Choose the file again to start over.";
+"Saving…" = "Saving…";
+"Replace the preset “%@”?" = "Replace the preset “%@”?";
+"A preset with this name already exists. Replacing it keeps only the current settings." = "A preset with this name already exists. Replacing it keeps only the current settings.";
+"The preset “%@” could not be saved." = "The preset “%@” could not be saved.";
+"Check that the presets folder can be written to (Show Presets in Finder), then try again." = "Check that the presets folder can be written to (Show Presets in Finder), then try again.";
+"Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged." = "Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged.";
+"Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis." = "Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis.";

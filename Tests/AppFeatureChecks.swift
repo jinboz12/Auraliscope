@@ -20,6 +20,27 @@ final class UpdateMockProtocol: URLProtocol {
 
 @main
 struct AppFeatureChecks {
+    /// Windows restored or stranded off screen come back; reachable ones stay put.
+    static func windowFrames() throws {
+        let laptop = CGRect(x: 0, y: 0, width: 1512, height: 944), external = CGRect(x: 1512, y: -200, width: 2560, height: 1415)
+        let main = laptop
+        func on(_ f: CGRect, _ screens: [CGRect]) -> CGRect { WindowFrames.onScreen(f, visible: screens, main: main) }
+        let inside = CGRect(x: 100, y: 100, width: 1280, height: 720)
+        try check(on(inside, [laptop]) == inside, "a window on screen moved")
+        let partly = CGRect(x: 1300, y: 100, width: 1280, height: 720)
+        try check(on(partly, [laptop]) == partly, "a window with a reachable title bar moved")
+        let onExternal = CGRect(x: 2000, y: 200, width: 1400, height: 1000)
+        try check(on(onExternal, [laptop, external]) == onExternal, "a window on the external display moved")
+        let stranded = on(onExternal, [laptop])
+        try check(laptop.contains(stranded) && stranded.width == 1400 && stranded.height == 944, "a window from a removed display not brought back (\(stranded))")
+        let above = on(CGRect(x: 100, y: 950, width: 1280, height: 720), [laptop])
+        try check(laptop.contains(above), "a title bar above the screen left unreachable (\(above))")
+        let huge = on(CGRect(x: 0, y: 0, width: 3000, height: 2000), [laptop])
+        try check(laptop.contains(huge) && huge.size == laptop.size, "an oversized frame not fitted (\(huge))")
+        try check(on(.zero, [laptop]) == .zero && on(inside, []) == inside, "degenerate input changed")
+        print("PASS: window frames: on-screen and reachable frames kept, frames from a removed display or above the screen brought back, oversized frames fitted")
+    }
+
     struct Failure: Error { let message: String }
     static func check(_ value: Bool, _ message: String) throws {
         guard value else { throw Failure(message: message) }
@@ -183,7 +204,15 @@ struct AppFeatureChecks {
         try check(split.top == 300 && split.bottom == 300,"initial split not balanced")
         try check(split.dragging(to:360) == 0.6,"divider resize does not change share")
         try check(split.dragging(to:-1000) == 1.0/6 && abs(split.dragging(to:10000)-460.0/600) < 1e-8,"divider minima not enforced")
+        // With both legacy panels under it, the Multi-FFT leaves them their minima (180 + 10 + 120) at 1280×720.
+        let short = MultiFFTStackLayout(height:520,share:0.5,gap:10,minimumBottom:310)
+        try check(short.bottom >= 310 - 1e-9 && short.top >= 100 - 1e-9 && abs(short.top+short.bottom-510) < 1e-9,"Multi-FFT squeezes the panels below (\(short.top)/\(short.bottom))")
+        let tiny = MultiFFTStackLayout(height:300,share:0.9,gap:10,minimumBottom:310)
+        try check(tiny.top >= 0 && tiny.bottom >= 0 && abs(tiny.top+tiny.bottom-290) < 1e-9 && tiny.bottom > tiny.top,"undersized stack not shared proportionally")
         print("PASS: Dock spectrum substitution, order/deduplication, inherited/resized widths, fallback, absent slots, drawing gate and 48 split/minimum/invalid-size scenarios")
+
+        try await UpdateLaunchChecks.run()
+        try windowFrames()
 
         if CommandLine.arguments.contains("--live") {
             do { print("LIVE GITHUB:",try await GitHubUpdateClient().check(version:"2.0",build:115)) }

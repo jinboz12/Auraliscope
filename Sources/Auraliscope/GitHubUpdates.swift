@@ -1,44 +1,5 @@
 import SwiftUI
 
-@MainActor
-final class GitHubUpdateChecker: ObservableObject {
-    static let shared = GitHubUpdateChecker()
-    enum State { case idle, checking, finished(GitHubUpdateResult), failed(String) }
-    @Published private(set) var state = State.idle
-    private var task: Task<Void, Never>?
-    var checking: Bool { if case .checking = state { return true }; return false }
-    /// A result from the other channel no longer answers; the next check uses the new one.
-    func channelChanged() {
-        task?.cancel(); task = nil
-        state = .idle
-    }
-
-    func check() {
-        guard !checking else { return }
-        state = .checking
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
-        let build = Int(AppVersion.build) ?? 0
-        let prereleases = UserDefaults.standard.bool(forKey: GitHubUpdateCatalog.prereleaseKey)
-        task = Task { [weak self] in
-            do {
-                let result = try await GitHubUpdateClient().check(version: version, build: build, includePrereleases: prereleases)
-                guard !Task.isCancelled else { return }
-                self?.state = .finished(result)
-            } catch {
-                guard !Task.isCancelled else { return }
-                let message: String
-                switch error {
-                case GitHubUpdateError.unavailable: message = LKey("GitHub release unavailable. The repository may be private or have no public release.")
-                case GitHubUpdateError.rateLimited: message = LKey("GitHub rate limit reached. Try again later.")
-                case GitHubUpdateError.invalidResponse: message = LKey("GitHub returned release information that could not be verified.")
-                default: message = LKey("Could not check GitHub for updates. Check your connection and try again.")
-                }
-                self?.state = .failed(message)
-            }
-        }
-    }
-}
-
 struct GitHubUpdateView: View {
     @ObservedObject private var checker = GitHubUpdateChecker.shared
     @ObservedObject private var l10n = Localizer.shared
@@ -52,9 +13,9 @@ struct GitHubUpdateView: View {
                 Spacer(minLength: 0)
             }
             switch checker.state {
-            case .idle: Text(L("Checks public GitHub releases. Opens the release page or installer download when an update is available.")).font(.caption).foregroundStyle(Theme.secondary)
+            case .idle: Text(L("Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to.")).font(.caption).foregroundStyle(Theme.secondary)
             case .checking: Text(L("Checking GitHub…")).font(.caption).foregroundStyle(Theme.secondary)
-            case .failed(let key): Text(L(key)).font(.caption).foregroundStyle(Theme.secondary).textSelection(.enabled)
+            case .failed(let failure): Text(L(Self.message(failure))).font(.caption).foregroundStyle(Theme.secondary).textSelection(.enabled)
             case .finished(.noNewerRelease(let release)):
                 Text(L("No newer published release found. Latest: %@", release.title)).font(.caption).foregroundStyle(Theme.secondary)
             case .finished(.available(let release)):
@@ -66,6 +27,61 @@ struct GitHubUpdateView: View {
                 }.font(.caption)
             }
         }
+    }
+
+    static func message(_ failure: GitHubUpdateChecker.Failure) -> String {
+        switch failure {
+        case .unavailable: return LKey("GitHub release unavailable. The repository may be private or have no public release.")
+        case .rateLimited: return LKey("GitHub rate limit reached. Try again later.")
+        case .invalidResponse: return LKey("GitHub returned release information that could not be verified.")
+        case .connection: return LKey("Could not check GitHub for updates. Check your connection and try again.")
+        }
+    }
+}
+
+/// The launch check's offer, at the foot of the meter window: what is available and the two ways to get it, both
+/// left to the person (the release page, or the installer download in the browser). Never shown when up to date or
+/// when the check failed; Later hides it until the next launch.
+struct UpdateBanner: View {
+    @ObservedObject private var checker = GitHubUpdateChecker.shared
+    @ObservedObject private var l10n = Localizer.shared
+
+    var body: some View {
+        ZStack {
+            if let release = checker.notice { banner(release) }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: checker.notice)
+    }
+
+    private func banner(_ release: GitHubReleaseUpdate) -> some View {
+        HStack(spacing: 10) {
+            Label(release.prerelease ? L("Pre-release available: %@", release.title) : L("Update available: %@", release.title),
+                  systemImage: "arrow.down.circle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Link(destination: release.releaseURL) { Label(L("View Release"), systemImage: "safari") }
+                .glassButton(prominent: release.installerURL == nil)
+                .controlSize(.small)
+            if let installer = release.installerURL {
+                Link(destination: installer) { Label(L("Download Installer"), systemImage: "arrow.down") }
+                    .glassButton(prominent: true)
+                    .controlSize(.small)
+            }
+            Button(L("Later")) { checker.dismissNotice() }
+                .glassButton()
+                .controlSize(.small)
+                .help(L("Hides this until Auraliscope opens again."))
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .glassSurface(RoundedRectangle(cornerRadius: Theme.controlRadius + 4, style: .continuous),
+                      tint: Theme.sage.opacity(Theme.dark ? 0.16 : 0.10))
+        .frame(maxWidth: 680)
+        .accessibilityElement(children: .contain)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 }
 

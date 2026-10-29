@@ -12,7 +12,7 @@ namespace abr {
 class BridgeCore;
 
 constexpr int kEditorWidth = 440;
-constexpr int kEditorHeight = 582;
+constexpr int kEditorHeight = 622;
 
 // Returns a retained NSView (as void *). `nameEdited` runs on the main thread after the user changes the name,
 // so the wrapper can mark the project as modified.

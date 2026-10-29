@@ -1,5 +1,7 @@
 # Release notes
 
+- **2.0 (build 121)**: [release notes](docs/2.0_RELEASE_NOTES.md)
+
 - **2.0 RC 3 (build 120)**, internal QA build: [what's new since 2.0 RC 2](docs/2.0_RC3_RELEASE_NOTES.md)
 - 2.0 RC 2 (build 118): [what's new since 2.0 (build 91)](docs/2.0_RC2_RELEASE_NOTES.md)
 - 2.0 RC 1 (builds 107–117): [release notes](docs/2.0_RC1_RELEASE_NOTES.md)

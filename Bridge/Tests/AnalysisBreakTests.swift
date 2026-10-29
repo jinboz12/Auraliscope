@@ -284,6 +284,7 @@ struct AnalysisBreakTests {
         displays()
         restoration()
         failures += ResultChecks.run()
+        failures += PauseResumeChecks.run()
         print(failures == 0 ? "\nAll analysis checks passed" : "\n\(failures) check(s) FAILED")
         exit(failures == 0 ? 0 : 1)
     }

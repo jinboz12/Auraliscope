@@ -194,8 +194,14 @@ final class DSPWorker {
         guard let pausedAt, let timer else { return }
         let gap = CACurrentMediaTime() - pausedAt
         let clock = clock
-        // On the analysis queue, which owns the clock (and is idle while the timer is suspended).
-        queue.sync { clock.paused += gap }
+        // On the analysis queue, which owns the clock and the pipeline (and is idle while the timer is suspended).
+        // Capture restarts after a pause, so its first frames do not continue the last ones analysed: they are
+        // spliced on (`MeterPipeline.splice`), never joined, while every cumulative measurement carries on.
+        let pipeline = pipeline
+        queue.sync {
+            clock.paused += gap
+            pipeline.splice()
+        }
         self.pausedAt = nil
         timer.resume()
     }

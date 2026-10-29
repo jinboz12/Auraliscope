@@ -954,12 +954,10 @@
 "Tone amplitude · dBFS" = "Amplitud tonal · dBFS";
 "Ultra" = "Máximo";
 "Waiting for a full local audio window…" = "Esperando una ventana completa de audio local…";
-"Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta." = "Bridge conserva su análisis original. Multi-FFT requiere PCM local en esta Beta.";
 
 /* GitHub release checks. */
 "Check for Updates…" = "Buscar actualizaciones…";
 "Checking GitHub…" = "Consultando GitHub…";
-"Checks public GitHub releases. Opens the release page or installer download when an update is available." = "Consulta las versiones públicas de GitHub. Si hay una actualización, permite abrir su página o descargar el instalador.";
 "Could not check GitHub for updates. Check your connection and try again." = "No se han podido buscar actualizaciones en GitHub. Comprueba la conexión e inténtalo de nuevo.";
 "Download Installer" = "Descargar instalador";
 "GitHub rate limit reached. Try again later." = "Se ha alcanzado el límite de solicitudes de GitHub. Inténtalo más tarde.";
@@ -1014,3 +1012,28 @@
 "Update ceiling" = "Actualización máxima";
 "Where the low band hands over to the mid band." = "Donde la banda baja da paso a la media.";
 "Where the mid band hands over to the high band." = "Donde la banda media da paso a la alta.";
+"Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to." = "Consulta las versiones públicas de GitHub cada vez que se abre Auraliscope y cuando lo pides. No se descarga ni se instala nada hasta que tú lo decidas.";
+"Later" = "Más tarde";
+"Hides this until Auraliscope opens again." = "Lo oculta hasta que Auraliscope se vuelva a abrir.";
+"Resume" = "Reanudar";
+"Choose Source…" = "Elegir fuente…";
+"Choose Insert…" = "Elegir inserto…";
+"Open Privacy Settings" = "Abrir ajustes de privacidad";
+"Try Again" = "Reintentar";
+"Status: %@" = "Estado: %@";
+"Replace the layout “%@”?" = "¿Reemplazar la disposición «%@»?";
+"A layout with this name already exists. Replacing it keeps only the current arrangement." = "Ya existe una disposición con este nombre. Al reemplazarla solo se conserva la disposición actual.";
+"Replace" = "Reemplazar";
+"The CSV file could not be saved." = "No se pudo guardar el archivo CSV.";
+"The PDF report could not be saved." = "No se pudo guardar el informe PDF.";
+"Analysis failed" = "El análisis falló";
+"Check that the file plays in another app, or choose another file." = "Comprueba que el archivo se reproduce en otra app o elige otro archivo.";
+"Analysis cancelled" = "Análisis cancelado";
+"Nothing was measured. Choose the file again to start over." = "No se midió nada. Vuelve a elegir el archivo para empezar de nuevo.";
+"Saving…" = "Guardando…";
+"Replace the preset “%@”?" = "¿Reemplazar el preajuste «%@»?";
+"A preset with this name already exists. Replacing it keeps only the current settings." = "Ya existe un preajuste con este nombre. Al reemplazarlo solo se conservan los ajustes actuales.";
+"The preset “%@” could not be saved." = "No se pudo guardar el preajuste «%@».";
+"Check that the presets folder can be written to (Show Presets in Finder), then try again." = "Comprueba que se puede escribir en la carpeta de preajustes (Mostrar preajustes en el Finder) y vuelve a intentarlo.";
+"Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged." = "No se muestra porque no se pudo leer el archivo (dañado o no es un preajuste de ajustes): %@. Tus ajustes actuales no cambian.";
+"Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis." = "No disponible con un plugin de DAW como fuente en esta Beta: Multi-FFT necesita audio capturado en este Mac. Espectrograma y espectro muestra el análisis del plugin.";

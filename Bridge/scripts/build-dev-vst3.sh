@@ -5,9 +5,12 @@
 # installed; daw-reaper.sh puts it on a private REAPER profile's VST path (ABR_REAPER_VST3).
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/release-version.sh
+# ABR_VERSION_FILE: another version identity (Bridge/scripts/ipad-dev-version.sh for the iPad development builds), with
+# ABR_OBJ its own object folder so the two never mix.
+version_file="${ABR_VERSION_FILE:-Bridge/scripts/release-version.sh}"
+source "$version_file"
 Bridge/scripts/build-plugins.sh >/dev/null  # the shared objects, up to date
-obj=.build/bridge/obj
+obj="${ABR_OBJ:-.build/bridge/obj}"
 dev=.build/bridge/dev
 mkdir -p "$obj/dev" "$dev"
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
@@ -25,7 +28,7 @@ clang++ -c Bridge/Plugin/Editor/BridgeEditor.mm -o "$obj/dev/BridgeEditor.o" "${
 analysis=.build/bridge/analysis/vst3-dev.a
 Bridge/scripts/build-analysis-lib.sh AuraliscopeBridgeAnalysisVST3Dev "$analysis" >/dev/null
 objects=($obj/sdk-vst3/*.o(N) $obj/common/BridgeDiscovery.o $obj/common/BridgeCore.o $obj/common/BridgeSender.o
-         $obj/common/BridgeAnalysisHub.o $obj/dev/BridgeVST3.o $obj/dev/BridgeEditor.o $analysis)
+         $obj/common/BridgeAnalysisHub.o $obj/common/BridgeNetLink.o $obj/common/BridgeRemote.o $obj/dev/BridgeVST3.o $obj/dev/BridgeEditor.o $analysis)
 
 # Assembled and signed on the local disk (the exFAT volume adds "._" files that invalidate signatures).
 stage="$(mktemp -d)"
@@ -42,6 +45,7 @@ printf 'BNDL????' > "$contents/PkgInfo"
 swift_libs=(-L/usr/lib/swift -L"$sdk/usr/lib/swift" -L"${$(xcrun -f swiftc):h:h}/lib/swift/macosx")
 clang++ -isysroot "$sdk" -mmacosx-version-min=11.0 $arch -bundle -dead_strip $swift_libs -framework Cocoa \
     -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework Accelerate \
+    -framework Network -framework Security -framework SystemConfiguration \
     -exported_symbols_list "$vst3/public.sdk/source/main/macexport.exp" $objects -o "$contents/MacOS/Auraliscope Bridge"
 cp Bridge/THIRD_PARTY_NOTICES.md "$contents/Resources/"
 xattr -cr "$stage/$name"

@@ -17,5 +17,5 @@ swiftc -O -swift-version 5 -module-cache-path "$out/modules-$cache_key" -module-
     $a/MeterScale.swift $a/AnalyzerDisplaySettings.swift $a/AnalyzerLayouts.swift $a/PanelLayouts.swift $a/SpeakerLayout.swift Sources/AnalysisCore/SpatialField.swift Sources/AnalysisCore/SpatialGeometry.swift Sources/AnalysisCore/SpatialObservations.swift Sources/AnalysisCore/SpatialConfigWire.swift Sources/AnalysisCore/Role.swift $a/FormatMode.swift $a/StereoBandLabels.swift Sources/AnalysisCore/FormatDetector.swift $a/VUScale.swift Sources/AnalysisCore/WaveformEnvelope.swift \
     $a/MinMaxPyramid.swift Sources/AnalysisCore/MeterPipeline.swift $a/Localizer.swift $a/SystemMenus.swift $a/BridgeRestoration.swift \
     Sources/AnalysisCore/StreamAnalyzer.swift Sources/AnalysisCore/ResultProtocol.swift Sources/AnalysisCore/ResultAssembler.swift \
-    Bridge/Tests/ResultTests.swift Bridge/Tests/AnalysisBreakTests.swift "$out/AnalysisKernels.o" "$out/AudioRing.o" "$out/CaptureCallback.o" -o "$out/AnalysisBreakTests"
+    Bridge/Tests/ResultTests.swift Bridge/Tests/PauseResumeTests.swift Bridge/Tests/AnalysisBreakTests.swift "$out/AnalysisKernels.o" "$out/AudioRing.o" "$out/CaptureCallback.o" -o "$out/AnalysisBreakTests"
 "$out/AnalysisBreakTests"

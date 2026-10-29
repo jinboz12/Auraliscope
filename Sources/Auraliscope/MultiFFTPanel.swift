@@ -134,7 +134,7 @@ struct MultiFFTPanel: View {
                     if model.format != .stereo {
                         message(L("Multi-FFT is available in Stereo mode."))
                     } else if model.sourceIsBridge {
-                        message(L("Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta."))
+                        message(L("Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis."))
                     } else if let frame = model.multiFFTFrame() {
                         ZStack(alignment: .topLeading) {
                             MultiFFTPlot(frame: frame, scale: scale, tilt: tilt).equatable()

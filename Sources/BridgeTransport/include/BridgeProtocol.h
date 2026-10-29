@@ -56,6 +56,10 @@ enum {
     ABR_MSG_UNSUBSCRIBE = 18,  // no payload
     ABR_MSG_COMMAND = 19,
     ABR_MSG_SPATIAL_CONFIG = 20,
+    // Network pairing (Bridge/BRIDGE_NETWORK.md): only on a pairing connection, never on a display connection.
+    ABR_MSG_PAIR_REQUEST = 32,   // plugin → display: the Mac asking to be paired (after the pairing-code handshake)
+    ABR_MSG_PAIR_GRANT = 33,     // display → plugin: the receiver's ID, name and the pair's key
+    ABR_MSG_PAIR_DENY = 34,      // display → plugin: refused (by the person, or the pairing closed)
 };
 // Version 2 types, never sent by version 3: FORMAT (3) and AUDIO (4).
 
@@ -168,6 +172,21 @@ enum {  // HELLO, after the fixed prefix
     ABR_HELLO_PLUGIN_VERSION = 8,    // utf8 ≤ 31
     ABR_HELLO_SCHEMA = 9,            // u32: RESULT schema the plugin writes
     ABR_HELLO_CAPABILITIES = 10,     // u32: ABR_CAPABILITY_*
+    // Over the network only (BRIDGE_NETWORK.md); a display that does not know them skips them.
+    ABR_HELLO_DEVICE_ID = 11,        // bytes[16]: the sending Mac's pairing ID (its PSK identity)
+    ABR_HELLO_COMPUTER_NAME = 12,    // utf8 ≤ 63: the sending Mac's name
+};
+enum {  // PAIR_REQUEST
+    ABR_PAIR_DEVICE_ID = 1,          // bytes[16]
+    ABR_PAIR_COMPUTER_NAME = 2,      // utf8 ≤ 63
+    ABR_PAIR_HOST_NAME = 3,          // utf8 ≤ 63: the DAW
+    ABR_PAIR_PLUGIN_VERSION = 4,     // utf8 ≤ 31
+};
+enum {  // PAIR_GRANT, PAIR_DENY
+    ABR_PAIR_RECEIVER_ID = 1,        // bytes[16]
+    ABR_PAIR_RECEIVER_NAME = 2,      // utf8 ≤ 63
+    ABR_PAIR_KEY = 3,                // bytes[32]: the pre-shared key of this Mac and this display
+    ABR_PAIR_DENY_REASON = 1,        // utf8 ≤ 127
 };
 enum {  // WELCOME, after the fixed prefix
     ABR_WELCOME_SCHEMA = 1,          // u32: newest RESULT schema the application reads

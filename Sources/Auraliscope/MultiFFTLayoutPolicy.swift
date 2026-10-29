@@ -44,11 +44,14 @@ struct MultiFFTStackLayout {
     private let minimumTop: Double
     private let maximumTop: Double
 
-    init(height: Double, share: Double, gap: Double) {
+    /// `minimumBottom`: what the panels under it need, 140 for one; with the Spectrogram & Spectrum and the Waveform
+    /// both there, their own minima and the divider between them, so neither is squeezed to its title row.
+    init(height: Double, share: Double, gap: Double, minimumBottom: Double = 140) {
         room = max(0, height.isFinite ? height-max(0,gap) : 0)
-        let scale = min(1,room/240)
+        let bottomMinimum = max(0, minimumBottom.isFinite ? minimumBottom : 140)
+        let scale = min(1,room/(100+bottomMinimum))
         minimumTop = 100*scale
-        maximumTop = max(minimumTop,room-140*scale)
+        maximumTop = max(minimumTop,room-bottomMinimum*scale)
         let share = share.isFinite ? min(1,max(0,share)) : Self.defaultShare
         top = min(maximumTop,max(minimumTop,room*share))
         bottom = max(0,room-top)

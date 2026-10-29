@@ -5,10 +5,13 @@
 # Plain clang, no CMake: the VST3 SDK and AudioUnitSDK sources the wrappers need are compiled directly.
 set -euo pipefail
 cd "${0:A:h:h:h}"
-source Bridge/scripts/release-version.sh
+# ABR_VERSION_FILE: another version identity (Bridge/scripts/ipad-dev-version.sh for the iPad development builds), with
+# ABR_OBJ its own object folder so the two never mix.
+version_file="${ABR_VERSION_FILE:-Bridge/scripts/release-version.sh}"
+source "$version_file"
 [[ -d Bridge/ThirdParty/vst3sdk/public.sdk && -d Bridge/ThirdParty/AudioUnitSDK/src ]] || Bridge/scripts/fetch-sdks.sh
 
-obj=.build/bridge/obj
+obj="${ABR_OBJ:-.build/bridge/obj}"
 mkdir -p "$obj"
 sdk="$(xcrun --sdk macosx --show-sdk-path)"
 vst3=Bridge/ThirdParty/vst3sdk
@@ -29,7 +32,7 @@ newest_header="$(ls -t Bridge/Plugin/*/*.h Bridge/Plugin/Analysis/include/*.h So
 compile() {
     local object="$obj/$1" source="$2"; shift 2
     mkdir -p "${object:h}"
-    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" || Bridge/scripts/release-version.sh -nt "$object" ]]; then
+    if [[ ! -f "$object" || "$source" -nt "$object" || "$newest_header" -nt "$object" || "$0" -nt "$object" || "$version_file" -nt "$object" ]]; then
         clang++ -c "$source" -o "$object" "${base[@]}" "$@" &
         pids+=($!)
     fi
@@ -65,7 +68,7 @@ if [[ ! -f "$obj/common/BridgeDiscovery.o" || Sources/BridgeTransport/BridgeDisc
 fi
 objects_vst3+=("$obj/common/BridgeDiscovery.o")
 objects_au+=("$obj/common/BridgeDiscovery.o")
-for part in BridgeCore BridgeSender BridgeAnalysisHub; do
+for part in BridgeCore BridgeSender BridgeAnalysisHub BridgeNetLink BridgeRemote; do
     compile "common/$part.o" "Bridge/Plugin/Core/$part.cpp" -std=c++17 $ours
     objects_vst3+=("$obj/common/$part.o")
     objects_au+=("$obj/common/$part.o")
@@ -94,7 +97,8 @@ trap 'rm -rf "$stage"' EXIT
 # shims the Swift objects ask for when targeting macOS 11.
 swift_libs=(-L/usr/lib/swift -L"$sdk/usr/lib/swift" -L"${$(xcrun -f swiftc):h:h}/lib/swift/macosx")
 link_flags=(-isysroot "$sdk" -mmacosx-version-min=11.0 $arch -bundle -dead_strip $swift_libs
-            -framework Cocoa -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework Accelerate)
+            -framework Cocoa -framework AudioToolbox -framework AudioUnit -framework CoreFoundation -framework Accelerate
+            -framework Network -framework Security -framework SystemConfiguration)
 bundle() {  # bundle <name.ext> <plist> <exports> <objects…>
     local name="$1" plist="$2" exports="$3"; shift 3
     local contents="$stage/$name/Contents"

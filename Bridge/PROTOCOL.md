@@ -1,7 +1,7 @@
 # Auraliscope Bridge protocol, version 3 (analysis schema 1)
 
-Between an Auraliscope Bridge plugin instance (the **plugin**) and a display (**Auraliscope LABS** today, an iOS app
-later). The plugin analyses its own audio; the display receives **analysis results**, never audio, and sends a
+Between an Auraliscope Bridge plugin instance (the **plugin**) and a display (Auraliscope on the Mac, or Auraliscope
+for iPad over the network). The plugin analyses its own audio; the display receives **analysis results**, never audio, and sends a
 few commands. This document is the reference; the C header `Sources/BridgeTransport/include/BridgeProtocol.h`
 (framing, control messages) and `Sources/AnalysisCore/ResultProtocol.swift` (RESULT fields) implement it.
 
@@ -9,8 +9,12 @@ few commands. This document is the reference; the C header `Sources/BridgeTransp
 
 Locally: one Unix-domain stream socket per plugin instance, at `abr_socket_path()`
 (`~/Library/Application Support/Auraliscope Bridge/bridge-v2.sock`, folder `0700`, socket `0600`, peer user ID
-checked on both ends). The display listens; plugins connect. Nothing in the messages depends on the carrier: a
-network carrier would frame them the same way.
+checked on both ends). The display listens; plugins connect. Nothing in the messages depends on the carrier.
+
+Over the local network (2.1 dev and later): TLS 1.2 with a pre-shared key from pairing, to a display advertised as
+`_auraliscope._tcp`, carrying exactly these messages; see [BRIDGE_NETWORK.md](BRIDGE_NETWORK.md) for discovery,
+pairing (message types 32–34), the two network HELLO fields (tags 11–12), bounds and the security model. Each plugin
+instance sends to one display at a time, chosen in its window.
 
 ## Framing
 
@@ -74,6 +78,7 @@ not a schema change; changing a field's meaning or units is.
 | 18 | UNSUBSCRIBE | display → plugin | none |
 | 19 | COMMAND | display → plugin | fields |
 | 20 | SPATIAL_CONFIG | display → plugin | fields: the speaker geometry and spatial options the display draws with; only to a plugin whose HELLO has capability 16 (build 98 and later) |
+| 32–34 | PAIR_REQUEST, PAIR_GRANT, PAIR_DENY | pairing connection only | see BRIDGE_NETWORK.md; never on a display connection (a display closes a connection that sends one) |
 
 Types 3 (FORMAT) and 4 (AUDIO) belonged to version 2, which streamed audio. Version 3 never sends audio.
 
@@ -91,6 +96,8 @@ Types 3 (FORMAT) and 4 (AUDIO) belonged to version 2, which streamed audio. Vers
 | 8 | UTF-8 ≤ 31 | plugin version |
 | 9 | u32 | analysis schema the plugin writes (1) |
 | 10 | u32 | capabilities: 1 RESULTS, 2 RESET, 4 RESET_TRUE_PEAK, 8 PAUSE, 16 SPATIAL_CONFIG (build 98 and later) |
+| 11 | bytes[16] | network only: the Mac's pairing ID, its TLS PSK identity (2.1 dev) |
+| 12 | UTF-8 ≤ 63 | network only: the Mac's computer name (2.1 dev) |
 
 ### WELCOME fields
 
@@ -150,6 +157,18 @@ generation it is meant for (0: whichever is current).
 
 Codes: 1 RESET (a new generation: every measurement starts afresh), 2 RESET_TRUE_PEAK (clear the held true peaks, also in the next RESULT while paused or idle),
 3 PAUSE (pause measurement), 4 RESUME.
+
+Pause and Resume semantics (unchanged on the wire; the analysis behaviour was made exact in iPad dev 2): PAUSE keeps
+every measurement as it is and accumulates nothing while the host goes on delivering audio. RESUME carries on: the
+generation, integrated loudness, loudness range, held sample and true peaks, and the spectrogram and waveform serials
+continue, and nothing is counted as a break or as missing time. Because the audio delivered while paused was not
+measured, the first frames after RESUME do not continue the last ones measured, so the analysis splices them
+(`MeterPipeline.splice`): everything that spans samples starts from rest — the K-weighting filters, the true-peak
+interpolator (about 2 ms on each side is measured by sample peak alone), the FFT and band-filter windows (the spectrum
+and the next spectrogram columns wait for a full window of new audio), momentary and short-term loudness (no value for
+400 ms and 3 s), the correlation integrators — and the waveform marks the splice with its 50 ms notch. When the host
+delivered nothing while paused (transport stopped) and no break was reported, the frames do continue, and nothing
+restarts. Auraliscope's own Pause Capture (Mac and iPad) splices the same way when capture resumes.
 
 ACK: 1 u32 command ID, 2 u32 code, 3 u32 outcome, 4 u32 generation after it, 5 u32 measurement after it, 6
 bytes[16] the answering session. Outcomes: 0 done, 1 wrong session (the command named another instance: an
@@ -446,5 +465,6 @@ range, held peaks, histories).
 
 ## Security and limits
 
-Local only in this version: the socket is private to the user, both ends check the peer's user ID, and every length
-is checked before use. A future network carrier would need authentication and encryption; see ARCHITECTURE.md.
+Locally the socket is private to the user, both ends check the peer's user ID, and every length is checked before use.
+The user-ID check cannot authorise a network peer: the network carrier authenticates and encrypts with TLS-PSK keys from
+a pairing the person approves on both devices (BRIDGE_NETWORK.md, which also lists that version's known limits).

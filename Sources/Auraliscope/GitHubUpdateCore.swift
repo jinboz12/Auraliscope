@@ -85,11 +85,19 @@ enum GitHubUpdateCatalog {
         return url
     }
 
+    /// Whether the running app is itself a pre-release, from its version label ("2.0 rc 3", "2.0 beta"): its final
+    /// release, of the same version, is then an update even when that release names no build.
+    static func isPrereleaseLabel(_ label: String) -> Bool {
+        let words = label.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+        return words.contains { word in ["rc", "beta", "alpha"].contains { word == $0 || (word.hasPrefix($0) && word.dropFirst($0.count).allSatisfy(\.isNumber)) } }
+    }
+
     /// The stable channel reads `/releases/latest` (one release, never a pre-release). The pre-release channel reads
     /// the release list and offers the newest verifiable release of either kind; a list entry that fails verification
-    /// is skipped rather than failing the whole check.
+    /// is skipped rather than failing the whole check. A running pre-release is followed by its own final release: the
+    /// same version, not a pre-release, with no build or a build at least the running one.
     static func evaluate(_ data: Data, currentVersion: String, currentBuild: Int,
-                         includePrereleases: Bool = false) throws -> GitHubUpdateResult {
+                         includePrereleases: Bool = false, currentIsPrerelease: Bool = false) throws -> GitHubUpdateResult {
         guard data.count <= 2_000_000, let current = version(currentVersion) else { throw GitHubUpdateError.invalidResponse }
         let update: GitHubReleaseUpdate
         if includePrereleases {
@@ -105,7 +113,9 @@ enum GitHubUpdateCatalog {
         }
         let newerVersion = current.lexicographicallyPrecedes(update.version)
         let newerBuild = update.version == current && update.build.map { $0 > currentBuild } == true
-        return newerVersion || newerBuild ? .available(update) : .noNewerRelease(update)
+        let finalOfPrerelease = currentIsPrerelease && update.version == current && !update.prerelease
+            && (update.build.map { $0 >= currentBuild } ?? true)
+        return newerVersion || newerBuild || finalOfPrerelease ? .available(update) : .noNewerRelease(update)
     }
 
     private static func verified(_ release: Release, allowPrerelease: Bool) throws -> GitHubReleaseUpdate {
@@ -138,7 +148,8 @@ struct GitHubUpdateClient {
             self.session = URLSession(configuration: config)
         }
     }
-    func check(version: String, build: Int, includePrereleases: Bool = false) async throws -> GitHubUpdateResult {
+    func check(version: String, build: Int, includePrereleases: Bool = false,
+               currentIsPrerelease: Bool = false) async throws -> GitHubUpdateResult {
         var request = URLRequest(url: GitHubUpdateCatalog.endpoint(includePrereleases: includePrereleases), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2026-03-10", forHTTPHeaderField: "X-GitHub-Api-Version")
@@ -148,7 +159,8 @@ struct GitHubUpdateClient {
         guard let response = response as? HTTPURLResponse else { throw GitHubUpdateError.invalidResponse }
         switch response.statusCode {
         case 200: return try GitHubUpdateCatalog.evaluate(data, currentVersion: version, currentBuild: build,
-                                                          includePrereleases: includePrereleases)
+                                                          includePrereleases: includePrereleases,
+                                                          currentIsPrerelease: currentIsPrerelease)
         case 404: throw GitHubUpdateError.unavailable
         case 403, 429: throw GitHubUpdateError.rateLimited
         default: throw GitHubUpdateError.server(response.statusCode)

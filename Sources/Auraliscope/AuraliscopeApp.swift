@@ -319,6 +319,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if Diagnostics.enabled {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { Diagnostics.logMenus() }
         }
+        // A display removed or rearranged: no window of ours is left where it cannot be reached.
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
+                                               queue: .main) { _ in
+            MainActor.assumeIsolated {
+                for window in NSApp.windows where window.isVisible && window.styleMask.contains(.titled) {
+                    MainWindow.keepOnScreen(window)
+                }
+            }
+        }
+        // Once per launch, in the background, after the window and audio have started (`UpdateLaunchPolicy`).
+        Task { @MainActor in GitHubUpdateChecker.shared.checkAtLaunch() }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
@@ -384,6 +395,17 @@ enum MainWindow {
     }
     /// The saved frame has been applied this launch; later window probes must not apply it again.
     static var frameRestored = false
+
+    /// Brings a window that is off every screen (a saved frame from another display arrangement, a display removed)
+    /// back where it can be reached (`WindowFrames`). Full-screen windows are left to AppKit.
+    static func keepOnScreen(_ window: NSWindow) {
+        guard !window.styleMask.contains(.fullScreen), window.isVisible || window === self.window else { return }
+        let frame = WindowFrames.onScreen(window.frame, visible: NSScreen.screens.map(\.visibleFrame),
+                                          main: NSScreen.main?.visibleFrame)
+        guard frame != window.frame else { return }
+        DiagnosticLog.event("Window moved back on screen: \(NSStringFromRect(window.frame)) → \(NSStringFromRect(frame))")
+        window.setFrame(frame, display: true)
+    }
     /// The strip has no title bar of its own: the window controls hide, and the strip's controls take their place.
     /// They turn transparent and inert rather than `isHidden`: the toolbar makes room for the controls it can see, so
     /// a strip resized with them hidden laid the brand out under them, and it stayed there on the way back.
@@ -573,6 +595,7 @@ private final class WindowProbe: NSView {
                     } else {
                         MainWindow.frameRestored = true
                         window.setFrameUsingName(Self.frameName)
+                        MainWindow.keepOnScreen(window)
                     }
                 }
                 for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification] {
@@ -1331,8 +1354,11 @@ private struct MeterView: View {
         }
         .overlay(alignment: .bottom) {
             if !placement.strip && morph == nil {
-                PreviewBanner(model: model)
-                    .padding(.bottom, 30)
+                VStack(spacing: 8) {
+                    UpdateBanner()
+                    PreviewBanner(model: model)
+                }
+                .padding(.bottom, 30)
             }
         }
         // While the window glides into or out of the strip it may be any size in between.
@@ -1407,7 +1433,7 @@ private struct MeterView: View {
                     }
                 }
 
-                StatusBar(status: model.status.text, running: model.running, droppedFrames: model.droppedFrames,
+                StatusBar(status: model.status, perform: model.perform, droppedFrames: model.droppedFrames,
                           silentOutput: model.silentOutput, breaks: model.measurementBreaks,
                           missingSeconds: model.missingSeconds)
             }
@@ -1472,7 +1498,9 @@ private struct MeterView: View {
         GeometryReader { proxy in
             let multi = placement.inGrid(.multiFFT) && model.format == .stereo
             let legacy = placement.inGrid(.spectrum) || placement.inGrid(.waveform)
-            let split = MultiFFTStackLayout(height: Double(proxy.size.height), share: multiFFTShare, gap: Double(PanelLayout.divider))
+            let both = placement.inGrid(.spectrum) && placement.inGrid(.waveform)
+            let split = MultiFFTStackLayout(height: Double(proxy.size.height), share: multiFFTShare, gap: Double(PanelLayout.divider),
+                                            minimumBottom: both ? Double(PanelLayout.minSpectrum + PanelLayout.divider + PanelLayout.minWaveform) : 140)
             VStack(spacing: 0) {
                 if multi {
                     PanelView(panel: .multiFFT, model: model).zoomSource(.multiFFT)
@@ -1630,8 +1658,8 @@ private struct RateReadout: View {
 }
 
 private struct StatusBar: View {
-    let status: String
-    let running: Bool
+    let status: MeterStatus
+    let perform: (StatusAction) -> Void
     let droppedFrames: UInt64
     let silentOutput: Bool
     /// Breaks in the analysed audio since the analysis started, and the seconds known missing at them.
@@ -1640,8 +1668,27 @@ private struct StatusBar: View {
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
+        let text = status.text, tone = status.tone
         HStack(spacing: 8) {
-            Text(status).lineLimit(1).truncationMode(.middle).help(status)
+            // The state at a glance: the dot and, past a plain state, the text take its tone; the full text is the
+            // tooltip and the accessibility label, and one button offers the next step where there is one.
+            HStack(spacing: 6) {
+                Circle().fill(tone.color).frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+                Text(text).lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(tone == .alarm ? Theme.ember : tone == .attention ? Theme.secondary : Theme.tertiary)
+            }
+            .help(text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(L("Status: %@", text))
+            .layoutPriority(1)
+            if let action = status.action {
+                Button(action.title) { perform(action) }
+                    .buttonStyle(.link)
+                    .foregroundStyle(tone == .alarm ? Theme.ember : Theme.sage)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
             if silentOutput {
                 Label(L("No sound from this output"), systemImage: "speaker.slash")
                     .lineLimit(1)

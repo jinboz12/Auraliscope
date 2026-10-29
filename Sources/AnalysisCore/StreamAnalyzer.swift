@@ -38,6 +38,12 @@ package final class StreamAnalyzer {
     /// Stream position just after the newest frame analysed (the producer's positions).
     package private(set) var timelineEnd: UInt64 = 0
     package private(set) var measuring = true
+    /// Stream position just after the newest frame measured; a resume compares the next frames' position with it.
+    private var measuredEnd: UInt64?
+    /// Resumed since the last measured frame: the next frames may not continue them (`consume`).
+    private var resumed = false
+    /// A break arrived while paused: the frames after the resume do not continue the last ones measured.
+    private var brokeWhilePaused = false
     package private(set) var published = false
     private var idleCount = 0
     private var lastTickTime: Double?
@@ -111,6 +117,14 @@ package final class StreamAnalyzer {
         guard frames > 0 else { return }
         timelineEnd = position + UInt64(frames)
         guard measuring else { return }
+        if resumed {
+            // The audio delivered while paused was not measured: unless the host delivered none, these frames do
+            // not continue the last ones measured, and nothing that spans samples may join them (`splice`).
+            resumed = false
+            if brokeWhilePaused || (measuredEnd.map { $0 != position } ?? false) { pipeline.splice() }
+            brokeWhilePaused = false
+        }
+        measuredEnd = position + UInt64(frames)
         idleCount = 0
         lastAudioTime = now
         lastBlockSeconds = Double(frames) / sampleRate
@@ -131,7 +145,10 @@ package final class StreamAnalyzer {
     /// A break before the next audio: `lostFrames` missing, the host idle for `idleMilliseconds`, for `reasons`
     /// (ABR_AUDIO_AFTER_* bits). See `MeterPipeline.interrupt` for what restarts and what carries on.
     package func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32, reasons: UInt32) {
-        guard measuring else { return }
+        guard measuring else {
+            brokeWhilePaused = true
+            return
+        }
         pipeline.interrupt(lostFrames: lostFrames, idleMilliseconds: idleMilliseconds)
         lastBreakReasons = reasons
     }
@@ -196,8 +213,13 @@ package final class StreamAnalyzer {
     }
 
     /// Pausing keeps everything measured so far and accumulates nothing until resumed; resuming carries on without
-    /// a break, as Auraliscope's Pause Capture does.
-    package func setMeasuring(_ on: Bool) { measuring = on }
+    /// a break (nothing is reset, counted as a break or as missing time), as Auraliscope's Pause Capture does. The
+    /// audio the host delivered meanwhile was not measured, so the frames after the resume are spliced to the last
+    /// ones before it (`MeterPipeline.splice`): no filter, interpolation or window reaches across.
+    package func setMeasuring(_ on: Bool) {
+        if on && !measuring { resumed = true }
+        measuring = on
+    }
 
     /// Clears the held true peaks only (the TRUE PEAK reading's reset).
     package func resetTruePeaks() {

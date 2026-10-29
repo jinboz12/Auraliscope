@@ -954,12 +954,10 @@
 "Tone amplitude · dBFS" = "音调幅度 · dBFS";
 "Ultra" = "极高";
 "Waiting for a full local audio window…" = "等待完整的本机音频窗口…";
-"Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta." = "Bridge 保留原有分析。本 Beta 的 Multi-FFT 需要本机 PCM。";
 
 /* GitHub release checks. */
 "Check for Updates…" = "检查更新…";
 "Checking GitHub…" = "正在检查 GitHub…";
-"Checks public GitHub releases. Opens the release page or installer download when an update is available." = "检查 GitHub 公开发行版。发现更新后可打开发行页面或下载安装包。";
 "Could not check GitHub for updates. Check your connection and try again." = "无法从 GitHub 检查更新。请检查网络连接后重试。";
 "Download Installer" = "下载安装包";
 "GitHub rate limit reached. Try again later." = "已达到 GitHub 请求频率上限，请稍后重试。";
@@ -1014,3 +1012,28 @@
 "Update ceiling" = "更新率上限";
 "Where the low band hands over to the mid band." = "低频段交接给中频段的位置。";
 "Where the mid band hands over to the high band." = "中频段交接给高频段的位置。";
+"Checks public GitHub releases each time Auraliscope opens, and when you ask. Nothing is downloaded or installed until you choose to." = "每次打开 Auraliscope 以及手动检查时，检查 GitHub 公开发行版。在你选择之前不会下载或安装任何内容。";
+"Later" = "稍后";
+"Hides this until Auraliscope opens again." = "隐藏，直到下次打开 Auraliscope。";
+"Resume" = "继续";
+"Choose Source…" = "选择音源…";
+"Choose Insert…" = "选择插入实例…";
+"Open Privacy Settings" = "打开隐私设置";
+"Try Again" = "重试";
+"Status: %@" = "状态：%@";
+"Replace the layout “%@”?" = "替换布局“%@”？";
+"A layout with this name already exists. Replacing it keeps only the current arrangement." = "已有同名布局。替换后只保留当前排列。";
+"Replace" = "替换";
+"The CSV file could not be saved." = "无法保存 CSV 文件。";
+"The PDF report could not be saved." = "无法保存 PDF 报告。";
+"Analysis failed" = "分析失败";
+"Check that the file plays in another app, or choose another file." = "请确认该文件能在其他 App 中播放，或选择其他文件。";
+"Analysis cancelled" = "已取消分析";
+"Nothing was measured. Choose the file again to start over." = "未测量任何内容。重新选择文件即可从头开始。";
+"Saving…" = "正在保存…";
+"Replace the preset “%@”?" = "替换预设“%@”？";
+"A preset with this name already exists. Replacing it keeps only the current settings." = "已有同名预设。替换后只保留当前设置。";
+"The preset “%@” could not be saved." = "无法保存预设“%@”。";
+"Check that the presets folder can be written to (Show Presets in Finder), then try again." = "请确认预设文件夹可写入（在访达中显示预设），然后重试。";
+"Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged." = "以下文件无法读取，未列出（已损坏，或不是设置预设）：%@。当前设置不变。";
+"Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis." = "此测试版中，音源为 DAW 插件时不可用：Multi-FFT 需要在这台 Mac 上采集的音频。插件的分析显示在“声谱图与频谱”中。";

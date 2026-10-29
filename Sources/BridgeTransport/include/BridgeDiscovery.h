@@ -4,17 +4,21 @@
 // Network discovery of Auraliscope receivers with DNS-SD (Bonjour), for the plugin's scan.
 //
 // On this Mac the Bridge finds Auraliscope through its local socket (BridgePaths.h); DNS-SD is for receivers on
-// other devices of the local network, such as a future Auraliscope for iOS. Discovery only: nothing here
-// connects to a peer or sends it audio.
+// other devices of the local network, such as Auraliscope for iPad. Discovery only: nothing here connects to a peer
+// or sends it audio (the network carrier is Bridge/Plugin/Core/BridgeNetLink.h, see Bridge/BRIDGE_NETWORK.md).
 //
 // A receiver advertises the service type ABR_SERVICE_TYPE on the port where it accepts connections, with these
 // TXT keys (all optional except proto):
-//   proto=1            Bridge protocol version it speaks
-//   platform=iOS       iOS, iPadOS or macOS
+//   proto=3            Bridge protocol version it speaks (ABR_PROTOCOL_VERSION)
+//   schema=1           analysis schema it reads (ABR_ANALYSIS_SCHEMA)
+//   platform=iPadOS    iOS, iPadOS or macOS
 //   app=Auraliscope    application name
-//   ver=1.4            application version
+//   ver=2.1            application version
 //   role=display       display: renders analysis results; analyzer: analyses audio
-//   transport=tcp      how a sender reaches it
+//   transport=tls-psk  how a sender reaches it: TLS 1.2 with a pre-shared key from pairing (tcp: unauthenticated test
+//                      beacons, never connected to)
+//   rid=<32 hex>       the receiver's ID (16 bytes), stable for the installation: what a pairing is bound to
+//   pair=<port>        present while the receiver accepts a pairing, on that port
 
 #include <stdint.h>
 
@@ -30,6 +34,9 @@ typedef struct {
     char version[24];
     char role[16];
     char transport[16];
+    uint32_t schema;         // TXT schema, 0 when absent
+    char receiver_id[33];    // TXT rid (hex), empty when absent
+    uint16_t pairing_port;   // TXT pair, 0 when the receiver is not pairing
     int resolved;            // host, port and TXT are known
     int this_mac;            // advertised by this computer
 } AbrPeer;

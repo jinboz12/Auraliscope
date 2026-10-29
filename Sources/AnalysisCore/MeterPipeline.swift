@@ -232,6 +232,22 @@ package final class MeterPipeline {
     /// A break in the audio before the next frames (see the type's notes): `lostFrames` are known to be missing
     /// and the source did not deliver for `idleMilliseconds`, where the producer knows.
     package func interrupt(lostFrames: UInt64, idleMilliseconds: UInt32) {
+        let missing = Double(lostFrames) / sampleRate + Double(idleMilliseconds) / 1000
+        restartAcrossDiscontinuity(waveformMissingFrames: Int(min(missing, 60) * sampleRate))
+        breaks += 1
+        missingSeconds += missing
+    }
+
+    /// A splice made on purpose: the measurement was paused and resumes (Pause → Resume), so the next frames do not
+    /// continue the last ones analysed, yet nothing is missing from the measurement. As at a break, nothing that
+    /// spans samples reaches across it (filters, true-peak interpolation, FFT windows, momentary and short-term,
+    /// correlation; the waveform marks it with its 50 ms notch); integrated loudness, loudness range, held peaks
+    /// and the histories carry on. It is not counted as a break or as missing time.
+    package func splice() {
+        restartAcrossDiscontinuity(waveformMissingFrames: 0)
+    }
+
+    private func restartAcrossDiscontinuity(waveformMissingFrames: Int) {
         loudness.interrupt()
         spectrum.interrupt()
         displaySpectrum?.interrupt()
@@ -240,10 +256,7 @@ package final class MeterPipeline {
         health.interrupt()
         correlationSums = (0, 0, 0)
         integrateBands(fresh: nil)
-        let missing = Double(lostFrames) / sampleRate + Double(idleMilliseconds) / 1000
-        waveform.interrupt(missingFrames: Int(min(missing, 60) * sampleRate))
-        breaks += 1
-        missingSeconds += missing
+        waveform.interrupt(missingFrames: waveformMissingFrames)
     }
 
     private func slice(_ age: Int) -> Int { (head - age + Self.staleTicks) % Self.staleTicks }

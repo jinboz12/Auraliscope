@@ -625,7 +625,7 @@ private struct PanelSettingsForm: View {
         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.secondary)
         .padding(.leading, PanelSettingsButton.inset)
         if let model, model.sourceIsBridge {
-            caption(L("Bridge keeps its original analysis. Multi-FFT requires local PCM in this Beta."))
+            caption(L("Not available with a DAW plugin source in this Beta: Multi-FFT needs audio captured on this Mac. Spectrogram & Spectrum shows the plugin's analysis."))
         }
         caption(L("Three FFTs of different lengths analyse the low, mid and high frequencies, centred on the same instant, and are fused into one curve per channel. Hover over the plot to read a frequency's pitch and each curve's level."))
     }

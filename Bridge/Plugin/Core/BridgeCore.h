@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "BridgeAnalysis.h"
+#include "BridgeNetLink.h"
 #include "BridgeProtocol.h"
 #include "RecordRing.h"
 
@@ -61,6 +62,11 @@ struct HostTransport {
     int64_t position = 0;        // timeline sample of the block's first frame, with ABR_TRANSPORT_POSITION
 };
 
+// Where an instance's results go (Bridge/BRIDGE_NETWORK.md). One display at a time: the Auraliscope app on this Mac
+// over the local socket (the default), or a paired Auraliscope display on the network, chosen in the plugin window.
+enum class Carrier { local, network };
+enum class RemoteState { none, connecting, connected, unreachable, refused, notPaired, accessDenied };
+
 struct CoreStatus {
     bool connected = false;       // a socket to Auraliscope is open and it accepted this plugin's protocol
     bool focusPending = false;    // "Show in Auraliscope" was clicked and not yet delivered
@@ -90,6 +96,13 @@ struct CoreStatus {
     bool hasAnalysis = false;     // an analyser exists and has published at least once
     AbrAnalysisSummary analysis{};
     uint32_t backlogMs = 0;       // audio waiting for the analysis thread
+    // The network display chosen for this insert (carrier network), and how its connection stands.
+    Carrier carrier = Carrier::local;
+    std::string remoteID;         // receiver ID (32 hex digits), empty for the local display
+    std::string remoteName;
+    RemoteState remoteState = RemoteState::none;
+    std::string remoteDetail;
+    uint64_t remoteBytesSent = 0;
 };
 
 class BridgeCore {
@@ -125,6 +138,10 @@ public:
     CoreStatus status() const;
     // UI thread: asks Auraliscope to make this instance its active source, now or as soon as it connects.
     void requestFocus() noexcept;
+    // UI thread: sends this insert's results to the paired network display `receiverID` instead of the Auraliscope on
+    // this Mac (an empty ID: back to this Mac). The change is the person's own choice in the plugin window, saved with the
+    // project; the instance reconnects at once through the new carrier.
+    void setRemoteReceiver(const std::string &receiverID);
     // UI thread: the plugin window's own controls (ABR_COMMAND_*); carried out by the analysis thread.
     void requestCommand(uint32_t command);
     std::string saveState() const;
@@ -171,6 +188,9 @@ private:
     void runSpatial();
     void applySpatial(const uint8_t *bytes, uint32_t length);
     bool startGeneration(double sampleRate, uint32_t channels, uint64_t roles, uint32_t epoch);
+    bool connectLocal();
+    bool connectRemote(uint64_t nowNs);
+    ssize_t receiveBytes(uint8_t *into, size_t capacity);
 
     const uint32_t format_;
     uint8_t sessionId_[16];
@@ -291,6 +311,15 @@ private:
     size_t outUsed_ = 0, outSent_ = 0;
     uint8_t in_[1024];
     size_t inUsed_ = 0;
+    // The network carrier (sender thread), and the person's choice of display (under `remoteLock_`).
+    std::unique_ptr<NetLink> net_;
+    uint64_t netStartedNs_ = 0;
+    uint32_t netFailures_ = 0;
+    mutable std::mutex remoteLock_;
+    std::string remoteID_, remoteName_, remoteDetail_;
+    RemoteState remoteState_ = RemoteState::none;
+    std::atomic<bool> carrierChanged_{false};
+    std::atomic<uint64_t> remoteBytesSent_{0};
 };
 
 // The process-wide threads. Instances register on construction and unregister on destruction; the threads run

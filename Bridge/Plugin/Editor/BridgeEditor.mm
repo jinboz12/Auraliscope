@@ -8,6 +8,7 @@
 
 #include "BridgeCore.h"
 #include "BridgeEditor.h"
+#include "BridgeRemote.h"
 extern "C" {
 #include "BridgeDiscovery.h"
 }
@@ -139,16 +140,20 @@ NSTextField *heading(NSRect frame, NSString *title) {
 @end
 
 // Answers three questions, top to bottom: is this insert the one Auraliscope analyses (and one click makes
-// it so); is fresh audio arriving; has the stream been interrupted. The network scan sits last, collapsed: it
-// only runs when asked, because nothing on the network can receive analysis yet.
+// it so); is fresh audio arriving; has the stream been interrupted. The network card sits last: it scans only when
+// asked (the DAW's Local Network permission is requested then), pairs an Auraliscope display on the network, and lets
+// the person send this insert's results to it instead of to this Mac (Bridge/BRIDGE_NETWORK.md).
+static const int kNetworkRows = 3;
 @implementation ABR_EDITOR_CLASS {
     std::shared_ptr<abr::BridgeCore> _core;
     std::function<void()> _nameEdited;
     NSString *_format;
     NSTimer *_timer;
     NSTextField *_name, *_headline, *_detail, *_thisMac, *_identity, *_copy, *_rate, *_layout, *_state, *_fresh,
-        *_counters, *_networkSummary, *_network[2], *_loudness, *_levels, *_measured;
-    NSButton *_connect, *_scan, *_reset, *_pause;
+        *_counters, *_networkSummary, *_network[kNetworkRows], *_loudness, *_levels, *_measured;
+    NSButton *_connect, *_scan, *_reset, *_pause, *_networkAction[kNetworkRows];
+    AbrPeer _rowPeer[kNetworkRows];          // the receiver each row shows
+    std::unique_ptr<abr::PairingJob> _pairing;
     NSView *_dot;
     BOOL _scanning, _scanRequested, _launchFailed;
 }
@@ -272,16 +277,23 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _reset.toolTip = @"Starts this insert's measurement afresh (integrated loudness, range, held peaks).";
     [measurement addSubview:_reset];
 
-    // Network, collapsed: a later Auraliscope for iPhone and iPad will be found here. It is only scanned on request,
-    // so the DAW's Local Network permission is asked for only by someone looking for it.
-    ABR_CARD_CLASS *network = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 454, inner, 80)];
+    // Network: Auraliscope displays on other devices (Auraliscope for iPad). Scanned only on request, so the DAW's
+    // Local Network permission is asked for only by someone looking for it.
+    ABR_CARD_CLASS *network = [[ABR_CARD_CLASS alloc] initWithFrame:NSMakeRect(margin, 454, inner, 120)];
     [self addSubview:network];
-    [network addSubview:heading(NSMakeRect(14, 11, 250, 12), @"NETWORK · PREVIEW")];
+    [network addSubview:heading(NSMakeRect(14, 11, 250, 12), @"NETWORK DISPLAYS")];
     _networkSummary = label(NSMakeRect(14, 28, inner - 28 - 110, 14), [NSFont systemFontOfSize:11], secondary());
     [network addSubview:_networkSummary];
-    for (int row = 0; row < 2; ++row) {
-        _network[row] = label(NSMakeRect(14, 45 + 16 * row, inner - 28, 14), [NSFont systemFontOfSize:10], tertiary());
+    for (int row = 0; row < kNetworkRows; ++row) {
+        _network[row] = label(NSMakeRect(14, 50 + 22 * row, inner - 28 - 92, 14), [NSFont systemFontOfSize:10], tertiary());
         [network addSubview:_network[row]];
+        _networkAction[row] = [NSButton buttonWithTitle:@"" target:self action:@selector(networkAction:)];
+        _networkAction[row].bordered = NO;
+        _networkAction[row].wantsLayer = YES;
+        _networkAction[row].layer.cornerRadius = 9;
+        _networkAction[row].tag = row;
+        _networkAction[row].frame = NSMakeRect(inner - 14 - 84, 47 + 22 * row, 84, 18);
+        [network addSubview:_networkAction[row]];
     }
     _scan = [NSButton buttonWithTitle:@"" target:self action:@selector(toggleScan:)];
     _scan.bordered = NO;
@@ -290,7 +302,7 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _scan.frame = NSMakeRect(inner - 14 - 100, 24, 100, 20);
     [network addSubview:_scan];
 
-    NSTextField *note = label(NSMakeRect(margin, 542, inner, 14), [NSFont systemFontOfSize:10], tertiary());
+    NSTextField *note = label(NSMakeRect(margin, 582, inner, 14), [NSFont systemFontOfSize:10], tertiary());
     note.stringValue = @"Audio passes through unchanged. Closing this window keeps measuring.";
     [self addSubview:note];
     [self refresh];
@@ -338,6 +350,8 @@ NSTextField *heading(NSRect frame, NSString *title) {
     _scan.target = nil;
     _reset.target = nil;
     _pause.target = nil;
+    for (int row = 0; row < kNetworkRows; ++row) _networkAction[row].target = nil;
+    _pairing.reset();   // cancels a pairing in progress
 }
 
 // The copy of Auraliscope to launch. Older test builds left in Downloads or a build folder share its bundle ID,
@@ -375,6 +389,13 @@ static NSURL *appApplicationURL() {
 // One click: ask Auraliscope to analyse this insert, launching it first when it is not running. The request
 // waits in the core and goes out as soon as the connection is up.
 - (void)connect:(id)sender {
+    if (_core->status().carrier == abr::Carrier::network) {
+        // Back to Auraliscope on this Mac (the person's choice, saved with the project).
+        _core->setRemoteReceiver("");
+        if (_nameEdited) _nameEdited();
+        [self refresh];
+        return;
+    }
     _core->requestFocus();
     _launchFailed = NO;
     if (!_core->status().connected) {
@@ -397,6 +418,49 @@ static NSURL *appApplicationURL() {
 
 - (void)togglePause:(id)sender {
     _core->requestCommand(_core->status().measurement == ABR_MEASUREMENT_PAUSED ? ABR_COMMAND_RESUME : ABR_COMMAND_PAUSE);
+}
+
+// A row's button: send here, stop sending (back to this Mac), or pair.
+- (void)networkAction:(NSButton *)sender {
+    const NSInteger row = sender.tag;
+    if (row < 0 || row >= kNetworkRows) return;
+    const AbrPeer peer = _rowPeer[row];
+    const std::string id = peer.receiver_id;
+    const abr::CoreStatus status = _core->status();
+    abr::PairedReceiver paired;
+    if (status.remoteID == id) {
+        _core->setRemoteReceiver("");
+    } else if (abr::findReceiver(id, &paired)) {
+        _core->setRemoteReceiver(id);
+        if (_nameEdited) _nameEdited();   // the choice is saved with the project
+    } else if (peer.pairing_port != 0 && self.window) {
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = [NSString stringWithFormat:@"Pair with “%s”", peer.name];
+        alert.informativeText = @"Enter the code the iPad shows (Wireless Display ▸ Pair). Pairing lets this Mac's "
+                                 "Auraliscope Bridge send analysis results to it, encrypted. No audio is sent.";
+        NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
+        field.placeholderString = @"ABCD-EFGH";
+        field.font = [NSFont monospacedSystemFontOfSize:15 weight:NSFontWeightMedium];
+        alert.accessoryView = field;
+        [alert addButtonWithTitle:@"Pair"];
+        [alert addButtonWithTitle:@"Cancel"];
+        alert.window.initialFirstResponder = field;
+        __weak ABR_EDITOR_CLASS *weakSelf = self;
+        const std::string host = peer.host, service = peer.name;
+        const uint16_t port = peer.pairing_port;
+        [alert beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse response) {
+            ABR_EDITOR_CLASS *editor = weakSelf;
+            if (!editor || response != NSAlertFirstButtonReturn) return;
+            [editor startPairing:host port:port receiver:id service:service code:field.stringValue.UTF8String ?: ""];
+        }];
+    }
+    [self refresh];
+}
+
+- (void)startPairing:(const std::string &)host port:(uint16_t)port receiver:(const std::string &)receiver
+             service:(const std::string &)service code:(const std::string &)code {
+    _pairing = std::make_unique<abr::PairingJob>(host, port, receiver, service, code, getprogname(), ABR_PLUGIN_VERSION);
+    [self refresh];
 }
 
 - (void)toggleScan:(id)sender {
@@ -436,6 +500,34 @@ static NSURL *appApplicationURL() {
     NSColor *dot = slate();
     NSString *headline, *detail, *button = @"";
     BOOL filled = NO, enabled = NO;
+    if (status.carrier == abr::Carrier::network) {
+        // Sent to a network display the person chose here: Auraliscope on this Mac does not get this insert meanwhile.
+        NSString *name = status.remoteName.empty() ? @"the network display" : text(status.remoteName);
+        if (status.receiverTooOld || status.receiverTooNew) {
+            headline = status.receiverTooOld ? @"The display needs an update" : @"This plugin needs an update";
+            detail = [NSString stringWithFormat:@"%@ speaks another Bridge protocol version.", name];
+            dot = ember();
+        } else if (status.subscribed) {
+            headline = [NSString stringWithFormat:@"Shown on %@", name];
+            detail = fresh ? @"This insert's results go over the network, not to Auraliscope on this Mac."
+                           : @"Shown there · the DAW is not processing this insert.";
+            dot = fresh ? accent() : ochre();
+        } else if (status.connected) {
+            headline = [NSString stringWithFormat:@"Connected to %@", name];
+            detail = @"Waiting for it to show this insert (it shows one source at a time).";
+            dot = heather();
+        } else {
+            headline = [NSString stringWithFormat:@"Sending to %@", name];
+            detail = [self remoteLine:status];
+            dot = status.remoteState == abr::RemoteState::connecting ? slate() : ember();
+        }
+        _headline.stringValue = headline;
+        _detail.stringValue = detail;
+        _dot.layer.backgroundColor = dot.CGColor;
+        [self style:_connect title:@"Use this Mac" filled:NO enabled:YES size:12];
+        _thisMac.stringValue = @"Network display · TLS, paired · results only, no audio";
+        return;
+    }
     if (status.receiverTooOld) {
         headline = @"Auraliscope needs an update";
         detail = @"The Auraliscope on this Mac is older than this plugin.";
@@ -547,7 +639,9 @@ static NSURL *appApplicationURL() {
         _fresh.stringValue = @"The DAW has not processed this insert yet.";
         _fresh.textColor = tertiary();
     } else if (since < 0.5) {
-        NSString *where = status.subscribed ? @"measured here, results sent to Auraliscope" : @"measured here";
+        NSString *where = !status.subscribed ? @"measured here"
+            : status.carrier == abr::Carrier::network ? @"measured here, results sent to the network display"
+            : @"measured here, results sent to Auraliscope";
         _fresh.stringValue = [NSString stringWithFormat:@"Audio is flowing · %@", where];
         _fresh.textColor = status.subscribed && status.state == ABR_STATE_LIVE ? accent() : secondary();
     } else {
@@ -605,38 +699,96 @@ static NSString *dbfs(float linear) { return linear <= 1e-6f ? @"−∞" : [NSSt
     _measured.textColor = paused ? ochre() : tertiary();
 }
 
-// The network, collapsed until asked: DNS-SD peers other than this Mac's own receivers.
-- (void)refreshNetwork {
-    [self style:_scan title:_scanRequested ? @"Stop scan" : @"Scan network" filled:NO enabled:YES size:11];
+// The network displays: where this insert's results go, the receivers found, and pairing.
+- (void)refreshNetwork:(const abr::CoreStatus &)status {
+    [self style:_scan title:_scanRequested ? @"Stop scan" : @"Find displays" filled:NO enabled:YES size:11];
     NSMutableArray<NSString *> *rows = [NSMutableArray array];
+    int shown = 0;
+    if (status.carrier == abr::Carrier::network) {
+        _networkSummary.stringValue = [NSString stringWithFormat:@"Results go to “%s”, not to this Mac.",
+                                                                 status.remoteName.empty() ? "the network display" : status.remoteName.c_str()];
+    } else {
+        _networkSummary.stringValue = @"Results go to Auraliscope on this Mac.";
+    }
+    if (_pairing) {
+        const abr::PairingJob::Phase phase = _pairing->phase();
+        NSString *line = phase == abr::PairingJob::Phase::connecting ? @"Pairing: connecting…"
+            : phase == abr::PairingJob::Phase::waitingForApproval ? @"Pairing: allow this Mac on the iPad…"
+            : [NSString stringWithFormat:@"Pairing: %s", _pairing->message().c_str()];
+        [rows addObject:line];
+        if (phase == abr::PairingJob::Phase::paired || phase == abr::PairingJob::Phase::failed) {
+            static int linger = 0;   // keep the outcome on screen a few seconds
+            if (++linger > 24) { _pairing.reset(); linger = 0; }
+        }
+    }
     if (!_scanRequested) {
-        _networkSummary.stringValue = @"Auraliscope for iPhone and iPad will appear here.";
-        [rows addObject:@"Discovery only: nothing on the network can receive analysis yet."];
+        if (status.carrier == abr::Carrier::network) [rows addObject:[self remoteLine:status]];
+        else if (rows.count == 0) [rows addObject:@"Find displays to send to Auraliscope for iPad, or pair one."];
     } else if (!gBrowser) {
-        _networkSummary.stringValue = @"Network scan unavailable (DNS-SD did not start).";
+        [rows addObject:@"Network scan unavailable (DNS-SD did not start)."];
     } else if (abr_browser_error(gBrowser) == kDNSServiceErr_PolicyDenied_ABR) {
-        _networkSummary.stringValue = [NSString stringWithFormat:@"Local network access is off for %@.",
-                                                                 NSProcessInfo.processInfo.processName];
-        [rows addObject:@"Allow it in System Settings ▸ Privacy & Security ▸ Local Network."];
+        [rows addObject:[NSString stringWithFormat:@"Local Network access is off for %@: allow it in System Settings ▸ "
+                                                   "Privacy & Security ▸ Local Network.", NSProcessInfo.processInfo.processName]];
     } else {
         AbrPeer peers[16];
         const uint32_t total = std::min<uint32_t>(16, abr_browser_peers(gBrowser, peers, 16));
-        uint32_t found = 0;
-        for (uint32_t i = 0; i < total; ++i) {
+        for (uint32_t i = 0; i < total && shown < kNetworkRows; ++i) {
             const AbrPeer &peer = peers[i];
-            if (peer.this_mac && std::string(peer.platform) == "macOS") continue;  // this Mac's own receiver
-            ++found;
-            if (rows.count < 2) {
-                NSString *what = peer.resolved ? [NSString stringWithFormat:@"%s for %s %s", peer.app, peer.platform, peer.version]
-                                               : @"resolving…";
-                [rows addObject:[NSString stringWithFormat:@"◆  %s · %@%@ · listed, not usable yet", peer.name, what,
-                                                           peer.this_mac ? @" (this Mac)" : @""]];
-            }
+            // Displays that take a paired network connection; this Mac's own receivers use the local socket.
+            if (!peer.resolved || std::string(peer.role) != "display" || std::string(peer.transport) != "tls-psk"
+                || std::strlen(peer.receiver_id) != 32 || (peer.this_mac && std::string(peer.platform) == "macOS")) continue;
+            const bool compatible = peer.protocol == ABR_PROTOCOL_VERSION && (peer.schema == 0 || peer.schema == ABR_ANALYSIS_SCHEMA);
+            abr::PairedReceiver paired;
+            const bool isPaired = abr::findReceiver(peer.receiver_id, &paired);
+            const bool current = status.remoteID == peer.receiver_id;
+            NSString *state = !compatible ? [NSString stringWithFormat:@"speaks protocol %u, needs an update", peer.protocol]
+                : current ? [self remoteLine:status]
+                : isPaired ? @"paired"
+                : peer.pairing_port ? @"ready to pair" : @"not paired · on the iPad: Wireless Display ▸ Pair";
+            _network[shown].stringValue = [NSString stringWithFormat:@"◆  %s · %@", peer.name, state];
+            _network[shown].textColor = current ? secondary() : tertiary();
+            _rowPeer[shown] = peer;
+            NSString *action = !compatible ? @"" : current ? @"Stop" : isPaired ? @"Send here" : peer.pairing_port ? @"Pair…" : @"";
+            [self style:_networkAction[shown] title:action filled:(isPaired && !current) enabled:_pairing == nullptr || current size:10];
+            ++shown;
         }
-        _networkSummary.stringValue = found == 0 ? @"Searching the local network…"
-            : [NSString stringWithFormat:@"%u receiver%@ found · discovery only", found, found == 1 ? @"" : @"s"];
+        if (shown == 0 && rows.count == 0) [rows addObject:@"Searching the local network for Auraliscope displays…"];
+        if (status.carrier == abr::Carrier::network && shown == 0) [rows addObject:[self remoteLine:status]];
     }
-    for (int row = 0; row < 2; ++row) _network[row].stringValue = row < (int)rows.count ? rows[row] : @"";
+    // Rows below the receivers: messages.
+    for (int row = shown; row < kNetworkRows; ++row) {
+        const int message = row - shown;
+        _network[row].stringValue = message < (int)rows.count ? rows[message] : @"";
+        _network[row].textColor = tertiary();
+        [self style:_networkAction[row] title:@"" filled:NO enabled:NO size:10];
+    }
+    // While sending to a network display that is not listed, a way back to this Mac.
+    if (status.carrier == abr::Carrier::network && shown < kNetworkRows) {
+        bool listed = false;
+        for (int row = 0; row < shown; ++row) listed = listed || status.remoteID == _rowPeer[row].receiver_id;
+        if (!listed) {
+            std::memset(&_rowPeer[shown], 0, sizeof(AbrPeer));
+            std::snprintf(_rowPeer[shown].receiver_id, sizeof _rowPeer[shown].receiver_id, "%s", status.remoteID.c_str());
+            [self style:_networkAction[shown] title:@"Stop" filled:NO enabled:YES size:10];
+        }
+    }
+}
+
+- (NSString *)remoteLine:(const abr::CoreStatus &)status {
+    const char *name = status.remoteName.empty() ? "network display" : status.remoteName.c_str();
+    switch (status.remoteState) {
+    case abr::RemoteState::connected:
+        return [NSString stringWithFormat:@"sending to %s · %@B sent", name, count(status.remoteBytesSent)];
+    case abr::RemoteState::connecting: return [NSString stringWithFormat:@"connecting to %s…", name];
+    case abr::RemoteState::unreachable:
+        return [NSString stringWithFormat:@"%s not reachable, retrying (%s)", name, status.remoteDetail.c_str()];
+    case abr::RemoteState::refused: return [NSString stringWithFormat:@"%s refused this Mac: pair again", name];
+    case abr::RemoteState::notPaired: return @"the chosen display is not paired with this Mac: pair it again";
+    case abr::RemoteState::accessDenied:
+        return [NSString stringWithFormat:@"Local Network access is off for %@ (System Settings ▸ Privacy & Security)",
+                                          NSProcessInfo.processInfo.processName];
+    default: return @"";
+    }
 }
 
 - (void)refresh {
@@ -645,7 +797,7 @@ static NSString *dbfs(float linear) { return linear <= 1e-6f ? @"−∞" : [NSSt
     [self refreshIdentity:status];
     [self refreshStream:status];
     [self refreshMeasurement:status];
-    [self refreshNetwork];
+    [self refreshNetwork:status];
 }
 @end
 

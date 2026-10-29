@@ -15,8 +15,9 @@ clang -std=c11 -O2 -g -Wall -Wextra $sanitize -I Sources/BridgeTransport/include
 clang -std=c11 -O2 -g -Wall -Wextra $sanitize -I Sources/BridgeTransport/include -c Sources/BridgeTransport/BridgeDiscovery.c -o "$out/BridgeDiscovery.o"
 clang++ -std=c++17 -O2 -g -Wall -Wextra -Wno-unused-parameter $sanitize \
     -I Sources/BridgeTransport/include -I Bridge/Plugin/Core -I Bridge/Plugin/Analysis/include -framework CoreFoundation \
-    -framework Accelerate $swift_libs \
+    -framework Accelerate -framework Network -framework Security -framework SystemConfiguration $swift_libs \
     Bridge/Plugin/Core/BridgeCore.cpp Bridge/Plugin/Core/BridgeSender.cpp Bridge/Plugin/Core/BridgeAnalysisHub.cpp \
+    Bridge/Plugin/Core/BridgeNetLink.cpp Bridge/Plugin/Core/BridgeRemote.cpp \
     Bridge/Tests/TransportTests.cpp "$out/BridgeServer.o" "$out/BridgeDiscovery.o" .build/bridge/analysis/test.a \
     -o "$out/TransportTests"
 "$out/TransportTests"

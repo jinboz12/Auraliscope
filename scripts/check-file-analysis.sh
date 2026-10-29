@@ -1,13 +1,22 @@
 #!/bin/zsh
 # Meter ▸ Analyze Audio File… against reference tones: EBU Tech 3341 case 1 (stereo 1 kHz at −23 dBFS reads
 # −23.0 LUFS), the same tone on L alone (−26.0) and on Ls alone in a 5.1 file (+1.5 dB surround weight: −24.5),
-# an AAC copy of case 1 decoded by Core Audio, and an unreadable file. Defaults to the debug build; override
-# AURALISCOPE_BINARY to check the exact release/QA executable instead.
+# an AAC copy of case 1 decoded by Core Audio, and an unreadable file. Defaults to the debug build in a QA bundle run
+# with --demo (scripts/qa-env.sh: no audio device, no user preferences, logs or Bridge socket); override
+# AURALISCOPE_BINARY to check another executable (keep it a QA identity with --demo).
 set -euo pipefail
 cd "${0:A:h:h}"
-binary="${AURALISCOPE_BINARY:-.build/debug/Auraliscope}"
+source scripts/qa-env.sh
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$QA_PRIVATE"' EXIT
+if [[ -n "${AURALISCOPE_BINARY:-}" ]]; then
+    binary="$AURALISCOPE_BINARY"
+else
+    [[ -x .build/debug/Auraliscope ]] || swift build
+    qa_bundle .build/debug/Auraliscope "$QA_PRIVATE/Auraliscope-QA.app"
+    binary="$QA_PRIVATE/analyse"
+    qa_demo_wrapper "$QA_PRIVATE/Auraliscope-QA.app" "$binary"
+fi
 python3 - "$work" <<'PY'
 import math, struct, sys, wave
 def tone(path, channels, live, seconds=20, rate=48000, level=-23):

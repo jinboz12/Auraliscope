@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "BridgePaths.h"
+#include "BridgeRemote.h"
 #include "BridgeWire.h"
 
 #ifndef ABR_PLUGIN_VERSION
@@ -46,6 +47,12 @@ constexpr uint32_t kIdleCapMs = 3600u * 1000u;
 constexpr uint32_t kInterruptions = ABR_AUDIO_AFTER_IDLE | ABR_AUDIO_AFTER_BYPASS | ABR_AUDIO_AFTER_OFFLINE
     | ABR_AUDIO_AFTER_RESTART;
 constexpr size_t kNameBytes = 127;
+// Over the network, results stop while this much is still on its way to the display (a few results at most), so a
+// slow or stalled display gets the newest state when it catches up, never a backlog; the link's own bound
+// (NetLink::kMaxInFlight) is the hard limit.
+constexpr size_t kNetHighWater = size_t(64) * 1024;
+constexpr uint64_t kNetConnectNs = 8000000000ull;     // resolving, connecting and the TLS handshake
+constexpr uint64_t kNetRetryMaxNs = 5000000000ull;    // retries back off from 1 s to this
 
 // Keeps printable UTF-8, drops control characters and cuts at a character boundary.
 std::string sanitize(const std::string &name, size_t limit = kNameBytes) {
@@ -421,10 +428,37 @@ CoreStatus BridgeCore::status() const {
     status.instanceTag = hex(persistentId_, 3);
     status.identityFlags = identityFlags_;
     if (identityFlags_ & ABR_IDENTITY_COPY) status.copiedFromTag = hex(restoredId_, 3);
+    std::lock_guard<std::mutex> remote(remoteLock_);
+    status.carrier = remoteID_.empty() ? Carrier::local : Carrier::network;
+    status.remoteID = remoteID_;
+    status.remoteName = remoteName_;
+    status.remoteState = remoteState_;
+    status.remoteDetail = remoteDetail_;
+    status.remoteBytesSent = remoteBytesSent_.load(std::memory_order_relaxed);
     return status;
 }
 
 void BridgeCore::requestFocus() noexcept { focusRequested_.store(true, std::memory_order_release); }
+
+void BridgeCore::setRemoteReceiver(const std::string &receiverID) {
+    std::lock_guard<std::mutex> lock(remoteLock_);
+    if (receiverID == remoteID_) return;
+    remoteID_ = receiverID;
+    remoteName_.clear();
+    remoteDetail_.clear();
+    PairedReceiver receiver;
+    if (receiverID.empty()) {
+        remoteState_ = RemoteState::none;
+    } else if (findReceiver(receiverID, &receiver)) {
+        remoteName_ = receiver.name;
+        remoteState_ = RemoteState::connecting;
+    } else {
+        // Saved with the project on another Mac, or forgotten since: nothing is sent until it is paired here.
+        remoteState_ = RemoteState::notPaired;
+    }
+    carrierChanged_.store(true, std::memory_order_release);
+    settingsSerial_.fetch_add(1, std::memory_order_relaxed);
+}
 
 void BridgeCore::requestCommand(uint32_t command) {
     std::lock_guard<std::mutex> lock(commandLock_);
@@ -435,8 +469,13 @@ void BridgeCore::requestCommand(uint32_t command) {
 //   AuraliscopeBridge 1 / id=<32 hex digits> / name=<UTF-8>
 // Live measurements are not saved: a reopened project starts a new measurement (see ARCHITECTURE.md).
 std::string BridgeCore::saveState() const {
+    std::string receiver;
+    {
+        std::lock_guard<std::mutex> remote(remoteLock_);
+        if (!remoteID_.empty()) receiver = "receiver=" + remoteID_ + "\n";
+    }
     std::lock_guard<std::mutex> lock(configLock_);
-    return "AuraliscopeBridge 1\nid=" + hex(persistentId_, 16) + "\nname=" + sourceName_ + "\n";
+    return "AuraliscopeBridge 1\nid=" + hex(persistentId_, 16) + "\nname=" + sourceName_ + "\n" + receiver;
 }
 
 bool BridgeCore::restoreState(const std::string &state, bool *identityReassigned) {
@@ -444,15 +483,18 @@ bool BridgeCore::restoreState(const std::string &state, bool *identityReassigned
     if (state.rfind("AuraliscopeBridge ", 0) != 0) return false;
     uint8_t id[16];
     bool haveID = false;
-    std::string name;
+    std::string name, receiver;
     size_t start = state.find('\n');
     while (start != std::string::npos && start + 1 < state.size()) {
         const size_t end = state.find('\n', start + 1);
         const std::string line = state.substr(start + 1, end == std::string::npos ? std::string::npos : end - start - 1);
         if (line.rfind("id=", 0) == 0) haveID = parseHex(line.substr(3), id, sizeof id);
         else if (line.rfind("name=", 0) == 0) name = line.substr(5);
+        else if (line.rfind("receiver=", 0) == 0) receiver = line.substr(9);
         start = end;
     }
+    // The project's choice of display (a network display, or this Mac when the state names none).
+    setRemoteReceiver(receiver.size() == 32 ? receiver : std::string());
     std::lock_guard<std::mutex> lock(configLock_);
     if (haveID && std::memcmp(persistentId_, id, sizeof id) != 0) {
         if (claimIdentity(this, id)) {
@@ -729,6 +771,13 @@ void BridgeCore::queueHello() {
     abr_put_u32(&w, ABR_HELLO_SCHEMA, ABR_ANALYSIS_SCHEMA);
     abr_put_u32(&w, ABR_HELLO_CAPABILITIES, ABR_CAPABILITY_RESULTS | ABR_CAPABILITY_RESET | ABR_CAPABILITY_RESET_TRUE_PEAK
                 | ABR_CAPABILITY_PAUSE | ABR_CAPABILITY_SPATIAL_CONFIG);
+    if (net_) {
+        // Over the network: which Mac this is (its pairing ID, also the TLS identity) and its name.
+        uint8_t device[16];
+        if (networkDeviceID(device)) abr_put_bytes(&w, ABR_HELLO_DEVICE_ID, device, 16);
+        static const std::string computer = computerName();
+        abr_put_text(&w, ABR_HELLO_COMPUTER_NAME, computer.c_str(), 63);
+    }
     if (!w.overflowed) queue(ABR_MSG_HELLO, payload, uint32_t(8 + w.used));
 }
 
@@ -809,7 +858,7 @@ void BridgeCore::handleCommand(const uint8_t *payload, uint32_t length) {
 
 bool BridgeCore::readControl() {
     for (;;) {
-        const ssize_t count = recv(fd_, in_ + inUsed_, sizeof in_ - inUsed_, MSG_DONTWAIT);
+        const ssize_t count = receiveBytes(in_ + inUsed_, sizeof in_ - inUsed_);
         if (count == 0) return false;
         if (count < 0) return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
         inUsed_ += size_t(count);
@@ -872,7 +921,25 @@ bool BridgeCore::readControl() {
     }
 }
 
+// Bytes from whichever carrier is open: like recv, > 0 bytes, 0 at the end of the stream, < 0 with errno (EAGAIN when
+// nothing is waiting).
+ssize_t BridgeCore::receiveBytes(uint8_t *into, size_t capacity) {
+    if (!net_) return recv(fd_, into, capacity, MSG_DONTWAIT);
+    if (net_->state() == NetLink::State::failed || net_->state() == NetLink::State::closed) { errno = ECONNRESET; return -1; }
+    const size_t count = net_->receive(into, capacity);
+    if (count > 0) return ssize_t(count);
+    if (net_->finished()) return 0;
+    errno = EAGAIN;
+    return -1;
+}
+
 bool BridgeCore::flush() {
+    if (net_) {
+        // The link takes everything queued at once (it copies), or nothing while too much is still on its way.
+        if (outSent_ < outUsed_ && net_->send(out_.get() + outSent_, outUsed_ - outSent_)) outUsed_ = outSent_ = 0;
+        remoteBytesSent_.store(net_->bytesSent(), std::memory_order_relaxed);
+        return net_->state() == NetLink::State::ready;
+    }
     while (outSent_ < outUsed_) {
         const ssize_t sent = send(fd_, out_.get() + outSent_, outUsed_ - outSent_, MSG_DONTWAIT);
         if (sent < 0) return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
@@ -887,6 +954,7 @@ bool BridgeCore::flush() {
 // the oldest are dropped, and counted, when a display falls more than about 2 s behind).
 void BridgeCore::sendResult() {
     if (outUsed_ - outSent_ > kOutHighWater) return;
+    if (net_ && net_->inFlight() > kNetHighWater) return;  // the mailbox keeps the newest result meanwhile
     if (outUsed_ + sizeof(AbrHeader) + kMailboxBytes > kOutBytes) {
         if (outSent_ == 0) return;
         std::memmove(out_.get(), out_.get() + outSent_, outUsed_ - outSent_);
@@ -954,9 +1022,10 @@ void BridgeCore::sendAcks() {
 void BridgeCore::disconnect() {
     // The display that paused the measurement is gone (quit, crashed, or the connection broke): the pause goes
     // with it, so a measurement is never left paused by nobody.
-    if (fd_ >= 0 && pausedByDisplay_.exchange(false, std::memory_order_relaxed)) requestCommand(ABR_COMMAND_RESUME);
+    if ((fd_ >= 0 || net_) && pausedByDisplay_.exchange(false, std::memory_order_relaxed)) requestCommand(ABR_COMMAND_RESUME);
     if (fd_ >= 0) close(fd_);
     fd_ = -1;
+    net_.reset();   // cancels the connection; its queue lets go of everything once cancelled
     welcomed_ = false;
     {
         // The geometry was that display's: the next one (perhaps an older app) starts from the standard layout.
@@ -979,41 +1048,129 @@ void BridgeCore::disconnect() {
     lastStatusState_ = 0xFFFFFFFF;
 }
 
+// The local socket to the Auraliscope app on this Mac. True when connected.
+bool BridgeCore::connectLocal() {
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    if (abr_socket_path(address.sun_path, sizeof address.sun_path) != 0) return false;
+    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return false;
+    // A small kernel buffer keeps the latest-state policy in charge: a large one would quietly queue old
+    // results ahead of a stalled receiver.
+    int on = 1, buffer = 32 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);  // a vanished receiver must not signal the DAW
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof buffer);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    uid_t uid;
+    gid_t gid;
+    if (connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof address) != 0
+        || getpeereid(fd, &uid, &gid) != 0 || uid != getuid()) {
+        close(fd);
+        return false;
+    }
+    fd_ = fd;
+    return true;
+}
+
+// A TLS connection to the paired network display chosen for this insert. Starting it returns at once (Network.framework
+// resolves and connects on its own queue); `service` waits for it to become ready.
+bool BridgeCore::connectRemote(uint64_t nowNs) {
+    std::string id;
+    {
+        std::lock_guard<std::mutex> lock(remoteLock_);
+        id = remoteID_;
+    }
+    PairedReceiver receiver;
+    uint8_t device[16];
+    if (!findReceiver(id, &receiver) || !networkDeviceID(device)) {
+        std::lock_guard<std::mutex> lock(remoteLock_);
+        remoteState_ = RemoteState::notPaired;
+        remoteDetail_ = "Not paired on this Mac. Pair it in the plugin window.";
+        return false;
+    }
+    // The PSK identity is this Mac's pairing ID, as the display stored it (32 hex digits).
+    static const char digits[] = "0123456789abcdef";
+    char identity[32];
+    for (int i = 0; i < 16; ++i) { identity[2 * i] = digits[device[i] >> 4]; identity[2 * i + 1] = digits[device[i] & 15]; }
+    net_ = NetLink::toService(receiver.serviceName, receiver.key, sizeof receiver.key,
+                              reinterpret_cast<const uint8_t *>(identity), sizeof identity);
+    netStartedNs_ = nowNs;
+    std::lock_guard<std::mutex> lock(remoteLock_);
+    remoteName_ = receiver.name;
+    remoteState_ = RemoteState::connecting;
+    return true;
+}
+
 void BridgeCore::service(uint64_t nowNs) {
-    if (identityChanged_.exchange(false, std::memory_order_acq_rel) && fd_ >= 0) {
+    if (identityChanged_.exchange(false, std::memory_order_acq_rel) && (fd_ >= 0 || net_)) {
         disconnect();
         lastAttemptNs_ = 0;  // reconnect now, announcing the new identity
     }
-    if (fd_ < 0) {
+    bool remote;
+    {
+        std::lock_guard<std::mutex> lock(remoteLock_);
+        remote = !remoteID_.empty();
+    }
+    if (carrierChanged_.exchange(false, std::memory_order_acq_rel)) {
+        // The person chose another display: the current connection ends (the display sees the instance leave) and the
+        // new carrier connects now. Nothing is ever redirected without that choice.
+        if (fd_ >= 0 || net_) disconnect();
+        receiverTooOld_.store(false, std::memory_order_relaxed);
+        receiverTooNew_.store(false, std::memory_order_relaxed);
+        lastAttemptNs_ = 0;
+        netFailures_ = 0;
+    }
+    if (fd_ < 0 && !net_) {
         // A pending "Show in Auraliscope" retries every 200 ms: the user may just have launched the app. A
-        // receiver of another protocol version is retried slowly: it will not change until it is updated.
+        // receiver of another protocol version is retried slowly: it will not change until it is updated. A network
+        // display that cannot be reached is retried from 1 s, backing off to 5 s.
         const bool incompatible = receiverTooOld_.load(std::memory_order_relaxed) || receiverTooNew_.load(std::memory_order_relaxed);
         const uint64_t retry = incompatible ? kIncompatibleRetryNs
+            : remote ? std::min(kNetRetryMaxNs, kReconnectNs << std::min(netFailures_, 3u))
             : focusRequested_.load(std::memory_order_relaxed) ? kReconnectNs / 5 : kReconnectNs;
         if (nowNs - lastAttemptNs_ < retry && lastAttemptNs_ != 0) return;
         lastAttemptNs_ = nowNs;
-        sockaddr_un address{};
-        address.sun_family = AF_UNIX;
-        if (abr_socket_path(address.sun_path, sizeof address.sun_path) != 0) return;
-        const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd < 0) return;
-        // A small kernel buffer keeps the latest-state policy in charge: a large one would quietly queue old
-        // results ahead of a stalled receiver.
-        int on = 1, buffer = 32 * 1024;
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);  // a vanished receiver must not signal the DAW
-        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buffer, sizeof buffer);
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
-        uid_t uid;
-        gid_t gid;
-        if (connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof address) != 0
-            || getpeereid(fd, &uid, &gid) != 0 || uid != getuid()) {
-            close(fd);
-            return;
-        }
-        fd_ = fd;
+        if (!(remote ? connectRemote(nowNs) : connectLocal())) return;
         queueHello();
     }
+    if (net_) {
+        const NetLink::State state = net_->state();
+        if (state == NetLink::State::connecting) {
+            if (net_->policyDenied()) {
+                std::lock_guard<std::mutex> lock(remoteLock_);
+                remoteState_ = RemoteState::accessDenied;
+            }
+            if (nowNs - netStartedNs_ > kNetConnectNs) {
+                std::lock_guard<std::mutex> lock(remoteLock_);
+                remoteState_ = RemoteState::unreachable;
+                remoteDetail_ = "No answer from the display on the network.";
+            } else {
+                return;  // HELLO waits in the output buffer until the handshake is done
+            }
+        }
+        if (state != NetLink::State::ready) {
+            {
+                std::lock_guard<std::mutex> lock(remoteLock_);
+                const std::string error = net_->error();
+                if (net_->policyDenied()) remoteState_ = RemoteState::accessDenied;
+                else if (error.find("TLS") != std::string::npos) remoteState_ = RemoteState::refused;
+                else if (state != NetLink::State::connecting) remoteState_ = RemoteState::unreachable;
+                if (!error.empty()) remoteDetail_ = error;
+            }
+            ++netFailures_;
+            disconnect();
+            return;
+        }
+        netFailures_ = 0;
+    }
     if (!readControl()) { disconnect(); return; }
+    if (net_) {
+        std::lock_guard<std::mutex> lock(remoteLock_);
+        if (welcomed_) {
+            remoteState_ = RemoteState::connected;
+            remoteDetail_.clear();
+        }
+    }
     queueStatus(nowNs);
     if (welcomed_ && focusRequested_.exchange(false, std::memory_order_acq_rel)) queue(ABR_MSG_FOCUS, nullptr, 0);
     if (welcomed_) {

@@ -15,7 +15,7 @@ ARTWORK = {"Resources/ThemeAssets/IconPearl.png", "Resources/ThemeAssets/MilkFro
 TREES = ("Sources", "Resources", "Tests", "scripts", "Bridge/App", "Bridge/Plugin", "Bridge/Tests", "Bridge/Tools",
          "Bridge/scripts", "Bridge/ThirdParty")
 FILES = (".gitignore", "Package.swift", "README.md", "COPYRIGHT.md", "LICENSE", "RELEASE_NOTES.md",
-         "Bridge/README.md", "Bridge/ARCHITECTURE.md", "Bridge/PROTOCOL.md", "Bridge/THIRD_PARTY_NOTICES.md",
+         "docs/BUILD121_VALIDATION.md", "Bridge/BRIDGE_NETWORK.md", "docs/RELEASE_2.0_INTEGRATION.md", "docs/2.0_RELEASE_NOTES.md", "Bridge/README.md", "Bridge/ARCHITECTURE.md", "Bridge/PROTOCOL.md", "Bridge/THIRD_PARTY_NOTICES.md",
          "docs/INSTALLATION.md", "docs/THIRD_PARTY_NOTICES.md", "docs/LOUDNESS_REFERENCES.md",
          "docs/SPEAKER_LAYOUT_FORMAT.md", "docs/ASSET_RIGHTS.md", "docs/SOURCE_DISTRIBUTION.md",
          "docs/2.0_RC3_RELEASE_NOTES.md", "docs/2.0_RC2_RELEASE_NOTES.md", "docs/MULTIFFT_ARCHITECTURE.md", "docs/2.0_RC1_RELEASE_NOTES.md", "docs/UPDATE_LOG_since_1.2.2.md")

@@ -272,6 +272,8 @@ final class FileAnalysisController: ObservableObject {
         case analysing(name: String, progress: Double)
         case done(LoudnessReportData)
         case failed(name: String, message: String)
+        /// Stopped by Cancel: nothing was measured, and the previous result is gone.
+        case cancelled(name: String)
     }
 
     @Published private(set) var state = State.idle
@@ -324,6 +326,7 @@ final class FileAnalysisController: ObservableObject {
         let token = FileAnalysisToken()
         self.token = token
         state = .analysing(name: url.lastPathComponent, progress: 0)
+        ReportExportState.shared.saved = nil
         show()
         DiagnosticLog.event("File analysis: started")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -347,7 +350,8 @@ final class FileAnalysisController: ObservableObject {
                     DiagnosticLog.event(String(format: "File analysis: done, %.1f s of audio in %.1f s",
                                                measurement.info.duration, measurement.elapsed))
                 case .failure(FileAnalysisError.cancelled):
-                    self.state = .idle
+                    self.state = .cancelled(name: url.lastPathComponent)
+                    DiagnosticLog.event("File analysis: cancelled")
                 case .failure(let error):
                     self.state = .failed(name: url.lastPathComponent, message: error.localizedDescription)
                     DiagnosticLog.event("File analysis: failed")
@@ -373,7 +377,8 @@ final class FileAnalysisController: ObservableObject {
     func cancel() {
         token.cancel()
         generation += 1
-        state = .idle
+        if case .analysing(let name, _) = state { state = .cancelled(name: name) } else { state = .idle }
+        DiagnosticLog.event("File analysis: cancelled")
     }
 
     func save(csv: Bool) {
@@ -398,6 +403,7 @@ final class FileAnalysisToken: @unchecked Sendable {
 /// report's section verdicts, with the PDF and CSV a click away. A file dropped on it is analysed.
 struct FileAnalysisView: View {
     @ObservedObject var controller = FileAnalysisController.shared
+    @ObservedObject private var export = ReportExportState.shared
     @ObservedObject private var l10n = Localizer.shared
 
     var body: some View {
@@ -461,8 +467,19 @@ struct FileAnalysisView: View {
             }
         case .failed(let name, let message):
             VStack(alignment: .leading, spacing: 8) {
+                Text(L("Analysis failed")).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.ember)
                 Text(verbatim: name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
-                Text(verbatim: message).font(.system(size: 12)).foregroundStyle(Theme.ember).fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: message).font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Text(L("Check that the file plays in another app, or choose another file."))
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        case .cancelled(let name):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L("Analysis cancelled")).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.secondary)
+                Text(verbatim: name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
+                Text(L("Nothing was measured. Choose the file again to start over."))
+                    .font(.system(size: 12)).foregroundStyle(Theme.secondary).fixedSize(horizontal: false, vertical: true)
             }
         case .done(let data):
             FileAnalysisSummary(data: data, standardID: $controller.standardID, custom: controller.custom)
@@ -481,17 +498,30 @@ struct FileAnalysisView: View {
             Button { controller.choose() } label: { Label(L("Analyze Another…"), systemImage: "waveform.badge.magnifyingglass") }
                 .glassButton(prominent: false)
                 .controlSize(.large)
+                .disabled(export.saving)
             Spacer()
+            if export.saving {
+                ProgressView().controlSize(.small)
+                Text(L("Saving…")).font(.system(size: 12)).foregroundStyle(Theme.secondary)
+            } else if let saved = export.saved {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([saved]) } label: {
+                    Label(L("Show in Finder"), systemImage: "folder")
+                }
+                .buttonStyle(.link)
+                .help(saved.path)
+            }
             Button { controller.save(csv: true) } label: { Label(L("Save CSV…"), systemImage: "tablecells") }
                 .glassButton(prominent: false)
                 .controlSize(.large)
+                .disabled(export.saving)
             Button { controller.save(csv: false) } label: {
                 Label(L("Save PDF Report…"), systemImage: "doc.richtext").font(.system(size: 13, weight: .semibold)).padding(.horizontal, 8)
             }
             .keyboardShortcut(.defaultAction)
             .glassButton(prominent: true)
             .controlSize(.large)
-        case .idle, .failed:
+            .disabled(export.saving)
+        case .idle, .failed, .cancelled:
             Button { controller.close() } label: { Label(L("Close"), systemImage: "xmark") }
                 .keyboardShortcut(.cancelAction)
                 .glassButton(prominent: false)

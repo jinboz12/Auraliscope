@@ -6,7 +6,7 @@
 // so the receiving side (Auraliscope Labs or the probe) can be checked against a known sequence.
 //
 //   HostHarness --format vst3|au [--bundle <path.vst3|path.component>] [--channels 1|2] [--layout <name>] [--rate 48000]
-//               [--block 256] [--instances n] [--copies n] [--name <base>] [--id <32 hex>]
+//               [--block 256] [--instances n] [--copies n] [--name <base>] [--id <32 hex>] [--receiver <32 hex>]
 //               [--phases live:4,bypass:2,live:2] [--editor-snapshot <file.png>] [--editor-seconds s] [--cycles n]
 //   HostHarness --format vst3 --bundle <path.vst3> --check-arrangements 1
 //
@@ -62,6 +62,7 @@ namespace {
 
 struct Options {
     std::string format = "vst3", bundle, name = "Harness", id, snapshot, layout;
+    std::string receiver;       // --receiver <32 hex>: the saved state chooses that paired network display
     bool checkArrangements = false;
     uint32_t channels = 2, block = 256, instances = 1, copies = 0, cycles = 1;
     double rate = 48000, editorSeconds = 2;
@@ -133,6 +134,7 @@ std::string stateText(const Options &options, uint32_t instance) {
     std::string text = "AuraliscopeBridge 1\n";
     if (!options.id.empty()) text += "id=" + options.id + "\n";
     text += "name=" + options.name + (options.instances > 1 ? " " + std::to_string(instance + 1) : "") + "\n";
+    if (!options.receiver.empty()) text += "receiver=" + options.receiver + "\n";
     return text;
 }
 
@@ -566,6 +568,7 @@ int main(int argc, const char *argv[]) {
             else if (key == "--cycles") options.cycles = uint32_t(std::max(1, std::atoi(value.c_str())));
             else if (key == "--name") options.name = value;
             else if (key == "--id") options.id = value;
+            else if (key == "--receiver") options.receiver = value;
             else if (key == "--phases") options.phases = value;
             else if (key == "--editor-snapshot") options.snapshot = value;
             else if (key == "--editor-seconds") options.editorSeconds = std::atof(value.c_str());

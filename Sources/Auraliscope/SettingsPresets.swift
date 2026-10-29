@@ -27,9 +27,15 @@ final class SettingsPresets: ObservableObject {
     }
 
     @Published private(set) var saved: [Preset] = []
+    /// Preset files in the folder that could not be read (damaged, or not a preset), by name: listed, never loaded.
+    @Published private(set) var unreadable: [String] = []
     private var watcher: DispatchSourceFileSystemObject?
 
     static var folder: URL {
+        // A QA bundle (self-tests, `--test-settings-presets`) saves and deletes presets: never in the user's folder.
+        if Bundle.main.bundleIdentifier?.hasSuffix(".QA") == true {
+            return FileManager.default.temporaryDirectory.appendingPathComponent("Auraliscope-QA-Presets", isDirectory: true)
+        }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return support.appendingPathComponent("Auraliscope", isDirectory: true)
             .appendingPathComponent("Settings Presets", isDirectory: true)
@@ -46,8 +52,14 @@ final class SettingsPresets: ObservableObject {
     func reload() {
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: nil,
                                                                   options: [.skipsHiddenFiles])) ?? []
-        saved = files.filter { $0.pathExtension == Self.fileExtension }.compactMap(Self.read)
+        let presetFiles = files.filter { $0.pathExtension == Self.fileExtension }
+        saved = presetFiles.compactMap(Self.read)
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let names = presetFiles.filter { Self.read($0) == nil }.map { $0.deletingPathExtension().lastPathComponent }.sorted()
+        if names != unreadable {
+            if !names.isEmpty { DiagnosticLog.event("Settings presets: \(names.count) file(s) could not be read") }
+            unreadable = names
+        }
     }
 
     private static func read(_ url: URL) -> Preset? {
@@ -150,13 +162,28 @@ final class SettingsPresets: ObservableObject {
         guard let name = askName(title: L("Save Settings Preset"),
                                  message: L("Keeps your language, appearance, monitoring and loudness choices, every panel's settings and the layout. The source and its routing stay with your devices."),
                                  button: L("Save"), initial: unusedName(L("My Settings %d", saved.count + 1))) else { return }
+        if saved.contains(where: { $0.name == name }) {
+            let replace = NSAlert()
+            replace.messageText = L("Replace the preset “%@”?", name)
+            replace.informativeText = L("A preset with this name already exists. Replacing it keeps only the current settings.")
+            replace.addButton(withTitle: L("Replace"))
+            replace.addButton(withTitle: L("Cancel"))
+            guard replace.runModal() == .alertFirstButtonReturn else { return }
+        }
         save(as: name)
     }
 
     /// Saves the current settings under `name`, replacing a preset of that name.
     func save(as name: String) {
         let values = Self.current
-        Self.write(name: name, saved: Date(), values: values, to: Self.url(for: name))
+        guard Self.write(name: name, saved: Date(), values: values, to: Self.url(for: name)) else {
+            DiagnosticLog.event("Settings preset could not be saved")
+            let alert = NSAlert()
+            alert.messageText = L("The preset “%@” could not be saved.", name)
+            alert.informativeText = L("Check that the presets folder can be written to (Show Presets in Finder), then try again.")
+            alert.runModal()
+            return
+        }
         reload()
         DiagnosticLog.event("Settings preset saved (\(values.count) settings)")
     }
@@ -200,7 +227,8 @@ final class SettingsPresets: ObservableObject {
         let url = Self.url(for: name)
         guard Self.write(name: name, saved: Date(), values: preset.values, to: url) else { return nil }
         reload()
-        return saved.first { $0.url == url }
+        // By path, links resolved: a folder reached through a link (/var → /private/var) is listed by its real path.
+        return saved.first { $0.url.resolvingSymlinksInPath().path == url.resolvingSymlinksInPath().path }
     }
 
     func rename(_ preset: Preset) {
@@ -251,6 +279,10 @@ struct SettingsPresetsSection: View {
                 }
                 .glassButton()
             }
+        }
+        if !presets.unreadable.isEmpty {
+            SettingsNote(L("Not listed, because the file could not be read (damaged, or not a settings preset): %@. Your current settings are unchanged.",
+                           presets.unreadable.joined(separator: ", ")))
         }
         ForEach(presets.saved) { preset in
             SettingsDivider()

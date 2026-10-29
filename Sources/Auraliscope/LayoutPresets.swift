@@ -96,6 +96,14 @@ final class LayoutPresets: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        if saved.contains(where: { $0.name == name }) {
+            let replace = NSAlert()
+            replace.messageText = L("Replace the layout “%@”?", name)
+            replace.informativeText = L("A layout with this name already exists. Replacing it keeps only the current arrangement.")
+            replace.addButton(withTitle: L("Replace"))
+            replace.addButton(withTitle: L("Cancel"))
+            guard replace.runModal() == .alertFirstButtonReturn else { return }
+        }
         let preset = Preset(name: name, values: Self.current)
         if let index = saved.firstIndex(where: { $0.name == name }) { saved[index] = preset } else { saved.append(preset) }
         store()

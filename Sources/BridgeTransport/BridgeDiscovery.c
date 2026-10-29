@@ -64,6 +64,13 @@ static void DNSSD_API resolved(DNSServiceRef ref, DNSServiceFlags flags, uint32_
         copy_txt(txt, txt_length, "ver", peer->version, sizeof peer->version);
         copy_txt(txt, txt_length, "role", peer->role, sizeof peer->role);
         copy_txt(txt, txt_length, "transport", peer->transport, sizeof peer->transport);
+        char schema[8] = "", pair[8] = "";
+        copy_txt(txt, txt_length, "schema", schema, sizeof schema);
+        peer->schema = (uint32_t)atoi(schema);
+        copy_txt(txt, txt_length, "rid", peer->receiver_id, sizeof peer->receiver_id);
+        copy_txt(txt, txt_length, "pair", pair, sizeof pair);
+        const int pairing = atoi(pair);
+        peer->pairing_port = pairing > 0 && pairing < 65536 ? (uint16_t)pairing : 0;
         peer->this_mac = interface == kDNSServiceInterfaceIndexLocalOnly || strcasecmp(host, browser->local_host) == 0;
         peer->resolved = 1;
     }
@@ -184,6 +191,9 @@ AbrAdvertiser *abr_advertise_start(const char *name, uint16_t port, const char *
     char proto[8];
     snprintf(proto, sizeof proto, "%u", ABR_PROTOCOL_VERSION);
     TXTRecordSetValue(&txt, "proto", (uint8_t)strlen(proto), proto);
+    char schema[8];
+    snprintf(schema, sizeof schema, "%u", ABR_ANALYSIS_SCHEMA);
+    TXTRecordSetValue(&txt, "schema", (uint8_t)strlen(schema), schema);
     TXTRecordSetValue(&txt, "platform", (uint8_t)strlen(platform), platform);
     TXTRecordSetValue(&txt, "app", (uint8_t)strlen(app), app);
     TXTRecordSetValue(&txt, "ver", (uint8_t)strlen(version), version);

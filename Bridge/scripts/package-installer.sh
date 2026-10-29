@@ -67,11 +67,11 @@ cat > "$stage/resources/welcome.html" <<EOF
 <p>Audio metering, spatial analysis and loudness reports for macOS.</p>
 <p>Choose the app and the plugin formats you use. The app installs in Applications; VST3 and Audio Unit plugins
 install in /Library/Audio/Plug-Ins. Requires Apple silicon and macOS 13 or later.</p>
-<p>Quit Auraliscope and your DAW before installing. This release candidate replaces Auraliscope 2.0 and earlier Bridge plugins
+<p>Quit Auraliscope and your DAW before installing. This release replaces Auraliscope 2.0 and earlier Bridge plugins
 in place. Auraliscope LABS is not removed.</p>
 <p>Copyright © 2026 JINBOZ. Original source code is licensed under GNU GPL v3 only. Official compiled packages may be sold;
 recipients retain their GPL rights. See the included source distribution and image-rights records.</p>
-<p>This package is unsigned and not notarized.</p>
+<p>This package is signed with Developer ID. See the release verification record for notarization status.</p>
 </body></html>
 EOF
 cp LICENSE "$stage/resources/license.txt"

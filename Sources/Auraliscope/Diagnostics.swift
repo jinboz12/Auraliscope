@@ -835,12 +835,16 @@ enum Diagnostics {
                     if !judged { judged = true; controller.standardID = standard; return }
                     timer.invalidate()
                     let url = URL(fileURLWithPath: output)
-                    if output.hasSuffix(".csv") { try? data.csv.write(to: url, atomically: true, encoding: .utf8) }
-                    else { try? LoudnessReportExport.writePDF(data, to: url) }
-                    print("analysis report: \(output) · \(data.result.headline) · \(MeterScale.tenths(data.integrated)) LUFS · "
-                          + "\(MeterScale.tenths(data.truePeak)) dBTP · LRA \(MeterScale.tenths(data.range))")
-                    fflush(stdout)
-                    if !snapshotRequested { exit(0) }
+                    Task { @MainActor in
+                        let start = CACurrentMediaTime()
+                        if output.hasSuffix(".csv") { try? data.csv.write(to: url, atomically: true, encoding: .utf8) }
+                        else { try? await LoudnessReportExport.writePDF(data, to: url) }
+                        print("analysis report: \(output) · \(data.result.headline) · \(MeterScale.tenths(data.integrated)) LUFS · "
+                              + "\(MeterScale.tenths(data.truePeak)) dBTP · LRA \(MeterScale.tenths(data.range))"
+                              + String(format: " · written in %.2f s", CACurrentMediaTime() - start))
+                        fflush(stdout)
+                        if !snapshotRequested { exit(0) }
+                    }
                 case .failed(_, let message):
                     timer.invalidate()
                     print("analysis failed: \(message)")
@@ -887,9 +891,11 @@ enum Diagnostics {
                 guard let model = MeterModel.diagnosticInstance else { return }
                 let data = LoudnessReportData.gather(model: model)
                 let url = URL(fileURLWithPath: path)
-                if path.hasSuffix(".csv") { try? data.csv.write(to: url, atomically: true, encoding: .utf8) }
-                else { try? LoudnessReportExport.writePDF(data, to: url) }
-                print("report: \(path)")
+                Task { @MainActor in
+                    if path.hasSuffix(".csv") { try? data.csv.write(to: url, atomically: true, encoding: .utf8) }
+                    else { try? await LoudnessReportExport.writePDF(data, to: url) }
+                    print("report: \(path)")
+                }
             }
         }
         // `--snapshot-view-switch <view>`: glides the Immersive dome to that view 0.2 s before the capture, to catch the

@@ -36,7 +36,8 @@ extension Diagnostics {
             UserDefaults.standard.set(0.5,forKey:MultiFFTStackLayout.shareKey)
             placement.setShown(.multiFFT,true)
             placement.setHidden([])
-            main.setContentSize(NSSize(width:1400,height:900))
+            // The default window size: room for the divider to move both ways while the panels below keep their minima.
+            main.setContentSize(NSSize(width:1400,height:1060))
             // Launched from a shell the app may not be allowed to activate; a floating level and an unconditional
             // order-front keep the QA window unoccluded by other applications, which the drawing checks need.
             @MainActor func surface() {
