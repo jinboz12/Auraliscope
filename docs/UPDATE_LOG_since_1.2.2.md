@@ -1,11 +1,12 @@
-# Auraliscope — update log from 1.2.2 (build 62) to 2.0 RC 3 (build 120)
+# Auraliscope — update log from 1.2.2 (build 62) to 2.0 (build 121)
 
 Auraliscope 2.0 is the largest update since the first release. It adds a DAW plugin, immersive metering up to 9.1.6,
 a rebuilt spectrogram, file analysis with a printable report, a new interface with flexible layouts, six languages and
-settings presets. This log covers every build from 63 to 120, newest first, then the whole 2.0 picture in one list.
+settings presets. This log covers every build from 63 to 121, newest first, then the whole 2.0 picture in one list.
 
 | Builds | Stage | In short |
 | --- | --- | --- |
+| 121 | 2.0 stable | Bridge iPad display connection support, Pause/Resume fix, launch update checks, status and workspace polish, Developer ID signing |
 | 120 | 2.0 RC 3 (internal QA) | A capture that keeps failing restarts itself; lost audio counted; two DAW plugin fixes |
 | 119 | (not packaged) | Tilt slider, linear frequency scale, Multi-FFT hover readout and settings, no welcome after updates |
 | 118 | 2.0 RC 2 | Multi-FFT matches the other panels; opt-in pre-release updates |
@@ -16,6 +17,16 @@ settings presets. This log covers every build from 63 to 120, newest first, then
 | 63–88 | 1.3dev (tested as "Auraliscope LABS") | Bridge plugin, immersive Soundstage, spectrogram rewrite, redesign |
 
 ---
+
+## 2.0 stable
+
+### Build 121
+
+See the [2.0 release notes](2.0_RELEASE_NOTES.md) for the complete user-facing comparison with 1.2.2 (build 62), including compatibility and verification limits.
+
+- Integrates completed Phase 1–7 work from build 120.
+- Adds Bridge network display selection and pairing, the Pause/Resume splice fix, an update check on every normal launch, clearer status actions, report-saving feedback, preset error handling and off-screen window recovery.
+- Developer ID signed app, VST3, AU and installer. Apple notarization is deferred. Real hardware, DAW and physical iPad/Wi-Fi acceptance remain outstanding.
 
 ## 2.0 RC 3
 
@@ -285,6 +296,4 @@ settings presets. This log covers every build from 63 to 120, newest first, then
 - Offline renders, Ambisonics, Auro and 22.2.
 
 ## Installing
-Use `Auraliscope 2.0 rc 1 build 113.pkg` and choose the app, VST3 and/or Audio Unit. Install the app and the plugins
-together. It replaces any 2.0 build in place and keeps your settings. The app runs on Apple silicon with macOS 13 or
-later; the plugins are universal. The packages are ad hoc signed; the installer is unsigned and not notarized.
+Use `Auraliscope.2.0.build.121.pkg` from the [2.0 build 121 release](https://github.com/jinboz12/Auraliscope/releases/tag/v2.0-build121) and choose the app, VST3 and/or Audio Unit. Quit the app and your DAW before installing. The app requires Apple silicon and macOS 13 or later; the plugins are universal. App, plugins and installer are Developer ID signed, but this delivery is not notarized.
