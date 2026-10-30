@@ -224,6 +224,7 @@ private struct BrandItem: ToolbarContent {
     let model: MeterModel
 
     var body: some ToolbarContent {
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             // Plain text on the bar, not a glass control.
             ToolbarItem(placement: .navigation) { ToolbarBrand(model: model) }
@@ -231,6 +232,9 @@ private struct BrandItem: ToolbarContent {
         } else {
             ToolbarItem(placement: .navigation) { ToolbarBrand(model: model) }
         }
+        #else
+            ToolbarItem(placement: .navigation) { ToolbarBrand(model: model) }
+        #endif
     }
 }
 
@@ -239,6 +243,7 @@ private struct ModeItem: ToolbarContent {
     let model: MeterModel
 
     var body: some ToolbarContent {
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             // The selector draws its own track and thumb, so it opts out of the shared toolbar glass.
             ToolbarItem(placement: .principal) { ModeSelector(model: model) }
@@ -248,6 +253,9 @@ private struct ModeItem: ToolbarContent {
         } else {
             ToolbarItem(placement: .principal) { ModeSelector(model: model) }
         }
+        #else
+            ToolbarItem(placement: .principal) { ModeSelector(model: model) }
+        #endif
     }
 }
 
@@ -257,12 +265,16 @@ private struct TrailingItems: ToolbarContent {
     let model: MeterModel
 
     var body: some ToolbarContent {
+        #if compiler(>=6.2)
         if #available(macOS 26, *) {
             ToolbarItem(placement: .primaryAction) { TrailingDock(model: model) }
                 .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .primaryAction) { TrailingDock(model: model) }
         }
+        #else
+            ToolbarItem(placement: .primaryAction) { TrailingDock(model: model) }
+        #endif
     }
 }
 

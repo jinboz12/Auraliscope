@@ -1371,8 +1371,9 @@ final class CoreTests {
         for rate in [44_100.0, 48_000, 88_200, 96_000, 176_400, 192_000] {
             for frequency in [997.0, 1499, 15_000, 20_000] {
                 for phase in 0..<8 {
-                    let samples = (0..<2048).map {
-                        Float(0.5 * sin(2 * Double.pi * (frequency * Double($0) / rate + Double(phase) / 8)))
+                    let samples: [Float] = (0..<2048).map { index in
+                        let cycles = frequency * Double(index) / rate + Double(phase) / 8
+                        return Float(0.5 * sin(2 * Double.pi * cycles))
                     }
                     var reference: Float?
                     for chunk in [1, 7, 257] {
