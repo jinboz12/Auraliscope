@@ -79,6 +79,7 @@ package final class MultiFFTAnalyzer {
         }
         deinit { vDSP_DFT_DestroySetup(setup) }
         func analyse(left: [Float], right: [Float], cursor: Int, span: Int, exhaustive: Bool) {
+            let bins = self.bins, size = self.size, channels = self.channels
             let start = (cursor + (span - size) / 2) % span
             // The ring wraps at most once inside a window: two contiguous multiplies replace a modulo per sample.
             let head = min(size, span - start)
@@ -96,7 +97,6 @@ package final class MultiFFTAnalyzer {
             let lo = exhaustive ? 0 : first, hi = exhaustive ? bins - 1 : last
             guard lo <= hi else { return }
             let count = hi - lo + 1
-            let bins = self.bins, size = self.size, channels = self.channels
             // A single complex FFT packs the two real channels. Retain phase until M/S is formed.
             outReal.withUnsafeBufferPointer { xr in outImaginary.withUnsafeBufferPointer { xi in
                 powers.withUnsafeMutableBufferPointer { p in

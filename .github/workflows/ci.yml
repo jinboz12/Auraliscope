@@ -24,6 +24,9 @@ jobs:
           xcodebuild -version
           swift --version
 
+      - name: Install check dependencies
+        run: command -v rg >/dev/null || brew install ripgrep
+
       - name: Checks (scripts/check-all.sh)
         run: scripts/check-all.sh
 
