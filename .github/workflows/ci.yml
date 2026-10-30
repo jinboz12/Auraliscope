@@ -14,7 +14,10 @@ permissions:
 jobs:
   checks:
     name: Build and checks (macOS)
-    runs-on: macos-15
+    # Match the Swift 6.4 toolchain used for the bit-exact analysis fixtures.
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
